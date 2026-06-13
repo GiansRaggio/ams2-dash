@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover">
+<title>AMS2 Dash</title>
+<style>
+  :root{
+    --bg:#0a0c0f; --panel:#13161b; --line:#262c35;
+    --txt:#e8ecf2; --dim:#7b8694;
+    --green:#3ddc6a; --amber:#ffc233; --red:#ff3b3b;
+    --blue:#4f7dff; --cyan:#37c8f0;
+    --mono:ui-monospace,"JetBrains Mono","Cascadia Mono","Roboto Mono",monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%;overflow:hidden}
+  body{
+    background:var(--bg);color:var(--txt);font-family:var(--mono);
+    display:flex;flex-direction:column;
+    padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  .label{font-size:clamp(8px,1.4vh,12px);letter-spacing:.18em;color:var(--dim);text-transform:uppercase}
+  .box{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:.5vh 1vw;
+       display:flex;flex-direction:column;justify-content:center;min-height:0}
+  .val{font-variant-numeric:tabular-nums;line-height:1.05;font-weight:700}
+
+  /* ---- RPM band ---- */
+  #rpmwrap{position:relative;height:9vh;flex:none;border-bottom:1px solid var(--line)}
+  #rpmbar{position:absolute;inset:0;transform-origin:left;transform:scaleX(0);
+          background:linear-gradient(90deg,var(--green) 0 55%,var(--amber) 55% 82%,var(--red) 82% 100%);
+          background-size:100vw 100%;background-attachment:fixed}
+  #rpmticks{position:absolute;inset:0;display:flex}
+  #rpmticks span{flex:1;border-left:2px solid rgba(255,255,255,.25);position:relative}
+  #rpmticks span i{position:absolute;left:4px;bottom:2px;font-style:normal;font-size:1.6vh;color:rgba(255,255,255,.55)}
+  #rpmtxt{position:absolute;right:1vw;top:50%;transform:translateY(-50%);font-size:2.6vh;
+          font-weight:700;color:#fff;text-shadow:0 0 6px rgba(0,0,0,.8)}
+  body.shift #rpmwrap{animation:flash .12s steps(2) infinite}
+  @keyframes flash{to{filter:invert(1)}}
+
+  /* ---- main grid ---- */
+  #grid{flex:1;display:grid;min-height:0;
+        grid-template-columns:1fr 1.15fr 1.35fr;gap:1vh;padding:1vh}
+  .col{display:flex;flex-direction:column;gap:1vh;min-height:0}
+  .col .box{flex:1}
+
+  .split{font-size:clamp(18px,5.2vh,54px)}
+  #ahead .split{color:var(--red)} #behind .split{color:var(--green)}
+
+  #center{align-items:center;justify-content:space-between;text-align:center;display:flex;flex-direction:column}
+  #gear{font-size:clamp(60px,30vh,300px);font-weight:800;line-height:.9;flex:1;
+        display:flex;align-items:center;color:#fff}
+  #gear.rev{color:var(--amber)} #gear.neu{color:var(--cyan)}
+  #speedbox{width:100%}
+  #speed{font-size:clamp(28px,9vh,90px)}
+  #pedals{position:absolute;inset:0;pointer-events:none}
+  .pedal{position:absolute;bottom:0;width:1.2vw;min-width:6px;transform-origin:bottom;transform:scaleY(0)}
+  #pthr{right:0;background:var(--green)} #pbrk{left:0;background:var(--red)}
+
+  .lap{font-size:clamp(16px,4.6vh,46px)}
+  #cur .lap{color:var(--green)} #best .lap{color:var(--blue)}
+  #timeleft .lap{color:var(--amber);font-size:clamp(14px,3.6vh,36px)}
+
+  .duo{display:grid;grid-template-columns:1fr 1fr;gap:1vh;flex:1;min-height:0}
+  .duo .box{flex:none;height:100%}
+  .small{font-size:clamp(16px,4.2vh,42px)}
+
+  /* ---- bottom: fuel ---- */
+  #bottom{flex:none;height:7vh;display:flex;gap:1vh;padding:0 1vh 1vh}
+  #fuelbox{flex:1;position:relative;overflow:hidden}
+  #fuelfill{position:absolute;inset:0;transform-origin:left;transform:scaleX(0);
+            background:linear-gradient(90deg,#a33,#cc8f1f);opacity:.85;transition:transform .3s}
+  #fuelbox>*{position:relative}
+  #fuelval{font-size:3.4vh;font-weight:700}
+  #conn{flex:none;width:18vw;display:flex;align-items:center;justify-content:center;
+        font-size:1.8vh;letter-spacing:.15em;color:var(--dim)}
+  #conn.ok{color:var(--green)}
+</style>
+</head>
+<body>
+
+  <div id="rpmwrap">
+    <div id="rpmbar"></div>
+    <div id="rpmticks"></div>
+    <div id="rpmtxt">0</div>
+  </div>
+
+  <div id="grid">
+    <div class="col">
+      <div class="box" id="ahead"><span class="label">Car ahead</span><span class="val split">--.---</span></div>
+      <div class="box" id="behind"><span class="label">Car behind</span><span class="val split">--.---</span></div>
+      <div class="duo">
+        <div class="box" id="pos"><span class="label">Position</span><span class="val small">-/-</span></div>
+        <div class="box" id="lapn"><span class="label">Lap</span><span class="val small">-</span></div>
+      </div>
+    </div>
+
+    <div class="box col" id="center" style="position:relative">
+      <div id="pedals"><div class="pedal" id="pbrk"></div><div class="pedal" id="pthr"></div></div>
+      <div id="gear" class="neu">N</div>
+      <div id="speedbox"><span class="label">Speed km/h</span><div class="val" id="speed">0</div></div>
+    </div>
+
+    <div class="col">
+      <div class="box" id="cur"><span class="label">Current lap</span><span class="val lap">--:--.---</span></div>
+      <div class="box" id="last"><span class="label">Last lap</span><span class="val lap">--:--.---</span></div>
+      <div class="box" id="best"><span class="label">Best lap</span><span class="val lap">--:--.---</span></div>
+      <div class="box" id="timeleft"><span class="label">Time left</span><span class="val lap">--:--</span></div>
+    </div>
+  </div>
+
+  <div id="bottom">
+    <div class="box" id="fuelbox">
+      <div id="fuelfill"></div>
+      <span class="label">Fuel</span><span class="val" id="fuelval">-- L</span>
+    </div>
+    <div class="box" id="conn">SIN SEÑAL</div>
+  </div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const els = {
+  rpmbar:$("rpmbar"), rpmtxt:$("rpmtxt"), gear:$("gear"), speed:$("speed"),
+  ahead:$("ahead").querySelector(".split"), behind:$("behind").querySelector(".split"),
+  pos:$("pos").querySelector(".val"), lapn:$("lapn").querySelector(".val"),
+  cur:$("cur").querySelector(".lap"), last:$("last").querySelector(".lap"),
+  best:$("best").querySelector(".lap"), timeleft:$("timeleft").querySelector(".lap"),
+  fuelfill:$("fuelfill"), fuelval:$("fuelval"), conn:$("conn"),
+  pthr:$("pthr"), pbrk:$("pbrk"),
+};
+
+let ticksFor = 0;
+function buildTicks(maxRpm){
+  ticksFor = maxRpm;
+  const k = Math.ceil(maxRpm/1000), box = $("rpmticks");
+  box.innerHTML = "";
+  for(let i=0;i<k;i++){
+    const s = document.createElement("span");
+    s.innerHTML = `<i>${i}</i>`;
+    box.appendChild(s);
+  }
+}
+
+function fmtLap(t){
+  if(t==null||t<0) return "--:--.---";
+  const m = Math.floor(t/60), s = t-m*60;
+  return `${String(m).padStart(2,"0")}:${s.toFixed(3).padStart(6,"0")}`;
+}
+function fmtSplit(t){ return (t==null) ? "--.---" : t.toFixed(3); }
+function fmtClock(t){
+  if(t==null||t<0) return "--:--";
+  const h=Math.floor(t/3600), m=Math.floor(t%3600/60), s=Math.floor(t%60);
+  return h>0 ? `${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`
+             : `${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
+}
+
+function render(d){
+  if(d.max_rpm > 1 && Math.ceil(d.max_rpm/1000) !== Math.ceil(ticksFor/1000)) buildTicks(d.max_rpm);
+  const frac = Math.min(d.rpm/d.max_rpm, 1);
+  els.rpmbar.style.transform = `scaleX(${frac})`;
+  els.rpmtxt.textContent = d.rpm;
+  document.body.classList.toggle("shift", frac > 0.95 && d.gear > 0);
+
+  els.gear.textContent = d.gear===-1 ? "R" : (d.gear===0 ? "N" : d.gear);
+  els.gear.className = d.gear===-1 ? "rev" : (d.gear===0 ? "neu" : "");
+  els.speed.textContent = d.speed_kmh;
+
+  els.pthr.style.transform = `scaleY(${d.throttle/100})`;
+  els.pbrk.style.transform = `scaleY(${d.brake/100})`;
+
+  els.ahead.textContent  = fmtSplit(d.split_ahead);
+  els.behind.textContent = fmtSplit(d.split_behind);
+  els.pos.textContent  = d.position ? `${d.position}/${d.num_participants}` : "-/-";
+  els.lapn.textContent = d.current_lap || "-";
+
+  els.cur.textContent  = fmtLap(d.current_time);
+  els.last.textContent = fmtLap(d.last_lap);
+  els.best.textContent = fmtLap(d.best_lap);
+  els.timeleft.textContent = fmtClock(d.event_remaining);
+
+  const f = d.fuel_capacity ? d.fuel_liters/d.fuel_capacity : 0;
+  els.fuelfill.style.transform = `scaleX(${f})`;
+  els.fuelval.textContent = d.fuel_capacity ? `${d.fuel_liters.toFixed(1)} L` : "-- L";
+
+  els.conn.textContent = d.connected ? "AMS2 ●" : "SIN SEÑAL";
+  els.conn.className = d.connected ? "ok" : "";
+}
+
+function connect(){
+  const ws = new WebSocket(`ws://${location.hostname}:8765`);
+  ws.onmessage = e => render(JSON.parse(e.data));
+  ws.onclose = () => { els.conn.textContent="RECONECTANDO…"; els.conn.className="";
+                       setTimeout(connect, 1500); };
+}
+connect();
+buildTicks(8000);
+
+// pantalla siempre encendida (si el navegador lo soporta)
+if("wakeLock" in navigator){
+  const lock = () => navigator.wakeLock.request("screen").catch(()=>{});
+  lock(); document.addEventListener("visibilitychange",
+    () => document.visibilityState==="visible" && lock());
+}
+</script>
+</body>
+</html>

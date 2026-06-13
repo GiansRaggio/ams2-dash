@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#04060a">
+<title>AMS2 Dash</title>
+<style>
+  :root{
+    --bg:#04060a; --panel:#0d1118; --panel2:#11161f; --line:#1f2733;
+    --txt:#eef3fa; --dim:#5d6b7e;
+    --green:#2bf07a; --amber:#ffb020; --red:#ff2e4d;
+    --blue:#3f8cff; --cyan:#27e0ff; --purple:#b44dff;
+    --mono:ui-monospace,"JetBrains Mono","Cascadia Mono","Roboto Mono",monospace;
+    --chamfer:polygon(10px 0,100% 0,100% calc(100% - 10px),calc(100% - 10px) 100%,0 100%,0 10px);
+  }
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%;overflow:hidden}
+  body{
+    background:
+      radial-gradient(120% 90% at 50% -20%, #0b1220 0%, var(--bg) 55%),
+      var(--bg);
+    color:var(--txt);font-family:var(--mono);
+    display:flex;flex-direction:column;
+    padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  /* textura sutil tipo carbono */
+  body::before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.05;
+    background:repeating-linear-gradient(45deg,#fff 0 1px,transparent 1px 6px),
+               repeating-linear-gradient(-45deg,#fff 0 1px,transparent 1px 6px)}
+
+  .label{font-size:clamp(8px,1.5vh,12px);letter-spacing:.22em;color:var(--dim);
+         text-transform:uppercase;font-weight:600}
+  .box{background:linear-gradient(180deg,var(--panel2),var(--panel));
+       border:1px solid var(--line);clip-path:var(--chamfer);
+       padding:.6vh 1.2vw;display:flex;flex-direction:column;justify-content:center;
+       min-height:0;position:relative}
+  .box::after{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--edge,transparent)}
+  .val{font-variant-numeric:tabular-nums;line-height:1.02;font-weight:800}
+
+  /* ================= LED SHIFT STRIP ================= */
+  #ledwrap{flex:none;padding:1vh 1vh 0;display:flex;flex-direction:column;gap:.6vh}
+  #leds{display:flex;gap:.5vw;height:4.2vh}
+  #leds i{flex:1;border-radius:3px;background:#161c26;border:1px solid #202938;
+          transition:background .05s,box-shadow .05s}
+  #leds i.on.g{background:var(--green);box-shadow:0 0 12px var(--green)}
+  #leds i.on.a{background:var(--amber);box-shadow:0 0 12px var(--amber)}
+  #leds i.on.r{background:var(--red);box-shadow:0 0 14px var(--red)}
+  body.shift #leds i{background:var(--blue)!important;box-shadow:0 0 16px var(--blue)!important;
+                     animation:strobe .1s steps(2) infinite}
+  @keyframes strobe{to{opacity:.25}}
+  #rpmrow{display:flex;justify-content:space-between;align-items:baseline;padding:0 .3vw}
+  #rpmnum{font-size:2.4vh;font-weight:800;color:var(--txt)}
+  #rpmnum small{color:var(--dim);font-size:1.5vh;letter-spacing:.15em}
+
+  /* ================= GRID ================= */
+  #grid{flex:1;display:grid;min-height:0;
+        grid-template-columns:1fr 1.2fr 1.3fr;gap:1vh;padding:1vh}
+  .col{display:flex;flex-direction:column;gap:1vh;min-height:0}
+  .col .box{flex:1}
+
+  .split{font-size:clamp(18px,5.4vh,56px);display:flex;align-items:center;gap:.5vw}
+  .split b{font-size:.55em;font-weight:800}
+  #ahead{--edge:var(--red)}   #ahead .split{color:var(--red)}
+  #behind{--edge:var(--green)} #behind .split{color:var(--green)}
+
+  .duo{display:grid;grid-template-columns:1fr 1fr;gap:1vh;flex:1;min-height:0}
+  .duo .box{height:100%}
+  .small{font-size:clamp(16px,4.4vh,44px)}
+  #pos .val b{color:var(--cyan)}
+
+  /* ---- centro: marcha ---- */
+  #center{align-items:center;justify-content:space-between;text-align:center;
+          display:flex;flex-direction:column;overflow:hidden}
+  #gear{font-size:clamp(60px,31vh,300px);font-weight:800;line-height:.88;flex:1;
+        display:flex;align-items:center;color:#fff;
+        text-shadow:0 0 28px rgba(39,224,255,.35),0 0 90px rgba(39,224,255,.18)}
+  #gear.rev{color:var(--amber);text-shadow:0 0 28px rgba(255,176,32,.45)}
+  #gear.neu{color:var(--cyan)}
+  #gear.hi{color:var(--red);text-shadow:0 0 30px rgba(255,46,77,.6)}
+  #speedbox{width:100%;border-top:1px solid var(--line);padding-top:.6vh}
+  #speed{font-size:clamp(28px,9.5vh,96px)}
+  .pedal{position:absolute;bottom:0;width:1.4vw;min-width:7px;transform-origin:bottom;
+         transform:scaleY(0);border-radius:2px 2px 0 0}
+  #pthr{right:3px;background:linear-gradient(180deg,var(--green),#0a5)}
+  #pbrk{left:3px;background:linear-gradient(180deg,var(--red),#900)}
+
+  /* ---- derecha: tiempos ---- */
+  .lap{font-size:clamp(16px,4.8vh,48px)}
+  #cur{--edge:var(--green)}  #cur .lap{color:var(--green)}
+  #best{--edge:var(--purple)} #best .lap{color:var(--blue)}
+  #timeleft .lap{color:var(--amber);font-size:clamp(14px,3.6vh,36px)}
+  @keyframes purpleflash{0%,100%{background:linear-gradient(180deg,var(--panel2),var(--panel))}
+                         50%{background:var(--purple)}}
+  #best.record{animation:purpleflash .35s ease 3}
+
+  /* ================= FUEL ================= */
+  #bottom{flex:none;height:7.5vh;display:flex;gap:1vh;padding:0 1vh 1vh}
+  #fuelbox{flex:1;overflow:hidden;--edge:var(--amber)}
+  #fuelfill{position:absolute;inset:0;transform-origin:left;transform:scaleX(0);
+            background:linear-gradient(90deg,#ff2e4d,#ffb020 35%,#2bf07a 70%);
+            opacity:.28;transition:transform .4s}
+  #fuelbox>*{position:relative}
+  #fuelrow{display:flex;justify-content:space-between;align-items:baseline}
+  #fuelval{font-size:3.6vh;font-weight:800}
+  #fuelpct{font-size:2vh;color:var(--dim)}
+  body.lowfuel #fuelbox{animation:fuelwarn 1s ease infinite}
+  @keyframes fuelwarn{50%{border-color:var(--red);box-shadow:inset 0 0 24px rgba(255,46,77,.35)}}
+
+  #conn{flex:none;width:18vw;display:flex;align-items:center;justify-content:center;
+        font-size:1.8vh;letter-spacing:.18em;color:var(--dim);gap:.6vw}
+  #conn::before{content:"";width:1.2vh;height:1.2vh;border-radius:50%;background:#333}
+  #conn.ok{color:var(--green)} #conn.ok::before{background:var(--green);box-shadow:0 0 10px var(--green)}
+
+  /* ================= TAP PARA FULLSCREEN ================= */
+  #fshint{position:fixed;inset:0;z-index:50;display:flex;flex-direction:column;
+          align-items:center;justify-content:center;text-align:center;gap:1.4vh;padding:3vh;
+          background:rgba(4,6,10,.78);backdrop-filter:blur(2px);
+          letter-spacing:.22em;text-transform:uppercase;font-weight:700;
+          font-size:clamp(13px,2.6vh,22px);color:var(--txt);
+          transition:opacity .3s;cursor:pointer}
+  #fshint small{letter-spacing:.12em;font-weight:600;font-size:.62em;color:var(--dim)}
+  #fshint.hide{opacity:0;pointer-events:none}
+</style>
+</head>
+<body>
+
+  <div id="fshint">Toca para pantalla completa
+    <small>la pantalla no se apagará</small></div>
+
+  <div id="ledwrap">
+    <div id="leds"></div>
+    <div id="rpmrow">
+      <span class="label" id="gearhint">&nbsp;</span>
+      <span id="rpmnum">0 <small>RPM</small></span>
+    </div>
+  </div>
+
+  <div id="grid">
+    <div class="col">
+      <div class="box" id="ahead"><span class="label">Car ahead</span>
+        <span class="val split"><b>▲</b><span>--.---</span></span></div>
+      <div class="box" id="behind"><span class="label">Car behind</span>
+        <span class="val split"><b>▼</b><span>--.---</span></span></div>
+      <div class="duo">
+        <div class="box" id="pos"><span class="label">Position</span>
+          <span class="val small"><b>P</b><span>-</span><span style="color:var(--dim);font-size:.6em">/-</span></span></div>
+        <div class="box" id="lapn"><span class="label">Lap</span><span class="val small">-</span></div>
+      </div>
+    </div>
+
+    <div class="box col" id="center">
+      <div class="pedal" id="pbrk"></div><div class="pedal" id="pthr"></div>
+      <div id="gear" class="neu">N</div>
+      <div id="speedbox"><span class="label">Speed km/h</span><div class="val" id="speed">0</div></div>
+    </div>
+
+    <div class="col">
+      <div class="box" id="cur"><span class="label">Current lap</span><span class="val lap">--:--.---</span></div>
+      <div class="box" id="last"><span class="label">Last lap</span><span class="val lap">--:--.---</span></div>
+      <div class="box" id="best"><span class="label">Best lap</span><span class="val lap">--:--.---</span></div>
+      <div class="box" id="timeleft"><span class="label">Time left</span><span class="val lap">--:--</span></div>
+    </div>
+  </div>
+
+  <div id="bottom">
+    <div class="box" id="fuelbox">
+      <div id="fuelfill"></div>
+      <span class="label">Fuel</span>
+      <div id="fuelrow"><span class="val" id="fuelval">-- L</span><span id="fuelpct"></span></div>
+    </div>
+    <div class="box" id="conn">SIN SEÑAL</div>
+  </div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const els = {
+  leds:[], rpmnum:$("rpmnum"), gear:$("gear"), gearhint:$("gearhint"), speed:$("speed"),
+  ahead:$("ahead").querySelector(".split span"),
+  behind:$("behind").querySelector(".split span"),
+  posN:$("pos").querySelectorAll(".val span")[0],
+  posT:$("pos").querySelectorAll(".val span")[1],
+  lapn:$("lapn").querySelector(".val"),
+  cur:$("cur").querySelector(".lap"), last:$("last").querySelector(".lap"),
+  best:$("best").querySelector(".lap"), bestBox:$("best"),
+  timeleft:$("timeleft").querySelector(".lap"),
+  fuelfill:$("fuelfill"), fuelval:$("fuelval"), fuelpct:$("fuelpct"),
+  conn:$("conn"), pthr:$("pthr"), pbrk:$("pbrk"),
+};
+
+/* tira de 20 LEDs: 12 verdes, 5 ámbar, 3 rojos (como un volante real) */
+const N_LEDS = 20;
+{
+  const wrap = $("leds");
+  for(let i=0;i<N_LEDS;i++){
+    const led = document.createElement("i");
+    led.className = i<12 ? "g" : i<17 ? "a" : "r";
+    wrap.appendChild(led); els.leds.push(led);
+  }
+}
+
+const fmtLap = t => {
+  if(t==null||t<0) return "--:--.---";
+  const m=Math.floor(t/60), s=t-m*60;
+  return `${String(m).padStart(2,"0")}:${s.toFixed(3).padStart(6,"0")}`;
+};
+const fmtSplit = t => t==null ? "--.---" : t.toFixed(3);
+const fmtClock = t => {
+  if(t==null||t<0) return "--:--";
+  const h=Math.floor(t/3600), m=Math.floor(t%3600/60), s=Math.floor(t%60);
+  return h>0 ? `${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`
+             : `${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
+};
+
+/* estado objetivo (del WS) + estado mostrado (interpolado) */
+let target=null, prevBest=null;
+let disp={rpm:0, speed:0};
+
+function applyStatic(d){
+  els.gear.textContent = d.gear===-1 ? "R" : (d.gear===0 ? "N" : d.gear);
+  const frac = d.rpm/d.max_rpm;
+  els.gear.className = d.gear===-1 ? "rev" : d.gear===0 ? "neu" : (frac>0.9 ? "hi" : "");
+  els.gearhint.textContent = d.gear>0 && frac>0.95 ? "SHIFT!" : "\u00a0";
+
+  els.pthr.style.transform = `scaleY(${d.throttle/100})`;
+  els.pbrk.style.transform = `scaleY(${d.brake/100})`;
+
+  els.ahead.textContent  = fmtSplit(d.split_ahead);
+  els.behind.textContent = fmtSplit(d.split_behind);
+  els.posN.textContent = d.position || "-";
+  els.posT.textContent = "/" + (d.num_participants || "-");
+  els.lapn.textContent = d.current_lap || "-";
+
+  els.cur.textContent  = fmtLap(d.current_time);
+  els.last.textContent = fmtLap(d.last_lap);
+  els.best.textContent = fmtLap(d.best_lap);
+  els.timeleft.textContent = fmtClock(d.event_remaining);
+
+  /* flash púrpura al mejorar el best */
+  if(d.best_lap!=null && (prevBest==null || d.best_lap < prevBest - 1e-4)){
+    if(prevBest!=null){
+      els.bestBox.classList.remove("record");
+      void els.bestBox.offsetWidth;           // reinicia la animación
+      els.bestBox.classList.add("record");
+    }
+    prevBest = d.best_lap;
+  }
+
+  const f = d.fuel_capacity ? d.fuel_liters/d.fuel_capacity : 0;
+  els.fuelfill.style.transform = `scaleX(${f})`;
+  els.fuelval.textContent = d.fuel_capacity ? `${d.fuel_liters.toFixed(1)} L` : "-- L";
+  els.fuelpct.textContent = d.fuel_capacity ? `${Math.round(f*100)}%` : "";
+  document.body.classList.toggle("lowfuel", d.fuel_capacity>0 && f<0.1);
+
+  document.body.classList.toggle("shift", d.gear>0 && frac>0.95);
+
+  els.conn.textContent = d.connected ? "AMS2 LIVE" : "SIN SEÑAL";
+  els.conn.className = d.connected ? "ok" : "";
+}
+
+/* render continuo a 60fps con interpolación de RPM y velocidad */
+let lastLit=-1;
+function frame(){
+  requestAnimationFrame(frame);
+  if(!target) return;
+  disp.rpm   += (target.rpm - disp.rpm) * 0.35;
+  disp.speed += (target.speed_kmh - disp.speed) * 0.35;
+
+  const frac = Math.min(disp.rpm/target.max_rpm, 1);
+  /* los LEDs empiezan a encender desde 50% del régimen */
+  const lit = Math.round(Math.max(0,(frac-0.5)/0.5) * N_LEDS);
+  if(lit!==lastLit){
+    els.leds.forEach((l,i)=>l.classList.toggle("on", i<lit));
+    lastLit = lit;
+  }
+  els.rpmnum.innerHTML = `${Math.round(disp.rpm)} <small>RPM</small>`;
+  els.speed.textContent = Math.round(disp.speed);
+}
+requestAnimationFrame(frame);
+
+function connect(){
+  const ws = new WebSocket(`ws://${location.hostname}:8765`);
+  ws.onmessage = e => { target = JSON.parse(e.data); applyStatic(target); };
+  ws.onclose = () => { els.conn.textContent="RECONECTANDO…"; els.conn.className="";
+                       setTimeout(connect, 1500); };
+}
+connect();
+
+/* ---- Wake Lock: mantiene la pantalla encendida ---- */
+let wl = null;
+async function lock(){
+  if(!("wakeLock" in navigator)) return;
+  try{ wl = await navigator.wakeLock.request("screen"); }catch{}
+}
+lock();
+document.addEventListener("visibilitychange",
+  () => document.visibilityState==="visible" && lock());
+
+/* ---- Fullscreen: un tap entra y reasegura el wake lock ---- */
+const root = document.documentElement, hint = $("fshint");
+function goFullscreen(){
+  const req = root.requestFullscreen || root.webkitRequestFullscreen;
+  if(req) req.call(root).catch(()=>{});   // iPhone no soporta la API: usa "Agregar a inicio"
+  lock();
+  hint.classList.add("hide");
+}
+document.body.addEventListener("click", goFullscreen);
+/* si el SO devuelve el foco al dash (p.ej. tras un screen-off), reasegura el lock */
+document.addEventListener("fullscreenchange",
+  () => (document.fullscreenElement) && lock());
+</script>
+</body>
+</html>
