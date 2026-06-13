@@ -1,7 +1,7 @@
-# AMS2 Dash Web — alternativa a SimDashboard para Linux
+# AMS2 Dash Web
 
 Dashboard para el celular alimentado por la telemetría UDP nativa de
-Automobilista 2. No requiere el server de Windows de SimDashboard.
+Automobilista 2.
 
 ## Archivos
 - `bridge.py` — escucha el broadcast de AMS2 (UDP :5606, protocolo Project CARS 2),
@@ -73,8 +73,8 @@ Notas para adaptarlo:
   `reuse_port`).
 
 ## Notas
-- Convive con la app SimDashboard: ambos pueden escuchar el broadcast a la vez
-  (el bridge usa `reuse_port` en :5606).
+- Usa `reuse_port` en :5606, así que puede convivir con otras apps que escuchen
+  el mismo broadcast UDP de AMS2.
 - Offsets basados en la spec UDP de Project CARS 2 (la que usa AMS2), verificados
   en pista. El protocolo expone telemetría e intervención de asistentes, pero **no**
   el nivel configurado de TC/ABS.

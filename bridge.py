@@ -239,7 +239,7 @@ def serve_http():
 
 async def main():
     loop = asyncio.get_running_loop()
-    # Mismo bind que la app SimDashboard: recibe el broadcast de AMS2
+    # Bind al broadcast de AMS2 (reuse_port para convivir con otros listeners)
     await loop.create_datagram_endpoint(
         AMS2Protocol, local_addr=("0.0.0.0", UDP_PORT), reuse_port=True
     )
