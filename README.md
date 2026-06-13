@@ -5,29 +5,80 @@ Automobilista 2. No requiere el server de Windows de SimDashboard.
 
 ## Archivos
 - `bridge.py` — escucha el broadcast de AMS2 (UDP :5606, protocolo Project CARS 2),
-  parsea telemetría/timings/time-stats y los publica por WebSocket (:8765).
-  También sirve la página por HTTP (:8080).
-- `index.html` — el dashboard v2 estilo display GT3: tira de 20 LEDs de cambio
-  (verde/ámbar/rojo + strobe azul al límite), marcha con glow, paneles chaflanados,
-  flash púrpura al mejorar el best lap, warning de fuel <10%, interpolación a 60fps.
-- `index-v1-backup.html` — la versión anterior, por si querés volver.
-  splits ahead/behind, current/last/best lap, posición, vuelta, fuel,
-  barras de freno/acelerador, tiempo restante de sesión).
+  parsea telemetría/timings/time-stats y publica el estado por WebSocket (:8765).
+  También calcula economía de combustible y sirve la página por HTTP (:8080).
+- `index.html` — el dashboard estilo display GT3.
+- `index-v1-backup.html` — la versión anterior, por si quieres volver.
+- `ams2-dash-launch.sh` — wrapper de Steam para levantar el bridge junto con el
+  juego (ver "Arranque automático"). **Específico del setup del autor**, ajustable.
+- `tools/fake_telemetry.py` — emite paquetes sintéticos a :5606 para iterar la UI
+  sin estar en pista.
 
-## Uso
-1. `pip install websockets` (Arch: `sudo pacman -S python-websockets`)
-2. En AMS2 → Options → System: `UDP = On`, `Protocol = Project CARS 2`, `Frequency = 1`
-   (si hay lag, subir a 4). Shared Memory puede quedar en Project CARS 2 para MOZA.
-3. `python bridge.py` → imprime la URL.
-4. En el celular (misma WiFi): abrir `http://IP_DEL_PC:8080`, girar a horizontal,
-   "Agregar a pantalla de inicio" para modo fullscreen. Usa Wake Lock para que
-   la pantalla no se apague.
+## Qué muestra
+- Tira de 20 LEDs de cambio (verde/ámbar/rojo + strobe azul al límite), marcha con
+  glow y velocidad.
+- Splits a coche de adelante/atrás, posición, vuelta, current/last/best lap (flash
+  púrpura al mejorar), tiempo restante de sesión.
+- **Combustible**: barra que se vacía con color por nivel, litros, % y **vueltas
+  restantes** + consumo por vuelta (se calcula al cruzar meta).
+- **Pit limiter** (banner), e indicadores **TC/ABS** que se encienden cuando el
+  asistente interviene (no el nivel configurado — eso no viaja por UDP).
+- Interpolación a 60fps y Wake Lock para que la pantalla no se apague.
+
+## Setup desde cero (para otra persona)
+
+Lo mínimo, en cualquier SO (Linux o Windows):
+
+1. **Python 3** con el paquete **`websockets`**.
+2. **AMS2** con UDP activado: *Options → System → `UDP = On`,
+   `Protocol = Project CARS 2`, `Frequency = 1`* (si hay lag, subir a 4).
+   El Shared Memory puede quedar en Project CARS 2 para MOZA; son independientes.
+3. Un **celular en la misma red WiFi** que el PC.
+4. Que el **firewall del PC permita los puertos 8080 y 8765** en la LAN.
+
+```bash
+git clone <url-del-repo> ams2-dash
+cd ams2-dash
+
+# instalar websockets (cualquiera de estas opciones):
+python -m venv .venv && .venv/bin/pip install websockets      # venv estándar
+#  o:  uv venv .venv && uv pip install --python .venv/bin/python websockets
+#  o:  pip install --user websockets                          # global
+
+# correr el bridge (imprime la URL del dashboard)
+.venv/bin/python bridge.py
+```
+
+En el celular: abrir `http://IP_DEL_PC:8080`, girar a horizontal y "Agregar a
+pantalla de inicio" para modo fullscreen.
+
+`bridge.py` e `index.html` son **100% portables**. En **Windows** ni siquiera hace
+falta el launcher: se abre AMS2 normal y se corre `python bridge.py` aparte.
+
+## Arranque automático con el juego (Linux / Steam)
+
+`ams2-dash-launch.sh` levanta el bridge cuando arranca AMS2 y lo cierra al salir.
+En *AMS2 → Properties → Launch Options*:
+
+```
+/home/USUARIO/sim/ams2-dash/ams2-dash-launch.sh gamescope -W 2560 -H 1440 -f -- mangohud %command%
+```
+
+Notas para adaptarlo:
+- El script asume el repo en `~/sim/ams2-dash`; si lo clonas en otro lado, edita
+  `DASH_DIR` adentro.
+- El setup del autor además **encadena un overlay de pedales** antes de gamescope;
+  si no lo tienes, omite esa parte.
+- Mata cualquier bridge zombi antes de arrancar (los puertos WS/HTTP no usan
+  `reuse_port`).
 
 ## Notas
 - Convive con la app SimDashboard: ambos pueden escuchar el broadcast a la vez
-  (el bridge usa `reuse_port`).
-- Offsets basados en la spec UDP de Project CARS 2 (la que usa AMS2).
-  Validados con paquetes sintéticos; si algún campo se ve raro en pista,
-  es ajuste fino de offset — ideal para iterar con Claude Code.
-- `connected` pasa a "SIN SEÑAL" si no llegan paquetes por 3 s
-  (recordatorio: la telemetría solo se emite en pista, no en menús).
+  (el bridge usa `reuse_port` en :5606).
+- Offsets basados en la spec UDP de Project CARS 2 (la que usa AMS2), verificados
+  en pista. El protocolo expone telemetría e intervención de asistentes, pero **no**
+  el nivel configurado de TC/ABS.
+- `connected` pasa a "SIN SEÑAL" si no llegan paquetes por 3 s: la telemetría solo
+  se emite en pista, no en menús.
+- Las temperaturas de neumáticos están pendientes de calibrar en caliente.
+```
