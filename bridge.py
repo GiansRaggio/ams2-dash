@@ -50,9 +50,22 @@ state = {
     "current_time": None,     # vuelta actual, segundos
     "last_lap": None,
     "best_lap": None,
+    "water_temp": None,       # grados C
+    "oil_temp": None,         # grados C
+    "pit_limiter": False,     # speed limiter activo (sCarFlags bit 3)
+    "abs_active": False,      # ABS interviniendo (bit 4)
+    "tc_active": False,       # TC interviniendo (bit 6, SIN VERIFICAR)
+    "engine_warning": False,  # aviso de motor (bit 2)
+    "fuel_per_lap": None,     # litros/vuelta (promedio de las ultimas vueltas)
+    "fuel_laps_left": None,   # vueltas estimadas con el combustible actual
 }
 _viewed = -1  # indice del participante que estamos manejando/viendo
 _last_packet = 0.0  # epoch del ultimo paquete recibido
+
+# Economia de combustible: se calcula al cruzar meta (delta de nivel por vuelta)
+_fuel_lap_start = None  # litros al empezar la vuelta actual
+_last_lap_seen = 0      # numero de vuelta visto por ultima vez
+_fuel_per_lap = []      # consumo de las ultimas vueltas (litros)
 
 
 def _f32(d, off):
@@ -61,6 +74,10 @@ def _f32(d, off):
 
 def _u16(d, off):
     return struct.unpack_from("<H", d, off)[0]
+
+
+def _s16(d, off):
+    return struct.unpack_from("<h", d, off)[0]
 
 
 def parse_telemetry(d):
@@ -77,6 +94,17 @@ def parse_telemetry(d):
     state["max_rpm"] = max(_u16(d, 42), 1)
     g = d[45] & 0x0F
     state["gear"] = -1 if g == 15 else g
+
+    flags = d[17]            # sCarFlags
+    state["engine_warning"] = bool(flags & 0x04)
+    state["pit_limiter"] = bool(flags & 0x08)
+    # El bit 0x10 tambien queda encendido acelerando (ruidoso), por eso se
+    # condiciona al pedal: ABS solo cuenta si se esta frenando, TC (0x40) solo
+    # si se esta acelerando. Verificado en pista correlacionando flags y pedales.
+    state["abs_active"] = bool(flags & 0x10) and state["brake"] > 15
+    state["tc_active"] = bool(flags & 0x40) and state["throttle"] > 15
+    state["oil_temp"] = _s16(d, 18)
+    state["water_temp"] = _s16(d, 22)
 
 
 def parse_timings(d):
@@ -96,6 +124,39 @@ def parse_timings(d):
         state["current_lap"] = d[base + 21]
         ct = _f32(d, base + 22)
         state["current_time"] = ct if ct >= 0 else None
+        _update_fuel_economy(state["current_lap"])
+
+
+def _update_fuel_economy(lap):
+    """Estima consumo y autonomia midiendo el nivel de combustible al cruzar meta.
+
+    Se llama con el numero de vuelta actual; cuando incrementa, la diferencia de
+    litros respecto al inicio de la vuelta anterior es lo consumido en esa vuelta.
+    Se promedian las ultimas vueltas para suavizar.
+    """
+    global _fuel_lap_start, _last_lap_seen, _fuel_per_lap
+    fuel = state["fuel_liters"]
+    if lap <= 0:
+        return
+    if lap < _last_lap_seen:          # nueva sesion / reset de vueltas
+        _fuel_per_lap = []
+        _fuel_lap_start = fuel
+        _last_lap_seen = lap
+        state["fuel_per_lap"] = None
+        state["fuel_laps_left"] = None
+        return
+    if lap > _last_lap_seen:          # se completo una vuelta
+        if _fuel_lap_start is not None:
+            used = _fuel_lap_start - fuel
+            if used > 0.05:           # ignora reabastecimiento u out-lap raro
+                _fuel_per_lap.append(used)
+                del _fuel_per_lap[:-5]   # conserva solo las ultimas 5
+        _fuel_lap_start = fuel
+        _last_lap_seen = lap
+    if _fuel_per_lap:
+        avg = sum(_fuel_per_lap) / len(_fuel_per_lap)
+        state["fuel_per_lap"] = round(avg, 2)
+        state["fuel_laps_left"] = int(fuel / avg) if avg > 0 else None
 
 
 def parse_timestats(d):

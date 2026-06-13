@@ -75,6 +75,13 @@
   /* ---- centro: marcha ---- */
   #center{align-items:center;justify-content:space-between;text-align:center;
           display:flex;flex-direction:column;overflow:hidden}
+  #assists{display:flex;gap:1vw;padding-top:.5vh}
+  .assist{font-size:2vh;font-weight:800;letter-spacing:.16em;padding:.4vh 1.3vw;
+          border-radius:5px;border:1px solid var(--line);color:var(--dim);
+          background:#0d1118;transition:color .1s,background .1s,box-shadow .1s}
+  .assist.on{color:#04060a}
+  #aTc.on{background:var(--amber);border-color:var(--amber);box-shadow:0 0 16px var(--amber)}
+  #aAbs.on{background:var(--cyan);border-color:var(--cyan);box-shadow:0 0 16px var(--cyan)}
   #gear{font-size:clamp(60px,31vh,300px);font-weight:800;line-height:.88;flex:1;
         display:flex;align-items:center;color:#fff;
         text-shadow:0 0 28px rgba(39,224,255,.35),0 0 90px rgba(39,224,255,.18)}
@@ -98,17 +105,36 @@
   #best.record{animation:purpleflash .35s ease 3}
 
   /* ================= FUEL ================= */
-  #bottom{flex:none;height:7.5vh;display:flex;gap:1vh;padding:0 1vh 1vh}
+  #bottom{flex:none;height:12.5vh;display:flex;gap:1vh;padding:0 1vh 1vh}
   #fuelbox{flex:1;overflow:hidden;--edge:var(--amber)}
-  #fuelfill{position:absolute;inset:0;transform-origin:left;transform:scaleX(0);
-            background:linear-gradient(90deg,#ff2e4d,#ffb020 35%,#2bf07a 70%);
-            opacity:.28;transition:transform .4s}
-  #fuelbox>*{position:relative}
-  #fuelrow{display:flex;justify-content:space-between;align-items:baseline}
-  #fuelval{font-size:3.6vh;font-weight:800}
-  #fuelpct{font-size:2vh;color:var(--dim)}
+  #fuelmain{display:flex;align-items:center;gap:1.4vw;margin-top:.5vh}
+  #fuelval{font-size:3.8vh;font-weight:800;font-variant-numeric:tabular-nums;white-space:nowrap}
+  #fuelpct{font-size:2.2vh;color:var(--dim);font-variant-numeric:tabular-nums}
+  #fuelbar{flex:1;height:5vh;background:#10151d;border:1px solid var(--line);
+           border-radius:5px;overflow:hidden;position:relative}
+  #fuelfill{position:absolute;left:0;top:0;bottom:0;width:100%;transform-origin:left;
+            transform:scaleX(0);background:var(--green);
+            transition:transform .4s,background .4s}
+  #fuellaps{display:flex;flex-direction:column;align-items:flex-end;line-height:1;
+            white-space:nowrap}
+  #fuellaps b{font-size:3.6vh;font-weight:800;color:var(--amber);font-variant-numeric:tabular-nums}
+  #fuellaps span{font-size:1.5vh;color:var(--dim);letter-spacing:.05em;margin-top:.5vh}
   body.lowfuel #fuelbox{animation:fuelwarn 1s ease infinite}
   @keyframes fuelwarn{50%{border-color:var(--red);box-shadow:inset 0 0 24px rgba(255,46,77,.35)}}
+
+  /* ================= BADGES + PIT LIMITER ================= */
+  #badges{display:flex;gap:.5vw;align-items:center}
+  .badge{font-size:1.5vh;font-weight:800;letter-spacing:.1em;padding:.2vh .7vw;
+         border-radius:3px;display:none}
+  .badge.show{display:inline-block}
+  #bAbs{color:#04060a;background:var(--amber)}
+  #bWarn{color:#fff;background:var(--red);animation:strobe .4s steps(2) infinite}
+  #pitlimit{position:fixed;top:7vh;left:50%;transform:translateX(-50%);z-index:40;
+            display:none;padding:.9vh 3.5vw;font-size:3.2vh;font-weight:800;
+            letter-spacing:.32em;color:#04060a;background:var(--amber);
+            clip-path:var(--chamfer);box-shadow:0 0 34px rgba(255,176,32,.6)}
+  body.limiter #pitlimit{display:block;animation:limitpulse .6s ease infinite}
+  @keyframes limitpulse{50%{opacity:.45}}
 
   #conn{flex:none;width:18vw;display:flex;align-items:center;justify-content:center;
         font-size:1.8vh;letter-spacing:.18em;color:var(--dim);gap:.6vw}
@@ -131,9 +157,14 @@
   <div id="fshint">Toca para pantalla completa
     <small>la pantalla no se apagará</small></div>
 
+  <div id="pitlimit">PIT LIMITER</div>
+
   <div id="ledwrap">
     <div id="leds"></div>
     <div id="rpmrow">
+      <span id="badges">
+        <span class="badge" id="bWarn">⚠ MOTOR</span>
+      </span>
       <span class="label" id="gearhint">&nbsp;</span>
       <span id="rpmnum">0 <small>RPM</small></span>
     </div>
@@ -154,6 +185,10 @@
 
     <div class="box col" id="center">
       <div class="pedal" id="pbrk"></div><div class="pedal" id="pthr"></div>
+      <div id="assists">
+        <span class="assist" id="aTc">TC</span>
+        <span class="assist" id="aAbs">ABS</span>
+      </div>
       <div id="gear" class="neu">N</div>
       <div id="speedbox"><span class="label">Speed km/h</span><div class="val" id="speed">0</div></div>
     </div>
@@ -168,9 +203,13 @@
 
   <div id="bottom">
     <div class="box" id="fuelbox">
-      <div id="fuelfill"></div>
       <span class="label">Fuel</span>
-      <div id="fuelrow"><span class="val" id="fuelval">-- L</span><span id="fuelpct"></span></div>
+      <div id="fuelmain">
+        <span class="val" id="fuelval">-- L</span>
+        <span id="fuelpct"></span>
+        <div id="fuelbar"><div id="fuelfill"></div></div>
+        <div id="fuellaps"><b>~-- v</b><span>-- L/v</span></div>
+      </div>
     </div>
     <div class="box" id="conn">SIN SEÑAL</div>
   </div>
@@ -188,8 +227,9 @@ const els = {
   cur:$("cur").querySelector(".lap"), last:$("last").querySelector(".lap"),
   best:$("best").querySelector(".lap"), bestBox:$("best"),
   timeleft:$("timeleft").querySelector(".lap"),
-  fuelfill:$("fuelfill"), fuelval:$("fuelval"), fuelpct:$("fuelpct"),
+  fuelfill:$("fuelfill"), fuelval:$("fuelval"), fuelpct:$("fuelpct"), fuellaps:$("fuellaps"),
   conn:$("conn"), pthr:$("pthr"), pbrk:$("pbrk"),
+  bWarn:$("bWarn"), aTc:$("aTc"), aAbs:$("aAbs"),
 };
 
 /* tira de 20 LEDs: 12 verdes, 5 ámbar, 3 rojos (como un volante real) */
@@ -219,6 +259,9 @@ const fmtClock = t => {
 /* estado objetivo (del WS) + estado mostrado (interpolado) */
 let target=null, prevBest=null;
 let disp={rpm:0, speed:0};
+/* latch de TC/ABS: los flags parpadean ~10Hz al intervenir; se mantienen
+   encendidos un ratito tras la ultima activacion para que sean legibles */
+let tcUntil=0, absUntil=0;
 
 function applyStatic(d){
   els.gear.textContent = d.gear===-1 ? "R" : (d.gear===0 ? "N" : d.gear);
@@ -252,9 +295,21 @@ function applyStatic(d){
 
   const f = d.fuel_capacity ? d.fuel_liters/d.fuel_capacity : 0;
   els.fuelfill.style.transform = `scaleX(${f})`;
+  els.fuelfill.style.background = f>0.35 ? "var(--green)" : f>0.15 ? "var(--amber)" : "var(--red)";
   els.fuelval.textContent = d.fuel_capacity ? `${d.fuel_liters.toFixed(1)} L` : "-- L";
   els.fuelpct.textContent = d.fuel_capacity ? `${Math.round(f*100)}%` : "";
+  els.fuellaps.querySelector("b").textContent = d.fuel_laps_left!=null ? `~${d.fuel_laps_left} v` : "~-- v";
+  els.fuellaps.querySelector("span").textContent = d.fuel_per_lap!=null ? `${d.fuel_per_lap.toFixed(2)} L/v` : "-- L/v";
   document.body.classList.toggle("lowfuel", d.fuel_capacity>0 && f<0.1);
+
+  /* flags de coche (con latch de 250ms para TC/ABS) */
+  const now = performance.now();
+  if(d.tc_active)  tcUntil  = now + 250;
+  if(d.abs_active) absUntil = now + 250;
+  els.aTc.classList.toggle("on", now < tcUntil);
+  els.aAbs.classList.toggle("on", now < absUntil);
+  els.bWarn.classList.toggle("show", !!d.engine_warning);
+  document.body.classList.toggle("limiter", !!d.pit_limiter);
 
   document.body.classList.toggle("shift", d.gear>0 && frac>0.95);
 
