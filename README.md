@@ -1,7 +1,13 @@
 # AMS2 Dash Web
 
-Dashboard para el celular alimentado por la telemetría UDP nativa de
+Dashboard para el celular alimentado por la telemetría nativa de
 Automobilista 2.
+
+> **Fork con extensiones** del proyecto original de **Luciano Grandi**
+> ([lucianograndim/ams2-dash](https://github.com/lucianograndim/ams2-dash)).
+> Este fork añade: variante **Shared Memory** para Windows (sin stutter, `bridge_shm.py`),
+> **leaderboard** de tiempos, y un **analizador de dampers** (histograma de velocidad de
+> amortiguador + recomendaciones de clicks 4-way) con **guardrail de recorrido/resortes**.
 
 ## Archivos
 - `bridge.py` — escucha el broadcast de AMS2 (UDP :5606, protocolo Project CARS 2),
@@ -54,6 +60,20 @@ pantalla de inicio" para modo fullscreen.
 
 `bridge.py` e `index.html` son **100% portables**. En **Windows** ni siquiera hace
 falta el launcher: se abre AMS2 normal y se corre `python bridge.py` aparte.
+
+### Windows sin stutter: variante Shared Memory (`bridge_shm.py`)
+
+Activar el **UDP** en AMS2 puede causar **stuttering** en el juego (serializa y emite
+un paquete por frame). Para evitarlo en Windows está `bridge_shm.py`, que lee la
+**Shared Memory** de AMS2 (`$pcars2$`, formato Project CARS 2) en vez del UDP — el
+juego ya la escribe siempre, nosotros solo la leemos: **costo ~cero, sin stutter**.
+Salida idéntica (mismo WebSocket, mismo `index.html`).
+
+- En AMS2: *Options → System → `Shared Memory = On`, `Type = Project CARS 2`*
+  (no hace falta el UDP).
+- Lanzar: doble clic a `start-dash.bat`, o `.venv\Scripts\python.exe bridge_shm.py`.
+- Módulo `ams2_shm.py`: mapea la estructura `SharedMemory` v14 con `ctypes`
+  (solo lectura, snapshots protegidos por `mSequenceNumber`). Solo Windows.
 
 ## Arranque automático con el juego (Linux / Steam)
 

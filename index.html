@@ -150,6 +150,74 @@
           transition:opacity .3s;cursor:pointer}
   #fshint small{letter-spacing:.12em;font-weight:600;font-size:.62em;color:var(--dim)}
   #fshint.hide{opacity:0;pointer-events:none}
+
+  /* ================= PÁGINAS (Dash / Tiempos) ================= */
+  .page{flex:1;min-height:0;display:flex;flex-direction:column}
+  .page.hidden{display:none}
+  /* ---- botones de control (dash / tiempos / fullscreen) ---- */
+  .btn{pointer-events:auto;cursor:pointer;display:inline-flex;align-items:center;gap:.5vw;
+       font-family:var(--mono);font-size:1.9vh;font-weight:700;letter-spacing:.1em;
+       color:var(--txt);background:rgba(13,17,24,.85);border:1px solid var(--line);
+       border-radius:6px;padding:.6vh 1.5vw;-webkit-user-select:none;user-select:none}
+  .btn:active{background:var(--panel2);border-color:var(--cyan);color:var(--cyan)}
+  #ctrlbar{flex:none;display:flex;justify-content:flex-end;gap:1vw;padding:.5vh 1.4vw 0}
+  #tbar{flex:none;display:flex;align-items:center;justify-content:space-between;
+        gap:1vw;padding:.2vh 0 1.2vh}
+  #tbar .ttitle{font-size:2.1vh;letter-spacing:.22em;color:var(--dim);font-weight:700}
+
+  /* ---- tabla de tiempos (tabla real: auto-ajusta columnas, no recorta) ---- */
+  #timingview{padding:1.2vh 1.6vw;overflow:hidden}
+  #tboard{width:100%}
+  #ttable{width:100%;border-collapse:separate;border-spacing:0 .6vh;table-layout:auto}
+  #ttable th{color:var(--dim);font-size:1.6vh;letter-spacing:.14em;font-weight:600;
+             padding:0 1.4vw .5vh;text-align:left;white-space:nowrap}
+  #ttable th.tp{text-align:center}
+  #ttable th.tl,#ttable th.tb{text-align:right}
+  #ttable td{background:linear-gradient(180deg,var(--panel2),var(--panel));
+             border-top:1px solid var(--line);border-bottom:1px solid var(--line);
+             padding:.6vh 1.4vw;font-variant-numeric:tabular-nums;
+             font-size:clamp(15px,3vh,30px);white-space:nowrap}
+  #ttable td.tp{border-left:1px solid var(--line);border-radius:5px 0 0 5px;
+                text-align:center;font-weight:800;color:var(--cyan);width:1%}
+  #ttable td.tn{width:100%;max-width:0;overflow:hidden;text-overflow:ellipsis;font-weight:700}
+  #ttable td.tl{text-align:right;width:1%}
+  #ttable td.tb{text-align:right;font-weight:800;color:var(--blue);width:1%;
+                border-right:1px solid var(--line);border-radius:0 5px 5px 0}
+  #ttable tr.me td{border-color:var(--cyan);box-shadow:inset 0 0 16px rgba(39,224,255,.16)}
+  #ttable tr.me td.tn{color:var(--cyan)}
+  #tempty{display:flex;align-items:center;justify-content:center;text-align:center;
+          color:var(--dim);letter-spacing:.08em;font-size:2.2vh;padding:4vh 3vh}
+
+  /* ---- página DAMPERS (histograma de velocidad de amortiguador) ---- */
+  #damperview{padding:1vh 1.4vw;gap:1vh}
+  #dbar{flex:none;display:flex;align-items:center;justify-content:space-between;gap:1vw}
+  #dbar .dtitle{font-size:1.9vh;letter-spacing:.16em;color:var(--dim);font-weight:700;white-space:nowrap}
+  #dbar .dtitle b{color:var(--txt)}
+  #dbar #dinfo{color:var(--cyan);font-variant-numeric:tabular-nums}
+  #dbar .dbtns{display:flex;gap:.8vw}
+  #dgrid{flex:1;min-height:0;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:1vh}
+  .dcorner{min-height:0;display:flex;flex-direction:column;padding:.6vh 1vw;
+           background:linear-gradient(180deg,var(--panel2),var(--panel));
+           border:1px solid var(--line);clip-path:var(--chamfer)}
+  .dchead{flex:none;display:flex;justify-content:space-between;align-items:baseline;gap:1vw}
+  .dcname{font-weight:800;font-size:2.1vh;letter-spacing:.1em}
+  .dcmeta{font-size:1.4vh;color:var(--dim);font-variant-numeric:tabular-nums;
+          overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .dbars{flex:1;min-height:0;display:flex;align-items:flex-end;gap:1px;position:relative;
+         margin-top:.6vh;border-bottom:1px solid var(--line)}
+  .dbars::before{content:"";position:absolute;left:43.75%;right:43.75%;top:0;bottom:0;
+                 background:rgba(255,255,255,.05)}
+  .dbars::after{content:"";position:absolute;left:50%;top:0;bottom:0;border-left:1px solid #ffffff30}
+  .dbars i{flex:1;min-height:1px;border-radius:1px 1px 0 0;position:relative;z-index:1}
+  .dbars i.reb{background:var(--cyan)}
+  .dbars i.bump{background:var(--amber)}
+  .dbars i.hi{opacity:.4}
+  #drecs{flex:none;display:flex;flex-direction:column;gap:.5vh;max-height:36vh;overflow-y:auto}
+  .drec{font-size:1.55vh;line-height:1.3;color:var(--txt);background:#0d1118;
+        border-left:3px solid var(--amber);padding:.5vh 1vw;border-radius:0 4px 4px 0}
+  .drec.spring{border-left-color:var(--cyan)}
+  .drecdiv{font-size:1.35vh;letter-spacing:.2em;color:var(--dim);font-weight:700;
+           padding:.5vh 0 .1vh;border-top:1px solid var(--line)}
 </style>
 </head>
 <body>
@@ -159,6 +227,7 @@
 
   <div id="pitlimit">PIT LIMITER</div>
 
+  <div id="dashview" class="page">
   <div id="ledwrap">
     <div id="leds"></div>
     <div id="rpmrow">
@@ -168,6 +237,12 @@
       <span class="label" id="gearhint">&nbsp;</span>
       <span id="rpmnum">0 <small>RPM</small></span>
     </div>
+  </div>
+
+  <div id="ctrlbar">
+    <button class="btn" id="btnfs" title="Pantalla completa">⛶</button>
+    <button class="btn" id="btntimes">TIEMPOS ▸</button>
+    <button class="btn" id="btndamp">DAMPERS ▸</button>
   </div>
 
   <div id="grid">
@@ -212,6 +287,35 @@
       </div>
     </div>
     <div class="box" id="conn">SIN SEÑAL</div>
+  </div>
+  </div><!-- /dashview -->
+
+  <div id="timingview" class="page hidden">
+    <div id="tbar">
+      <button class="btn" id="btnback">◂ DASH</button>
+      <span class="ttitle">TIEMPOS</span>
+      <button class="btn" id="btnfs2" title="Pantalla completa">⛶</button>
+    </div>
+    <div id="tboard"></div>
+    <div id="tempty">Sin sesión activa — entra a una sesión para ver los tiempos</div>
+  </div>
+
+  <div id="damperview" class="page hidden">
+    <div id="dbar">
+      <button class="btn" id="btnbackd">◂ DASH</button>
+      <span class="dtitle"><b>DAMPERS</b> <span id="dinfo">—</span></span>
+      <span class="dbtns">
+        <button class="btn" id="btnreset" title="Reiniciar acumulado">↺</button>
+        <button class="btn" id="btnfs3" title="Pantalla completa">⛶</button>
+      </span>
+    </div>
+    <div id="dgrid">
+      <div class="dcorner" id="dFL"><div class="dchead"><span class="dcname">FL</span><span class="dcmeta">sin datos</span></div><div class="dbars"></div></div>
+      <div class="dcorner" id="dFR"><div class="dchead"><span class="dcname">FR</span><span class="dcmeta">sin datos</span></div><div class="dbars"></div></div>
+      <div class="dcorner" id="dRL"><div class="dchead"><span class="dcname">RL</span><span class="dcmeta">sin datos</span></div><div class="dbars"></div></div>
+      <div class="dcorner" id="dRR"><div class="dchead"><span class="dcname">RR</span><span class="dcmeta">sin datos</span></div><div class="dbars"></div></div>
+    </div>
+    <div id="drecs"></div>
   </div>
 
 <script>
@@ -337,9 +441,84 @@ function frame(){
 }
 requestAnimationFrame(frame);
 
+/* ---- Páginas: Dash <-> Tiempos (botones de control) ---- */
+let page = 0;            // 0 = dash, 1 = tiempos, 2 = dampers
+let lastLbSig = "", lastDampers = null, sock = null;
+const dashview=$("dashview"), timingview=$("timingview"), damperview=$("damperview");
+const tboard=$("tboard"), tempty=$("tempty");
+const pages = [dashview, timingview, damperview];
+const esc = s => String(s).replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+
+function showPage(n){
+  page = n;
+  pages.forEach((p,i) => p.classList.toggle("hidden", i!==n));
+  lastLbSig = "";                                  // forzar re-render al entrar
+  if(n===1 && target) renderTiming(target.leaderboard||[]);
+  if(n===2 && lastDampers) renderDampers(lastDampers);
+  lock();
+}
+
+function renderTiming(lb){
+  if(page!==1) return;                             // solo si la página está visible
+  const sig = JSON.stringify(lb);
+  if(sig===lastLbSig) return;                      // sin cambios -> no redibujar
+  lastLbSig = sig;
+  if(!lb.length){ tboard.innerHTML=""; tempty.style.display="flex"; return; }
+  tempty.style.display="none";
+  let rows = "";
+  for(const e of lb){
+    rows += `<tr class="${e.me?"me":""}">`
+          + `<td class="tp">${e.pos}</td>`
+          + `<td class="tn">${esc(e.name)}</td>`
+          + `<td class="tl">${fmtLap(e.last)}</td>`
+          + `<td class="tb">${fmtLap(e.best)}</td></tr>`;
+  }
+  tboard.innerHTML =
+    '<table id="ttable"><thead><tr><th class="tp">POS</th><th class="tn">PILOTO</th>'
+    + '<th class="tl">ÚLTIMA</th><th class="tb">MEJOR</th></tr></thead><tbody>'
+    + rows + '</tbody></table>';
+}
+
+const DCORNER_IDS = ["dFL","dFR","dRL","dRR"];
+function renderDampers(dp){
+  if(page!==2) return;
+  const lapsTxt = dp.showingCurrent
+    ? "vuelta en curso"
+    : `${dp.validLaps} vuelta${dp.validLaps===1?"":"s"} válida${dp.validLaps===1?"":"s"}`;
+  $("dinfo").textContent = `${lapsTxt} · ${dp.rateHz?("~"+dp.rateHz+"Hz"):"—"}`;
+  const centers = dp.centers, lh = dp.lowHigh;
+  dp.corners.forEach((c, ci) => {
+    const cell = $(DCORNER_IDS[ci]);
+    const meta = cell.querySelector(".dcmeta");
+    const bars = cell.querySelector(".dbars");
+    if(!c.samples){ meta.textContent = "sin datos"; bars.innerHTML = ""; return; }
+    meta.textContent = `low ${c.pctLow}% · alta ${c.pctHigh}% · b/r ${c.pctBump}/${c.pctRebound} · med ${c.medAbs}mm/s`;
+    const mx = Math.max.apply(null, c.hist) || 1;
+    let h = "";
+    for(let i=0;i<c.hist.length;i++){
+      const cc = centers[i];
+      const side = cc < 0 ? "reb" : "bump";
+      const spd = Math.abs(cc) <= lh ? "lo" : "hi";
+      h += `<i class="${side} ${spd}" style="height:${(c.hist[i]/mx*100).toFixed(1)}%"></i>`;
+    }
+    bars.innerHTML = h;
+  });
+  let recsHtml = dp.recommendations.map(r => `<div class="drec">${esc(r)}</div>`).join("");
+  if(dp.springRecs && dp.springRecs.length){
+    recsHtml += `<div class="drecdiv">RESORTES · TRAVEL</div>`
+             + dp.springRecs.map(r => `<div class="drec spring">${esc(r)}</div>`).join("");
+  }
+  $("drecs").innerHTML = recsHtml;
+}
+
 function connect(){
   const ws = new WebSocket(`ws://${location.hostname}:8765`);
-  ws.onmessage = e => { target = JSON.parse(e.data); applyStatic(target); };
+  sock = ws;
+  ws.onmessage = e => {
+    const m = JSON.parse(e.data);
+    if(m.dampers){ lastDampers = m.dampers; renderDampers(m.dampers); return; }
+    target = m; applyStatic(m); renderTiming(m.leaderboard||[]);
+  };
   ws.onclose = () => { els.conn.textContent="RECONECTANDO…"; els.conn.className="";
                        setTimeout(connect, 1500); };
 }
@@ -363,7 +542,15 @@ function goFullscreen(){
   lock();
   hint.classList.add("hide");
 }
-document.body.addEventListener("click", goFullscreen);
+hint.addEventListener("click", goFullscreen);
+$("btnfs").addEventListener("click", goFullscreen);
+$("btnfs2").addEventListener("click", goFullscreen);
+$("btntimes").addEventListener("click", () => showPage(1));
+$("btnback").addEventListener("click", () => showPage(0));
+$("btndamp").addEventListener("click", () => showPage(2));
+$("btnbackd").addEventListener("click", () => showPage(0));
+$("btnfs3").addEventListener("click", goFullscreen);
+$("btnreset").addEventListener("click", () => { try{ sock && sock.send(JSON.stringify({cmd:"reset_dampers"})); }catch(e){} });
 /* si el SO devuelve el foco al dash (p.ej. tras un screen-off), reasegura el lock */
 document.addEventListener("fullscreenchange",
   () => (document.fullscreenElement) && lock());

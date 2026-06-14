@@ -239,9 +239,12 @@ def serve_http():
 
 async def main():
     loop = asyncio.get_running_loop()
-    # Bind al broadcast de AMS2 (reuse_port para convivir con otros listeners)
+    # Bind al broadcast de AMS2 (reuse_port para convivir con otros listeners).
+    # Windows no define SO_REUSEPORT: ahi se omite (si no, create_datagram_endpoint
+    # lanza "reuse_port not supported by socket module" y el bridge no arranca).
+    reuse = {"reuse_port": True} if hasattr(socket, "SO_REUSEPORT") else {}
     await loop.create_datagram_endpoint(
-        AMS2Protocol, local_addr=("0.0.0.0", UDP_PORT), reuse_port=True
+        AMS2Protocol, local_addr=("0.0.0.0", UDP_PORT), **reuse
     )
     threading.Thread(target=serve_http, daemon=True).start()
     ip = lan_ip()
