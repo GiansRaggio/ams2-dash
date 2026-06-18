@@ -120,10 +120,30 @@ def _update_fuel_economy(lap):
         state["fuel_laps_left"] = int(fuel / avg) if avg > 0 else None
 
 
+def _frame_ok(d):
+    """Valida que el frame no sea basura antes de volcarlo (rubrica F1/F2).
+
+    AMS2 comparte el nombre del archivo mapeado con Project CARS 2 y a veces la
+    memoria queda corrupta: mVersion=0, nombre de auto vacio, arrays stale. Es la
+    causa #1 documentada de 'el dashboard miente'. Tambien rechazamos valores
+    fuera de rango fisico. Si el frame no pasa, se conserva el ultimo bueno.
+    """
+    if d.mVersion != ams2_shm.SHARED_MEMORY_VERSION:
+        return False
+    if not d.mCarName.split(b"\x00")[0]:        # nombre de auto propio vacio
+        return False
+    if not (0.0 <= d.mFuelLevel <= 1.05):        # fraccion de combustible fuera de rango
+        return False
+    return True
+
+
 def update_state(d):
     """Vuelca un snapshot de shared memory (d) al dict global `state`."""
     global _last_seq, _last_seq_change
     now = time.monotonic()
+    if not _frame_ok(d):                         # frame corrupto -> conservar ultimo bueno
+        state["connected"] = False
+        return
     seq = d.mSequenceNumber
     if seq != _last_seq:
         _last_seq = seq
