@@ -27,6 +27,7 @@ import websockets
 
 import ams2_shm
 import ams2_dampers
+import ams2_strategy
 
 WS_PORT = 8765
 HTTP_PORT = 8080
@@ -71,7 +72,12 @@ state = {
     "fuel_per_lap": None,
     "fuel_laps_left": None,
     "leaderboard": [],   # [{pos, name, best, last, lap, me}] top-N por posicion
+    "strategy": {"calibrating": True, "live": False, "mode": "none"},   # director de estrategia
 }
+
+# Director de estrategia (combustible/neumaticos/paradas). Se alimenta del mismo
+# snapshot que update_state y mantiene su estado por vuelta.
+strategy = ams2_strategy.StrategyEngine()
 
 # Economia de combustible (identica a bridge.py: delta de nivel al cruzar meta)
 _fuel_lap_start = None
@@ -187,21 +193,46 @@ def update_state(d):
     lb.sort(key=lambda e: e["pos"])
     state["leaderboard"] = lb[:LEADERBOARD_MAX]
 
+    # Director de estrategia: se alimenta del snapshot crudo (tiene su propio
+    # estado por vuelta para fuel/gomas/paradas) y publica su payload.
+    try:
+        strategy.update(d)
+        state["strategy"] = strategy.payload()
+    except Exception:
+        pass   # nunca tumbar el broadcast por un error del analizador de estrategia
+
 
 # ---------------- WebSocket + HTTP ----------------
 CLIENTS = set()
 analyzer = None   # DamperAnalyzer (se crea en main); su hilo muestrea aparte
+_shutdown = False  # lo activa el comando "stop_server" del dash -> pump termina y el proceso sale
 
 
 async def ws_handler(ws):
+    global _shutdown
     CLIENTS.add(ws)
     try:
-        async for raw in ws:                     # comandos del cliente (ej. reset)
+        async for raw in ws:                     # comandos del cliente
             try:
-                if json.loads(raw).get("cmd") == "reset_dampers" and analyzer:
-                    analyzer.reset()
+                msg = json.loads(raw)
             except (ValueError, TypeError):
-                pass
+                continue
+            cmd = msg.get("cmd")
+            if cmd == "reset_dampers" and analyzer:
+                analyzer.reset()
+            elif cmd == "stop_server":
+                print("[bridge-shm] detenido por el usuario (boton del dash)")
+                _shutdown = True
+            elif cmd == "set_race":               # formato de carrera manual (plan en practica)
+                try:
+                    strategy.set_race_plan(msg.get("mode"), float(msg.get("value")),
+                                           int(msg.get("additional", 0) or 0))
+                except (TypeError, ValueError):
+                    pass
+            elif cmd == "clear_race":
+                strategy.clear_race_plan()
+            elif cmd == "set_alllaps":            # contar vueltas anomalas/invalidas
+                strategy.set_use_all_laps(bool(msg.get("on", True)))
     finally:
         CLIENTS.discard(ws)
 
@@ -230,7 +261,7 @@ async def pump():
     reader = None
     next_retry = 0.0
     next_damper = 0.0
-    while True:
+    while not _shutdown:
         await asyncio.sleep(period)
         now = time.monotonic()
         # Histograma de dampers (del analizador, hilo aparte): siempre a ~2 Hz,
