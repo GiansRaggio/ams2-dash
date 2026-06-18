@@ -28,6 +28,7 @@ import websockets
 import ams2_shm
 import ams2_dampers
 import ams2_strategy
+import ams2_telemetry
 
 WS_PORT = 8765
 HTTP_PORT = 8080
@@ -78,6 +79,9 @@ state = {
 # Director de estrategia (combustible/neumaticos/paradas). Se alimenta del mismo
 # snapshot que update_state y mantiene su estado por vuelta.
 strategy = ams2_strategy.StrategyEngine()
+
+# Logger de telemetria por vuelta (corre su propio hilo+reader; se crea en main()).
+telemetry = None
 
 # Economia de combustible (identica a bridge.py: delta de nivel al cruzar meta)
 _fuel_lap_start = None
@@ -200,6 +204,11 @@ def update_state(d):
         state["strategy"] = strategy.payload()
     except Exception:
         pass   # nunca tumbar el broadcast por un error del analizador de estrategia
+    if telemetry is not None:
+        try:
+            state["telemetry"] = telemetry.status()
+        except Exception:
+            pass
 
 
 # ---------------- WebSocket + HTTP ----------------
@@ -233,6 +242,9 @@ async def ws_handler(ws):
                 strategy.clear_race_plan()
             elif cmd == "set_alllaps":            # contar vueltas anomalas/invalidas
                 strategy.set_use_all_laps(bool(msg.get("on", True)))
+            elif cmd == "set_telemetry":          # grabar telemetria por vuelta a disco
+                if telemetry is not None:
+                    telemetry.set_enabled(bool(msg.get("on", True)))
     finally:
         CLIENTS.discard(ws)
 
@@ -328,8 +340,9 @@ def serve_http():
 
 
 async def main():
-    global analyzer
+    global analyzer, telemetry
     analyzer = ams2_dampers.DamperAnalyzer().start()
+    telemetry = ams2_telemetry.TelemetryLogger().start()
     threading.Thread(target=serve_http, daemon=True).start()
     ip = lan_ip()
     print(f"[bridge-shm] Fuente: AMS2 Shared Memory ($pcars2$, Project CARS 2)")

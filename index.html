@@ -255,6 +255,8 @@
   #sbar .stitle{font-size:1.9vh;letter-spacing:.16em;color:var(--dim);font-weight:700;white-space:nowrap}
   #sbar .stitle b{color:var(--txt)}
   #sbar #sinfo{color:var(--cyan);font-variant-numeric:tabular-nums}
+  #srec{font-size:1.5vh;letter-spacing:.06em;color:var(--dim);font-variant-numeric:tabular-nums}
+  #srec.on{color:var(--red)}
   #sbar .sbtns{display:flex;gap:.8vw}
   #scalib{flex:1;display:flex;align-items:center;justify-content:center;text-align:center;
           color:var(--dim);letter-spacing:.06em;font-size:2.2vh;padding:3vh}
@@ -365,6 +367,7 @@
       </div>
       <label class="rcfgchk"><input type="checkbox" id="rcfgadd"> +1 vuelta tras el reloj</label>
       <label class="rcfgchk"><input type="checkbox" id="rcfgalllaps" checked> Contar todas las vueltas (incl. inválidas)</label>
+      <label class="rcfgchk"><input type="checkbox" id="rcfgtelem" checked> Grabar telemetría a disco (vueltas válidas)</label>
       <div class="modalbtns">
         <button class="btn" id="rcfgclear">Quitar</button>
         <button class="btn go" id="rcfgsave">Guardar</button>
@@ -468,7 +471,7 @@
   <div id="strategyview" class="page hidden">
     <div id="sbar">
       <button class="btn" id="btnbacks">◂ DASH</button>
-      <span class="stitle"><b>ESTRATEGIA</b> <span id="sinfo">—</span></span>
+      <span class="stitle"><b>ESTRATEGIA</b> <span id="sinfo">—</span> <span id="srec"></span></span>
       <span class="sbtns">
         <button class="btn" id="btnracecfg" title="Configurar carrera">⚙</button>
         <button class="btn" id="btntts" title="Voz del ingeniero">🔊</button>
@@ -868,12 +871,14 @@ function connect(){
   ws.onopen = () => {                              // re-aplica ajustes guardados
     const p = loadPlan(); if(p) sendPlan(p);
     sendAllLaps(loadAllLaps());
+    sendTelem(loadTelem());
   };
   ws.onmessage = e => {
     const m = JSON.parse(e.data);
     if(m.dampers){ lastDampers = m.dampers; renderDampers(m.dampers); return; }
     target = m; applyStatic(m); renderTiming(m.leaderboard||[]);
     if(m.strategy) renderStrategy(m.strategy);
+    if(m.telemetry) updateRec(m.telemetry);
   };
   ws.onclose = () => {
     if(stopping){ $("stopped").classList.remove("hidden"); return; }
@@ -924,6 +929,15 @@ const loadPlan = () => { try{ return JSON.parse(localStorage.getItem("ams2_racep
 const sendPlan = p => { try{ if(sock && sock.readyState===1) sock.send(JSON.stringify({cmd:"set_race",mode:p.mode,value:p.value,additional:p.additional})); }catch(e){} };
 const loadAllLaps = () => { try{ const v = localStorage.getItem("ams2_alllaps"); return v===null ? true : v==="1"; }catch(e){ return true; } };
 const sendAllLaps = on => { try{ if(sock && sock.readyState===1) sock.send(JSON.stringify({cmd:"set_alllaps",on:!!on})); }catch(e){} };
+const loadTelem = () => { try{ const v = localStorage.getItem("ams2_telem"); return v===null ? true : v==="1"; }catch(e){ return true; } };
+const sendTelem = on => { try{ if(sock && sock.readyState===1) sock.send(JSON.stringify({cmd:"set_telemetry",on:!!on})); }catch(e){} };
+function updateRec(t){
+  const el = $("srec"); if(!el) return;
+  if(t && t.enabled){
+    el.className = t.recording ? "on" : "";
+    el.textContent = (t.recording ? "● REC" : "○ REC") + (t.laps_logged ? " · " + t.laps_logged + "v" : "");
+  } else { el.className = ""; el.textContent = ""; }
+}
 function setRcfgMode(m){
   rcfgMode = m;
   $("rcfgtimed").classList.toggle("on", m==="timed");
@@ -935,12 +949,18 @@ $("btnracecfg").addEventListener("click", () => {
   if(saved){ $("rcfgval").value = saved.value; $("rcfgadd").checked = !!saved.additional; setRcfgMode(saved.mode); }
   else setRcfgMode(rcfgMode);
   $("rcfgalllaps").checked = loadAllLaps();
+  $("rcfgtelem").checked = loadTelem();
   $("racecfg").classList.remove("hidden");
 });
 $("rcfgalllaps").addEventListener("change", () => {
   const on = $("rcfgalllaps").checked;
   try{ localStorage.setItem("ams2_alllaps", on ? "1" : "0"); }catch(e){}
   sendAllLaps(on);                                 // aplica al instante (no espera Guardar)
+});
+$("rcfgtelem").addEventListener("change", () => {
+  const on = $("rcfgtelem").checked;
+  try{ localStorage.setItem("ams2_telem", on ? "1" : "0"); }catch(e){}
+  sendTelem(on);
 });
 $("rcfgtimed").addEventListener("click", () => setRcfgMode("timed"));
 $("rcfglaps").addEventListener("click", () => setRcfgMode("laps"));
