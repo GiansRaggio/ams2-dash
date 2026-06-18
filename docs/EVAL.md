@@ -93,6 +93,14 @@ toggle todas-las-vueltas, TTS edge-trigger, **fix de falsa alarma de combustible
 (basada en estanque real, no proyección al final). Logger de telemetría + analizador +
 eval harness. Suite: 39 asserts estrategia + 13 telemetría.
 
+### it.2 — análisis post-stint (interpretación I1/I2 + consejos C1)
+`analyze_telemetry.py` gana modo de manejo: detección de curvas (apex por mínimos
+prominentes de velocidad), **delta por distancia vs tu mejor vuelta** (`--vs A [B]`)
+con "dónde perdés/ganás" mapeado a curva, **vmin de apex** A-vs-ref, **coasting** por
+tramo (gas y freno sueltos), y **consistencia por sector** (sector más disperso) en el
+resumen. Probado: identifica correctamente la curva donde se pierde el tiempo y el déficit
+de vmin. Suite: +8 asserts (`test_analysis.py`). *Próximo eval: correr y comparar vueltas.*
+
 ### it.1 — "no mentir": guard de frame (F1, F2)
 Validación de frame en la capa de lectura (`mVersion`, carname propio no vacío,
 `mFuelLevel` en rango) → si el frame es basura (corrupción de MMF compartida con
