@@ -248,6 +248,9 @@
   #rcfgunit{font-size:clamp(14px,2.4vh,20px);color:var(--dim);letter-spacing:.1em}
   .rcfgchk{display:flex;align-items:center;gap:1.5vw;font-size:clamp(12px,2vh,18px);color:var(--dim)}
   .rcfgchk input{width:2.6vh;height:2.6vh;accent-color:var(--cyan)}
+  .rcfgtelrow{display:flex;flex-direction:column;gap:.6vh;align-items:center}
+  .rcfgtellbl{font-size:clamp(11px,1.8vh,16px);color:var(--dim);letter-spacing:.06em}
+  .rcfgteltabs .rcfgtab{font-size:clamp(11px,1.9vh,16px);padding:.7vh 3vw}
 
   /* ================= PÁGINA ESTRATEGIA ================= */
   #strategyview{padding:1vh 1.4vw;gap:1vh}
@@ -367,7 +370,14 @@
       </div>
       <label class="rcfgchk"><input type="checkbox" id="rcfgadd"> +1 vuelta tras el reloj</label>
       <label class="rcfgchk"><input type="checkbox" id="rcfgalllaps" checked> Contar todas las vueltas (incl. inválidas)</label>
-      <label class="rcfgchk"><input type="checkbox" id="rcfgtelem" checked> Grabar telemetría a disco (vueltas válidas)</label>
+      <div class="rcfgtelrow">
+        <span class="rcfgtellbl">Telemetría a disco</span>
+        <div class="rcfgtabs rcfgteltabs">
+          <button class="btn rcfgtab" id="rctel_off">Off</button>
+          <button class="btn rcfgtab" id="rctel_summary">Resumen</button>
+          <button class="btn rcfgtab on" id="rctel_full">Completa</button>
+        </div>
+      </div>
       <div class="modalbtns">
         <button class="btn" id="rcfgclear">Quitar</button>
         <button class="btn go" id="rcfgsave">Guardar</button>
@@ -871,7 +881,7 @@ function connect(){
   ws.onopen = () => {                              // re-aplica ajustes guardados
     const p = loadPlan(); if(p) sendPlan(p);
     sendAllLaps(loadAllLaps());
-    sendTelem(loadTelem());
+    sendTelemMode(loadTelemMode());
   };
   ws.onmessage = e => {
     const m = JSON.parse(e.data);
@@ -929,13 +939,16 @@ const loadPlan = () => { try{ return JSON.parse(localStorage.getItem("ams2_racep
 const sendPlan = p => { try{ if(sock && sock.readyState===1) sock.send(JSON.stringify({cmd:"set_race",mode:p.mode,value:p.value,additional:p.additional})); }catch(e){} };
 const loadAllLaps = () => { try{ const v = localStorage.getItem("ams2_alllaps"); return v===null ? true : v==="1"; }catch(e){ return true; } };
 const sendAllLaps = on => { try{ if(sock && sock.readyState===1) sock.send(JSON.stringify({cmd:"set_alllaps",on:!!on})); }catch(e){} };
-const loadTelem = () => { try{ const v = localStorage.getItem("ams2_telem"); return v===null ? true : v==="1"; }catch(e){ return true; } };
-const sendTelem = on => { try{ if(sock && sock.readyState===1) sock.send(JSON.stringify({cmd:"set_telemetry",on:!!on})); }catch(e){} };
+const TEL_MODES = ["off", "summary", "full"];
+const loadTelemMode = () => { try{ const v = localStorage.getItem("ams2_telemode"); return TEL_MODES.includes(v) ? v : "full"; }catch(e){ return "full"; } };
+const sendTelemMode = m => { try{ if(sock && sock.readyState===1) sock.send(JSON.stringify({cmd:"set_telemetry",mode:m})); }catch(e){} };
+function setTelTab(m){ for(const x of TEL_MODES) $("rctel_"+x).classList.toggle("on", x===m); }
 function updateRec(t){
   const el = $("srec"); if(!el) return;
-  if(t && t.enabled){
+  if(t && t.mode && t.mode!=="off"){
     el.className = t.recording ? "on" : "";
-    el.textContent = (t.recording ? "● REC" : "○ REC") + (t.laps_logged ? " · " + t.laps_logged + "v" : "");
+    el.textContent = (t.recording ? "● REC" : "○ REC") + (t.mode==="summary" ? " resumen" : "")
+                   + (t.laps_logged ? " · " + t.laps_logged + "v" : "");
   } else { el.className = ""; el.textContent = ""; }
 }
 function setRcfgMode(m){
@@ -949,7 +962,7 @@ $("btnracecfg").addEventListener("click", () => {
   if(saved){ $("rcfgval").value = saved.value; $("rcfgadd").checked = !!saved.additional; setRcfgMode(saved.mode); }
   else setRcfgMode(rcfgMode);
   $("rcfgalllaps").checked = loadAllLaps();
-  $("rcfgtelem").checked = loadTelem();
+  setTelTab(loadTelemMode());
   $("racecfg").classList.remove("hidden");
 });
 $("rcfgalllaps").addEventListener("change", () => {
@@ -957,11 +970,12 @@ $("rcfgalllaps").addEventListener("change", () => {
   try{ localStorage.setItem("ams2_alllaps", on ? "1" : "0"); }catch(e){}
   sendAllLaps(on);                                 // aplica al instante (no espera Guardar)
 });
-$("rcfgtelem").addEventListener("change", () => {
-  const on = $("rcfgtelem").checked;
-  try{ localStorage.setItem("ams2_telem", on ? "1" : "0"); }catch(e){}
-  sendTelem(on);
-});
+for(const m of TEL_MODES){
+  $("rctel_"+m).addEventListener("click", () => {
+    try{ localStorage.setItem("ams2_telemode", m); }catch(e){}
+    setTelTab(m); sendTelemMode(m);
+  });
+}
 $("rcfgtimed").addEventListener("click", () => setRcfgMode("timed"));
 $("rcfglaps").addEventListener("click", () => setRcfgMode("laps"));
 $("rcfgsave").addEventListener("click", () => {

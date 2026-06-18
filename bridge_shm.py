@@ -262,9 +262,13 @@ async def ws_handler(ws):
                 strategy.clear_race_plan()
             elif cmd == "set_alllaps":            # contar vueltas anomalas/invalidas
                 strategy.set_use_all_laps(bool(msg.get("on", True)))
-            elif cmd == "set_telemetry":          # grabar telemetria por vuelta a disco
+            elif cmd == "set_telemetry":          # grabar telemetria: off / summary / full
                 if telemetry is not None:
-                    telemetry.set_enabled(bool(msg.get("on", True)))
+                    m = msg.get("mode")
+                    if m in ("off", "summary", "full"):
+                        telemetry.set_mode(m)
+                    else:
+                        telemetry.set_enabled(bool(msg.get("on", True)))
     finally:
         CLIENTS.discard(ws)
 

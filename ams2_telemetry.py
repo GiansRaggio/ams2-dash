@@ -102,7 +102,7 @@ class TelemetryLogger:
         self._lock = threading.Lock()
         self._stop = False
         self._thread = None
-        self._enabled = True
+        self._mode = "full"       # "off" | "summary" (liviano) | "full" (traza completa)
         self._base = base_dir
         self._period = 1.0 / rate_hz
         # stats expuestas al frontend
@@ -135,14 +135,21 @@ class TelemetryLogger:
     def stop(self):
         self._stop = True
 
+    def set_mode(self, mode):
+        """off = no graba; summary = solo resumen por vuelta (liviano, ~10Hz);
+        full = resumen + traza completa de 71 canales (~50Hz)."""
+        if mode in ("off", "summary", "full"):
+            with self._lock:
+                self._mode = mode
+
     def set_enabled(self, on):
-        with self._lock:
-            self._enabled = bool(on)
+        self.set_mode("full" if on else "off")   # compat con el toggle viejo
 
     def status(self):
         with self._lock:
             return {
-                "enabled": self._enabled,
+                "mode": self._mode,
+                "enabled": self._mode != "off",
                 "recording": self._recording,
                 "laps_logged": self._laps_logged,
                 "session": self._sess_label,
@@ -153,6 +160,11 @@ class TelemetryLogger:
     def _run(self):
         reader = None
         while not self._stop:
+            mode = self._mode
+            if mode == "off":             # apagado: hilo dormido, no lee la memoria
+                self._recording = False
+                time.sleep(0.5)
+                continue
             if reader is None:
                 try:
                     reader = ams2_shm.Reader().open()
@@ -170,7 +182,7 @@ class TelemetryLogger:
                 self._ingest(d)
             except Exception:
                 pass                      # nunca tumbar el hilo por un error de I/O
-            time.sleep(self._period)
+            time.sleep(self._period if mode == "full" else 0.1)   # full 50Hz, summary ~10Hz
 
     def _ingest(self, d):
         if d.mVersion != ams2_shm.SHARED_MEMORY_VERSION or d.mNumParticipants <= 0:
@@ -213,20 +225,19 @@ class TelemetryLogger:
 
             if bool(d.mLapInvalidated):
                 self._invalid = True
-            if not self._enabled:
-                self._lap_ok = False
+            if self._mode == "off":
                 self._recording = False
                 return
-
-            self._buf.append(_row(d, p, cap))
-            self._update_agg(d)
+            self._update_agg(d)                       # agregados de resumen (ambos modos)
+            if self._mode == "full":                  # la traza completa solo en full
+                self._buf.append(_row(d, p, cap))
             self._recording = True
 
     # ---------------- ciclo de vuelta / sesion ----------------
     def _begin_lap(self, d, p, cap):
         self._buf = []
         self._invalid = False
-        self._lap_ok = self._enabled
+        self._lap_ok = self._mode != "off"
         self._pit_prev = self._pit_this
         self._pit_this = bool(d.mPitMode in _PIT_INSIDE)
         self._agg = {"tmin": [9e9] * 4, "tmax": [-9e9] * 4, "tsum": [0.0] * 4,
@@ -284,10 +295,11 @@ class TelemetryLogger:
 
     def _commit_lap(self, d, p):
         """Cierra la vuelta recien completada y la guarda si es valida y limpia."""
-        loggable = (self._lap_ok and self._enabled and not self._invalid
+        n_samples = self._agg["n"] if self._agg else 0
+        loggable = (self._lap_ok and self._mode != "off" and not self._invalid
                     and not self._pit_this and not self._pit_prev
                     and self._sess_dir is not None
-                    and len(self._buf) >= MIN_LAP_SAMPLES)
+                    and n_samples >= MIN_LAP_SAMPLES)
         if not loggable:
             return
         lap_time = d.mLastLapTime if d.mLastLapTime > 0 else None
@@ -295,19 +307,21 @@ class TelemetryLogger:
         a, st = self._agg, self._start
         end_fuel = d.mFuelLevel * self._cap
         end_wear = [d.mTyreWear[i] for i in range(4)]
-        tname = f"L{lap_no:03d}_{(lap_time if lap_time else 0):.3f}s.csv.gz"
-        tpath = os.path.join(self._sess_dir, tname)
         try:
-            with gzip.open(tpath, "wt", newline="", encoding="utf-8") as f:
-                f.write(",".join(HEADER) + "\n")
-                f.write("\n".join(self._buf))
-                f.write("\n")
+            tname = None
+            if self._mode == "full":               # la traza completa solo en modo full
+                tname = f"L{lap_no:03d}_{(lap_time if lap_time else 0):.3f}s.csv.gz"
+                with gzip.open(os.path.join(self._sess_dir, tname), "wt",
+                               newline="", encoding="utf-8") as f:
+                    f.write(",".join(HEADER) + "\n")
+                    f.write("\n".join(self._buf))
+                    f.write("\n")
             n = max(1, a["n"]) if a else 1
             summary = {
                 "lap": lap_no,
                 "lap_time": round(lap_time, 3) if lap_time else None,
                 "valid": True,
-                "samples": len(self._buf),
+                "samples": n_samples,
                 "fuel_start": round(st["fuel"], 2) if st else None,
                 "fuel_end": round(end_fuel, 2),
                 "fuel_used": round(st["fuel"] - end_fuel, 2) if st else None,
@@ -330,6 +344,6 @@ class TelemetryLogger:
             with open(os.path.join(self._sess_dir, "summary.jsonl"), "a", encoding="utf-8") as f:
                 f.write(json.dumps(summary, ensure_ascii=False) + "\n")
             self._laps_logged += 1
-            self._last_file = tname
+            self._last_file = tname or f"L{lap_no:03d} (resumen)"
         except OSError:
             pass

@@ -161,18 +161,36 @@ def main():
         _ok("vuelta invalida no guardada", len(tr2) == 0, tr2)
         shutil.rmtree(log2._base, ignore_errors=True)
 
-        print("test_disabled (grabacion off -> NO se guarda):")
+        print("test_disabled (modo off -> NO se guarda):")
         log3 = T.TelemetryLogger(base_dir=tempfile.mkdtemp(prefix="ams2tel3_"))
-        log3.set_enabled(False)
+        log3.set_mode("off")
         feed_lap(log3, 0); cross_to(log3, 1)
         feed_lap(log3, 1); cross_to(log3, 2)
         sd3 = session_dir(log3._base)
         tr3 = ([f for f in os.listdir(sd3) if f.endswith(".csv.gz")]
                if sd3 and os.path.isdir(sd3) else [])
-        _ok("deshabilitado no guarda", len(tr3) == 0, tr3)
+        _ok("off no guarda", len(tr3) == 0, tr3)
         st = log3.status()
-        _ok("status refleja enabled=False", st["enabled"] is False)
+        _ok("status refleja mode=off", st["mode"] == "off" and st["enabled"] is False)
         shutil.rmtree(log3._base, ignore_errors=True)
+
+        print("test_summary (modo resumen -> linea de resumen SIN traza):")
+        log4 = T.TelemetryLogger(base_dir=tempfile.mkdtemp(prefix="ams2tel4_"))
+        log4.set_mode("summary")
+        feed_lap(log4, 0); cross_to(log4, 1, fuel=0.50, wear=0.05)
+        feed_lap(log4, 1); cross_to(log4, 2, fuel=0.45, wear=0.10)
+        sd4 = session_dir(log4._base)
+        tr4 = [f for f in os.listdir(sd4) if f.endswith(".csv.gz")] if sd4 else []
+        sumf4 = os.path.join(sd4, "summary.jsonl") if sd4 else ""
+        lines4 = (open(sumf4, encoding="utf-8").read().strip().splitlines()
+                  if os.path.exists(sumf4) else [])
+        _ok("resumen: 1 linea", len(lines4) == 1, len(lines4))
+        _ok("resumen: SIN traza .csv.gz", len(tr4) == 0, tr4)
+        if lines4:
+            rec4 = json.loads(lines4[0])
+            _ok("resumen: trace=null", rec4["trace"] is None)
+            _ok("resumen: fuel_used > 0", rec4["fuel_used"] > 0, rec4["fuel_used"])
+        shutil.rmtree(log4._base, ignore_errors=True)
 
         print("done.")
     finally:

@@ -107,3 +107,17 @@ Validación de frame en la capa de lectura (`mVersion`, carname propio no vacío
 PCARS2), se conserva el último bueno y se marca SIN SEÑAL en vez de volcar números
 corruptos. Tabla de unidades canónicas documentada (evita el bug Kelvin/Celsius).
 *Próximo eval: correr una tanda y comparar la nota de fiabilidad.*
+
+### it.3 — niveles de grabación (perf / PCs de menor rendimiento)
+Confirmado que **AMS2 no guarda telemetría a disco de forma nativa** (las apps —
+AMS2SD/MoTeC, SimHub, sim-to-motec — leen la misma shared memory que nosotros).
+Leer la memoria es **costo cero para el juego** (por eso dejamos el UDP); el único
+costo es CPU propia. Nuestro store (carpeta/sesión, `summary.jsonl` + trazas
+`.csv.gz`, append-only) ya es la "mini base de datos". Agregado: **3 niveles** de
+grabación seleccionables (⚙) y persistidos —
+- **off**: hilo dormido, no lee.
+- **summary**: solo resumen por vuelta a ~10 Hz, sin trazas (casi gratis, PCs flojos).
+- **full**: resumen + traza de 71 canales a 50 Hz (default).
+
+`set_mode()` en el logger, comando WS con `mode`, selector 3-vías en el dash,
+indicador REC con el modo. Suite: +4 asserts (modo resumen guarda línea sin traza).
