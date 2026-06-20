@@ -98,9 +98,9 @@ propios + nativo AMS2 + cero fricción.
 - **Referencias propias** (mejor vuelta por auto/pista) + `compare_laps(ref, target)` estructurado.
 
 **P1 — Alto impacto técnico**
-- **Métricas pro desde los canales que ya grabas**: trail braking (brake∩steer + desaceleración
-  sostenida), rotation (yaw rate en apex vs vmin/slip), slip management (picos de tyre_slip por rueda),
-  smoothness (tasa de cambio de throttle/steer), load transfer (susp vel + ride height + accel lateral).
+- **Métricas pro desde los canales que ya grabas**: ✅ rotation/slip → balance sobre/subviraje por curva
+  + momento de inestabilidad trasera (R6, `--balance`). Pendiente: trail braking (brake∩steer +
+  desaceleración sostenida), smoothness (tasa de cambio de throttle/steer), load transfer (susp + accel).
 - ✅ **Diagnóstico de gomas (beta)**: presión térmica (centro vs bordes) + camber por rueda + asimetría izq/der (`--tyres`), etiquetado beta. *(pendiente: integrarlo en la UI del dash)*
 - Delta bar / ghost live vs best propio.
 - Práctica estructurada (focus stint, targets por sector).
@@ -193,7 +193,7 @@ Fortaleza actual; potenciarla para práctica activa.
 - Actualizar `EVAL.md`.
 
 **Fase 1 — Insights + comparación (alto impacto inmediato)**
-- ✅ Motor de insights (R2/R2-ref sector, R1/R1-ref vmin, R3 coasting, R-consist consistencia; CLI `--insights`, guards anti-FP, identidad de vuelta por traza).
+- ✅ Motor de insights (R2/R2-ref sector, R1/R1-ref vmin, R3 coasting, R-consist consistencia, R6 balance sobre/subviraje + momento; CLI `--insights`/`--balance`, guards anti-FP, identidad de vuelta por traza).
 - Métricas pro: trail braking, rotation/yaw, slip.
 - Gomas beta (camber/presión spread).
 - Probar en pista: ¿identifico y corrijo 1 debilidad clara por sesión?

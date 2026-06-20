@@ -588,6 +588,77 @@ def reference_struct(folder):
             "your_lap": ss["best_lap_time"], "sector_deltas": [round(your[i] - rsec[i], 2) for i in range(3)]}
 
 
+def _sector_bounds(folder):
+    """Distancia donde terminan S1 y S2, desde la vuelta de referencia (sus sector times)."""
+    rec = clean_laps(folder)["ref"]
+    if not rec or not rec.get("sectors"):
+        return None
+    t = _lap_trace(folder, rec)
+    if not t:
+        return None
+    s = rec["sectors"]
+
+    def dist_at(target):
+        for i, x in enumerate(t["t"]):
+            if x >= target:
+                return t["lap_dist"][i]
+        return t["lap_dist"][-1]
+
+    return [dist_at(s[0]), dist_at(s[0] + s[1])]
+
+
+def balance_struct(folder):
+    """Balance del auto por curva (slip TRASERO vs delantero -> sobre/subviraje) + 'momento' de
+    inestabilidad (pico de slip trasero en algunas vueltas, con ubicacion/sector). Sobre las vueltas
+    limpias. None si <3 limpias o faltan los canales de slip (sesiones viejas no afectadas: slip existe)."""
+    cl = clean_laps(folder)
+    if cl["n_clean"] < 3:
+        return None
+    traces = [(rec, _lap_trace(folder, rec)) for rec in cl["clean"]]
+    traces = [(rec, t) for rec, t in traces if t and "tyre_slip_RL" in t and t.get("lap_dist")]
+    if len(traces) < 3:
+        return None
+    rt = traces[0][1]
+    d, s = _mono(rt["lap_dist"], rt["speed_kmh"])[:2]
+    corners = []
+    for c in _corners(d, s):
+        fr, re = [], []
+        for _, t in traces:
+            idx = [i for i, x in enumerate(t["lap_dist"]) if c["apex"] - 60 <= x <= c["apex"] + 60]
+            if idx:
+                fr.append(st.median([(t["tyre_slip_FL"][i] + t["tyre_slip_FR"][i]) / 2 for i in idx]))
+                re.append(st.median([(t["tyre_slip_RL"][i] + t["tyre_slip_RR"][i]) / 2 for i in idx]))
+        if len(fr) < 2:
+            continue
+        f, r = st.median(fr), st.median(re)
+        ratio = round(r / f, 2) if f > 0.1 else 1.0
+        corners.append({"n": c["n"], "apex": c["apex"], "vmin": round(c["vmin"]),
+                        "front": round(f, 1), "rear": round(r, 1), "ratio": ratio,
+                        "bal": "sobreviraje" if ratio >= 1.25 else "subviraje" if ratio <= 0.8 else "neutro"})
+    # momento de inestabilidad POR SECTOR: el sector con mayor spike de slip trasero entre vueltas
+    # (la peor vuelta muy por encima de la mediana = el trasero se suelta de forma inconsistente ahi).
+    bounds = _sector_bounds(folder)
+    moment = None
+    if bounds:
+        best = 0.0
+        for si, (lo, hi) in enumerate([(0, bounds[0]), (bounds[0], bounds[1]), (bounds[1], 9e9)]):
+            peaks = []
+            for _, t in traces:
+                vals = [(t["tyre_slip_RL"][i] + t["tyre_slip_RR"][i]) / 2
+                        for i in range(len(t["lap_dist"])) if lo <= t["lap_dist"][i] < hi]
+                if vals:
+                    peaks.append(max(vals))
+            if len(peaks) < 3:
+                continue
+            med = sorted(peaks)[len(peaks) // 2]
+            worst = max(peaks)
+            if med > 0.1 and worst >= med * 1.5 and (worst - med) > best:
+                best = worst - med
+                moment = {"sector": f"S{si + 1}", "peak": round(worst, 1), "median": round(med, 1),
+                          "spike_pct": int((worst / med - 1) * 100)}
+    return {"corners": corners, "moment": moment}
+
+
 def build_insights(folder):
     """Motor v1: sector debil vs tu REFERENCIA (R2-ref) o vs tu ideal (R2); sector INCONSISTENTE
     (R-consist); deficit de vmin (R1/R1-ref) y coasting (R3). Identifica vueltas por su traza unica
@@ -677,6 +748,25 @@ def build_insights(folder):
                     out.append({"regla": "R3", "t": 0.0, "proc": "metros",
                                 "msg": f"T{cn}: coasting {largo:.0f}m antes del apex (flotando, gas y freno sueltos). "
                                        f"Frena ~{acortar:.0f}m mas tarde y mantente en el freno hasta soltar el volante."})
+
+    # --- R6: balance (sobre/subviraje) por curva + momento de inestabilidad trasera (consistencia) ---
+    bal = balance_struct(folder)
+    if bal:
+        m = bal["moment"]
+        if m:
+            out.append({"regla": "R6", "t": 0.0, "proc": "medido",
+                        "msg": f"{m['sector']}: el tren TRASERO se suelta en tus vueltas malas (pico de slip "
+                               f"{m['peak']} vs {m['median']} normal, +{m['spike_pct']}%) — sobreviraje a velocidad: "
+                               f"te cuesta consistencia. Estabiliza atras (ARB tras. mas blanda / diff coast / mas "
+                               f"ala) o suaviza la entrada."})
+        else:
+            cor = [c for c in bal["corners"] if c["bal"] != "neutro"]
+            w = max(cor, key=lambda c: abs(c["ratio"] - 1.0)) if cor else None
+            if w and abs(w["ratio"] - 1.0) >= 0.3:
+                tip = ("estabiliza atras (ARB tras. mas blanda / diff coast / mas ala)" if w["bal"] == "sobreviraje"
+                       else "ayuda la rotacion (ARB del. mas blanda / mas camber del. / menos ala)")
+                out.append({"regla": "R6", "t": 0.0, "proc": "medido",
+                            "msg": f"T{w['n']} (apex {w['apex']}m): {w['bal']} marcado (slip R/F {w['ratio']}) — {tip}."})
 
     out.sort(key=lambda x: x["t"], reverse=True)
     status = "ok" if (out or n >= 3 or rs) else "insuficiente"
@@ -803,6 +893,24 @@ def report_tyres(folder):
                   "es de la pista, no se corrige con presion; balancea cada goma a su ventana.")
 
 
+def report_balance(folder):
+    meta, _ = _load(folder)
+    bal = balance_struct(folder)
+    print(f"\n=== Balance sobre/subviraje · {meta.get('car', '?')} @ {meta.get('track', '?')} ===")
+    if not bal:
+        print("  faltan >=3 vueltas limpias con canal de slip por rueda.")
+        return
+    print("  slip por rueda (trasero vs delantero) en el apex; R/F >1.25 = sobreviraje, <0.8 = subviraje.")
+    print(f"\n  {'curva':6} {'apex':>6} {'vmin':>5} {'slipF':>6} {'slipR':>6} {'R/F':>5}  balance")
+    for c in bal["corners"]:
+        print(f"  T{c['n']:<5} {c['apex']:>6} {c['vmin']:>5} {c['front']:>6.1f} {c['rear']:>6.1f} "
+              f"{c['ratio']:>5.2f}  {c['bal']}")
+    m = bal["moment"]
+    if m:
+        print(f"\n  MOMENTO de inestabilidad: {m['sector']} — pico de slip trasero {m['peak']} vs {m['median']} "
+              f"normal (+{m['spike_pct']}%): el trasero se suelta de forma inconsistente ahi.")
+
+
 def main():
     ap = argparse.ArgumentParser(description="Analisis de telemetria AMS2")
     ap.add_argument("folder", nargs="?", help="carpeta de sesion (default: la ultima)")
@@ -816,6 +924,8 @@ def main():
                     help="guarda la mejor vuelta limpia (o LAP) como referencia del auto+pista")
     ap.add_argument("--tyres", action="store_true",
                     help="gomas (beta): presion termica + camber por rueda sobre las vueltas limpias")
+    ap.add_argument("--balance", action="store_true",
+                    help="balance sobre/subviraje por curva + momento de inestabilidad (slip por rueda)")
     a = ap.parse_args()
 
     if a.list:
@@ -840,6 +950,8 @@ def main():
         report_insights(folder)
     elif a.tyres:
         report_tyres(folder)
+    elif a.balance:
+        report_balance(folder)
     else:
         report_session(folder)
 

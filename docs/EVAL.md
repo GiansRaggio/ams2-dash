@@ -198,3 +198,13 @@ análisis identifica vueltas por su REGISTRO/traza, no por número — `clean_la
 flaguea el sector de mayor dispersión vuelta a vuelta (repetibilidad), distinto del gap a tu ideal —
 capturó justo lo de la sesión real (S1 varía 0.86s). `tools/test_insights.py`: +3 asserts (duplicado +
 R-consist). Suite total: 123. Pendiente: que el logger excluya solo la out-lap real tras el garage.
+
+### it.11 — R6: balance sobre/subviraje + momento de inestabilidad (`--balance`)
+Diagnóstico de manejo por curva desde slip por rueda (trasero vs delantero): R/F >1.25 = sobreviraje,
+<0.8 = subviraje. Más la detección de **momento de inestabilidad POR SECTOR**: el sector donde el slip
+trasero pega un pico en algunas vueltas (la peor muy sobre la mediana) = el tren trasero se suelta de
+forma inconsistente. CLI `--balance`; e integrado como regla R6 en `--insights`. Validado en la sesión
+real: detectó "S2: trasero se suelta, pico de slip 22.5 vs 13.6 normal (+65%)" — exactamente el coletazo
+diagnosticado a mano, y coherente con TC=0 (las curvas lentas T3-T5 salen sobrevirantes). `tools/
+test_balance.py` (nuevo): 7 asserts. Suite total: 130. Nota: R6 lista levers (ARB/diff/ala) — con ala=0
+(meta GT3 AMS2) se estabiliza atrás vía ARB trasera más blanda / diff coast.
