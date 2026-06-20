@@ -159,3 +159,13 @@ vueltas; anti-empate; procedencia explícita; dedup por curva. Inicia el refacto
 (`*_struct` devuelven dicts → habilitan UI futura). `tools/test_insights.py` (nuevo): 13 asserts. Suite
 total: 101. Validado en pista: con 2 vueltas limpias el motor dice "N insuficiente" (correcto) — necesita
 una tanda de 3-4 vueltas limpias seguidas para hablar.
+
+### it.7 — referencia propia persistente (benchmark cross-sesión)
+`analyze_telemetry.py --save-ref [LAP]` guarda la mejor vuelta limpia por auto+pista (tiempo + sectores
++ traza) en `references/` (gitignoreado), solo si es más rápida que la guardada. El motor de insights
+compara tus mejores sectores de la sesión contra esa referencia (**R2-ref**, medido): "S2: +0.40s vs tu
+referencia — foco ahí". Clave: **sirve con ≥1 vuelta limpia**, así una sesión corta (o una sola vuelta
+rápida — tu patrón) ya es accionable contra tu benchmark de todas las sesiones; antes el motor exigía ≥3
+vueltas limpias intra-sesión. `report_insights` muestra la línea de benchmark (referencia vs tu mejor +
+delta por sector). `tools/test_insights.py`: +7 asserts (20). Suite total: 108. Pendiente: overlay de
+traza completa vs referencia en `report_vs` (comparar líneas, no solo sectores).

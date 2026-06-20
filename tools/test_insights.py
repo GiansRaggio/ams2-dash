@@ -139,6 +139,33 @@ def main():
     _ok("R3 emite por coasting repetido", len(r3) >= 1, [x["msg"] for x in ins])
     _ok("R3 da accion de frenada", bool(r3) and "Frena" in r3[0]["msg"], r3[0]["msg"] if r3 else "")
 
+    print("\nReferencia guardada (benchmark cross-sesion):")
+    refdir = tempfile.mkdtemp(prefix="ref_")
+    A.REFDIR = refdir                                  # redirige el store a un temp (no toca el repo)
+    da = build([{"lap": 1, "time": 90.2, "sectors": [30.0, 30.1, 30.1]},
+                {"lap": 2, "time": 90.0, "sectors": [30.0, 30.0, 30.0]},
+                {"lap": 3, "time": 90.3, "sectors": [30.0, 30.2, 30.1]}]); dirs.append(da)
+    msg = A.save_reference(da)
+    _ok("save_reference guarda la mejor", "referencia guardada" in msg, msg)
+    ref = A.load_reference(da)
+    _ok("load_reference roundtrip (90.0)", ref is not None and abs(ref["lap_time"] - 90.0) < 0.01, ref)
+    _ok("no sobreescribe con una mas lenta", "ya es mas rapida" in A.save_reference(da, lap=1))
+    # sesion corta (1 vuelta limpia) con S2 +0.40 vs la referencia -> R2-ref emite igual
+    db = build([{"lap": 5, "time": 90.5, "sectors": [30.0, 30.40, 30.0]}]); dirs.append(db)
+    header, ins, status = A.build_insights(db)
+    rref = _rules(ins, "R2-ref")
+    _ok("R2-ref emite con 1 vuelta + referencia", len(rref) == 1, [x["msg"] for x in ins])
+    _ok("R2-ref nombra S2, procedencia medido",
+        bool(rref) and "S2" in rref[0]["msg"] and rref[0]["proc"] == "medido", rref[0]["msg"] if rref else "")
+    _ok("header trae ref_lap_time", header.get("ref_lap_time") is not None)
+    try:
+        A.report_insights(db)
+        _ok("report_insights con referencia corre", True)
+    except Exception as e:
+        _ok("report_insights con referencia corre", False, repr(e))
+    A.REFDIR = os.path.join(HERE, "references")        # restaura
+    shutil.rmtree(refdir, ignore_errors=True)
+
     print("\nDeterminismo / no-crash:")
     try:
         A.report_insights(dirs[0])
