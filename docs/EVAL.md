@@ -146,3 +146,16 @@ rebound/pack-down). Refinado por **revisión adversarial** (2 lentes: física + 
 endurecimiento numérico forzado de fast bump — el histograma de velocidad no separa el bombeo de curva
 de los impactos de piano, así que la sugerencia de endurecer va como texto. `tools/test_dampers.py`
 (nuevo): 11 asserts. Suite total: 88.
+
+### it.6 — motor de insights v1 (CLI-first)
+`analyze_telemetry.py --insights`: convierte el análisis en 2-4 consejos accionables priorizados por
+tiempo recuperable (C1: veredicto+acción+magnitud), referencia = tu propia mejor vuelta limpia.
+Diseñado con workflow (2 lentes: coaching + confiabilidad). Reglas v1: **R2** peor sector vs tu ideal
+(medido), **R1** déficit de vmin por curva (vmin medido / tiempo estimado), **R3** coasting en la
+entrada (metros). R4/R5/R6 (frenada/gas/yaw-slip) diferidas: no confiables con N chico. **Guards
+anti-falso-positivo** (la lección del peor-sector distorsionado por warmup): mínimo 3 vueltas limpias o
+calla; descarta warmup/invalidadas; piso de ruido (<0.30s sector, <3 km/h, <25m); repetición en ≥2
+vueltas; anti-empate; procedencia explícita; dedup por curva. Inicia el refactor a estructuras
+(`*_struct` devuelven dicts → habilitan UI futura). `tools/test_insights.py` (nuevo): 13 asserts. Suite
+total: 101. Validado en pista: con 2 vueltas limpias el motor dice "N insuficiente" (correcto) — necesita
+una tanda de 3-4 vueltas limpias seguidas para hablar.

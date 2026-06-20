@@ -189,12 +189,12 @@ Fortaleza actual; potenciarla para práctica activa.
 **Fase 0 — Consolidación (en curso)**
 - ✅ Sectores arreglados + rescate (`sectors.jsonl`, vuelta ideal).
 - ✅ Bug **C3** del guardrail de dampers arreglado (`_recommend` cruza `tBottom`; refinado por revisión adversarial).
-- **Refactor del analyzer → estructuras** (no prints) — habilita insights y UI.
+- 🔄 **Refactor del analyzer → estructuras**: iniciado (`clean_laps`/`sectors_struct`/`corners_vs_struct`/`coasting_struct`/`build_insights` devuelven dicts).
 - Gestión básica de referencias propias (mejor vuelta auto + manual) + `report_vs` contra ref guardada.
 - Actualizar `EVAL.md`.
 
 **Fase 1 — Insights + comparación (alto impacto inmediato)**
-- Motor de insights v1 (3-4 reglas de tiempo perdido, CLI-first).
+- ✅ Motor de insights v1 (R2 peor sector, R1 vmin, R3 coasting; CLI `--insights`, guards anti-FP).
 - Métricas pro: trail braking, rotation/yaw, slip.
 - Gomas beta (camber/presión spread).
 - Probar en pista: ¿identifico y corrijo 1 debilidad clara por sesión?

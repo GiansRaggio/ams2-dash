@@ -409,6 +409,180 @@ def report_lap(folder, lap_no):
     print(f"\n  (cargar en pandas: import pandas as pd; pd.read_csv(r'{path}'))")
 
 
+# ====================== MOTOR DE INSIGHTS (CLI-first) ======================
+# Convierte el analisis en 2-4 consejos accionables (veredicto+accion+magnitud, C1),
+# priorizados por tiempo recuperable. Referencia = tu propia mejor vuelta limpia.
+# Funciones *_struct devuelven datos (no print) -> inicio del refactor a estructuras.
+
+def clean_laps(folder):
+    """Vueltas limpias representativas (lap_time <= best*1.03; el summary ya excluye
+    invalidadas y out-laps). Centraliza el filtro de los insights y sus guards."""
+    _, laps = _load(folder)
+    timed = [l for l in laps if l.get("lap_time")]
+    if not timed:
+        return {"best_lap_time": None, "n_clean": 0, "clean": [], "ref_lap": None}
+    best = min(l["lap_time"] for l in timed)
+    clean = sorted((l for l in timed if l["lap_time"] <= best * 1.03), key=lambda l: l["lap_time"])
+    return {"best_lap_time": best, "n_clean": len(clean),
+            "clean": [l["lap"] for l in clean], "ref_lap": clean[0]["lap"] if clean else None}
+
+
+def sectors_struct(folder):
+    """Mejores sectores limpios, vuelta ideal, gap por sector (mediana de vueltas limpias -
+    mejor sector) y sigma. Fuente de R2 (peor sector). Usa sectors.jsonl o el summary."""
+    srecs = _load_sectors(folder)
+    _, laps = _load(folder)
+    if srecs:
+        sl = [{"lap": r["lap"], "s": r["sectors"], "t": r.get("lap_time"),
+               "v": r.get("sec_valid", [True, True, True]), "inv": r.get("invalid", False)}
+              for r in srecs if r.get("sectors") and len(r["sectors"]) == 3
+              and all(x > 0 for x in r["sectors"])]
+    else:
+        sl = [{"lap": l["lap"], "s": _lap_sectors(l), "t": l["lap_time"],
+               "v": [True, True, True], "inv": False}
+              for l in laps if l.get("lap_time") and _lap_sectors(l)]
+    if not sl:
+        return None
+    clean_t = [r["t"] for r in sl if r["t"] and not r["inv"]]
+    best_lap_time = min(clean_t) if clean_t else min(r["t"] for r in sl if r["t"])
+    best_i = []
+    for i in range(3):
+        cands = [r for r in sl if r["v"][i]]
+        best_i.append(min(cands, key=lambda r: r["s"][i]) if cands else None)
+    if not all(best_i):
+        return None
+    best_s = [best_i[i]["s"][i] for i in range(3)]
+    reps = [r["s"] for r in sl if r["t"] and not r["inv"] and r["t"] <= best_lap_time * 1.03]
+    gaps = [round(st.median([s[i] for s in reps]) - best_s[i], 3) if len(reps) >= 3 else None
+            for i in range(3)]
+    sig = [round(st.pstdev([s[i] for s in reps]), 3) if len(reps) >= 3 else None for i in range(3)]
+    return {"best_lap_time": best_lap_time, "ideal": sum(best_s), "best_s": best_s,
+            "owners": [best_i[i]["lap"] for i in range(3)], "gaps": gaps, "sigma": sig,
+            "n_clean_sec": len(reps)}
+
+
+def corners_vs_struct(folder, lap_a, ref_lap):
+    """Deficit de vmin por curva de lap_a vs ref + tiempo perdido en el tramo del apex."""
+    ta, tb = load_trace(folder, lap_a), load_trace(folder, ref_lap)
+    if not ta or not tb:
+        return []
+    da, sa = _mono(ta["lap_dist"], ta["speed_kmh"])[:2]
+    db, sb = _mono(tb["lap_dist"], tb["speed_kmh"])[:2]
+    da2, t_a = _mono(ta["lap_dist"], ta["t"])
+    db2, t_b = _mono(tb["lap_dist"], tb["t"])
+    ca = _corners(da, sa)
+    out = []
+    for c in _corners(db, sb):
+        ma = min((x for x in ca if abs(x["apex"] - c["apex"]) < 120),
+                 key=lambda x: abs(x["apex"] - c["apex"]), default=None)
+        if not ma:
+            continue
+        x0, x1 = c["apex"] - 50, c["apex"] + 150
+        seg = ((_interp(da2, t_a, x1) - _interp(db2, t_b, x1)) -
+               (_interp(da2, t_a, x0) - _interp(db2, t_b, x0)))
+        out.append({"n": c["n"], "apex": c["apex"], "vmin_a": ma["vmin"], "vmin_ref": c["vmin"],
+                    "deficit": round(c["vmin"] - ma["vmin"], 1), "t_perdido_s": round(seg, 3)})
+    return out
+
+
+def coasting_struct(folder, lap):
+    """Tramos de coasting + si caen en la zona de entrada (justo antes de un apex)."""
+    t = load_trace(folder, lap)
+    if not t:
+        return []
+    d, s, th, br = _mono(t["lap_dist"], t["speed_kmh"], t["throttle"], t["brake"])
+    cs = _corners(d, s)
+    out = []
+    for dist_ini, largo in _coasting(d, th, br, s):
+        end = dist_ini + largo
+        ap = min(cs, key=lambda c: abs(c["apex"] - end), default=None) if cs else None
+        out.append({"dist_ini": dist_ini, "largo_m": largo,
+                    "apex_n": ap["n"] if ap else None,
+                    "en_zona": bool(ap and (ap["apex"] - 80) <= end <= ap["apex"])})
+    return out
+
+
+def build_insights(folder):
+    """Motor v1: R2 (peor sector, medido), R1 (deficit de vmin, estimado), R3 (coasting,
+    metros). Guards: >=3 vueltas limpias, piso de ruido, repeticion en >=2 vueltas,
+    procedencia explicita, dedup por curva. Devuelve (header, insights[<=4], status)."""
+    meta, _ = _load(folder)
+    cl = clean_laps(folder)
+    n = cl["n_clean"]
+    header = {"car": meta.get("car", "?"), "track": meta.get("track", "?"),
+              "n_clean": n, "best_lap_time": cl["best_lap_time"]}
+    if n < 3:                                   # GUARD: con <3 limpias el motor calla
+        return header, [], "insuficiente"
+    ref = cl["ref_lap"]
+    others = [lp for lp in cl["clean"] if lp != ref]
+    out = []
+
+    # R2 — peor sector vs tu ideal (MEDIDO)
+    ss = sectors_struct(folder)
+    if ss and ss["n_clean_sec"] >= 3 and all(g is not None for g in ss["gaps"]):
+        order = sorted(range(3), key=lambda i: ss["gaps"][i], reverse=True)
+        w = order[0]
+        gap, gap2 = ss["gaps"][w], ss["gaps"][order[1]]
+        if gap >= 0.30 and (gap - gap2) >= 0.15:      # piso de ruido + anti-empate
+            out.append({"regla": "R2", "t": gap, "proc": "medido",
+                        "msg": f"S{w + 1} es tu sector debil: pierdes {gap:.2f}s vs tu mejor S{w + 1} "
+                               f"({ss['best_s'][w]:.3f}s, L{ss['owners'][w]}) — ya lo hiciste mas rapido."})
+
+    # R1 — deficit de vmin por curva, repetido en >=2 vueltas limpias (vmin medido / tiempo estimado)
+    agg = {}
+    for lp in others:
+        for c in corners_vs_struct(folder, lp, ref):
+            if c["deficit"] >= 3.0:
+                a = agg.setdefault(c["n"], {"defs": [], "tp": [], "apex": c["apex"], "vref": c["vmin_ref"]})
+                a["defs"].append(c["deficit"])
+                a["tp"].append(max(0.0, c["t_perdido_s"]))
+    r1_corners = set()
+    for cn, a in agg.items():
+        if len(a["defs"]) >= 2:                       # repeticion -> no es trafico/one-off
+            md, tp = st.median(a["defs"]), st.median(a["tp"])
+            if md >= 3.0 and tp >= 0.05:
+                r1_corners.add(cn)
+                out.append({"regla": "R1", "t": tp, "proc": "estimado",
+                            "msg": f"T{cn} (apex {a['apex']}m): vmin {a['vref'] - md:.0f} km/h, {md:.0f} bajo "
+                                   f"tu mejor ({a['vref']:.0f}) — ~{tp:.2f}s. Gira antes y carga mas velocidad "
+                                   f"de paso (menos freno a la entrada)."})
+
+    # R3 — coasting en la entrada, repetido en >=2 vueltas (metros medido); dedup con R1 por curva
+    coast = {}
+    for lp in cl["clean"]:
+        for z in coasting_struct(folder, lp):
+            if z["largo_m"] >= 25 and z["en_zona"] and z["apex_n"]:
+                coast.setdefault(z["apex_n"], []).append(z["largo_m"])
+    for cn, largos in coast.items():
+        if len(largos) >= 2 and cn not in r1_corners:
+            largo = st.median(largos)
+            acortar = min(largo - 10, 15)             # guardrail C3: nunca >15m de golpe
+            if acortar >= 3:
+                out.append({"regla": "R3", "t": 0.0, "proc": "metros",
+                            "msg": f"T{cn}: coasting {largo:.0f}m antes del apex (flotando, gas y freno sueltos). "
+                                   f"Frena ~{acortar:.0f}m mas tarde y mantente en el freno hasta soltar el volante."})
+
+    out.sort(key=lambda x: x["t"], reverse=True)
+    return header, out[:4], "ok"
+
+
+def report_insights(folder):
+    header, insights, status = build_insights(folder)
+    print(f"\n=== Insights · {header['car']} @ {header['track']} · "
+          f"{header['n_clean']} vueltas limpias ===")
+    if status == "insuficiente":
+        print(f"  N insuficiente ({header['n_clean']} limpias): maneja >=3 vueltas limpias seguidas "
+              "para coaching. Descriptivo:")
+        report_session(folder)
+        return
+    if not insights:
+        print("  Tanda pareja, sin deficit sobre el ruido — sube tu ritmo de referencia.")
+        return
+    for i, ins in enumerate(insights, 1):
+        head = f"~{ins['t']:.2f}s" if ins["t"] > 0 else "magnitud"
+        print(f"  [{i}] {head} · {ins['msg']} ({ins['proc']})")
+
+
 def main():
     ap = argparse.ArgumentParser(description="Analisis de telemetria AMS2")
     ap.add_argument("folder", nargs="?", help="carpeta de sesion (default: la ultima)")
@@ -416,6 +590,8 @@ def main():
     ap.add_argument("--lap", type=int, help="inspecciona la traza de esa vuelta")
     ap.add_argument("--vs", type=int, nargs="+", metavar="LAP",
                     help="compara vuelta A [B] (B por defecto: la mejor) — delta, vmin, coasting")
+    ap.add_argument("--insights", action="store_true",
+                    help="motor de insights: 2-4 consejos accionables priorizados (>=3 vueltas limpias)")
     a = ap.parse_args()
 
     if a.list:
@@ -434,6 +610,8 @@ def main():
         report_vs(folder, a.vs[0], a.vs[1] if len(a.vs) > 1 else None)
     elif a.lap is not None:
         report_lap(folder, a.lap)
+    elif a.insights:
+        report_insights(folder)
     else:
         report_session(folder)
 
