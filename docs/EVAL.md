@@ -44,12 +44,12 @@ Herramientas: `eval_strategy.py` (fiabilidad), `analyze_telemetry.py` (interpret
 | Campo | Unidad | Nota |
 |-------|--------|------|
 | `mFuelLevel` | fracción 0–1 | litros = × `mFuelCapacity` |
-| `mTyreTemp`, `mTyreTempLeft/Center/Right` | **°C** | los que usamos (OK) |
+| `mTyreTemp`, `mTyreTempLeft/Center/Right` | **°C** | L/C/R poblados, center entre bordes 100% (verificado 2026-06-20, Audi GT4) |
 | `mTyreCarcassTemp`, `mTyreTreadTemp`, `*LayerTemp` | **Kelvin** | restar 273.15 — **NO** usar sin convertir |
 | `mEventTimeRemaining` | **ms** | normalizado a s (TIME_SCALE) |
 | `mSessionDuration` | **min** | × 60 a s |
 | `mSuspensionTravel/Velocity` | m, m/s | en dampers ×1000 → mm |
-| `mAirPressure` | PSI (declarado) | libs derivadas confunden Bar×100 — tratar como referencia |
+| `mAirPressure` | **Bar×100** (verificado) | crudo ~188 → /100 ×14.5038 ≈ 27 psi (2026-06-20). NO es PSI directo |
 | `mEnforcedPitStopLap` | nº vuelta | v14 quitó UNSET=-1 → válido sólo si ≥1 |
 
 ## Backlog priorizado (valor/esfuerzo)
@@ -121,3 +121,18 @@ grabación seleccionables (⚙) y persistidos —
 
 `set_mode()` en el logger, comando WS con `mode`, selector 3-vías en el dash,
 indicador REC con el modo. Suite: +4 asserts (modo resumen guarda línea sin traza).
+
+### it.4 — telemetría completa + sectores rescatables + canales verificados
+Logger ampliado **71→87 canales** (yaw/vel angular, vel local, `terrain` por rueda, carcass temp
+K→C, max_rpm/torque, abs_active, y tc/abs_setting+drs en summary). **Verificado en pista** (Audi R8
+GT4 @ Buenos Aires): spread de goma L/C/R **poblado con center entre bordes 100%** → el diagnóstico
+de camber/presión SÍ es construible (contra el temor de SimHub #632); presión = **Bar×100** (≈27
+psi); yaw/terrain/abs/carcass poblados; `abs_setting` viaja (el README decía que no). **Bug de
+sectores arreglado**: el logger leía `mCurrentSector1Time` ya reseteado al cruzar meta (S1≈0 →
+vuelta teórica falsa 1:36.9); ahora S1/S2 se capturan en vivo y S3 = total−S1−S2, con recuperación
+en el analizador para sesiones viejas. **Rescate de sectores**: `sectors.jsonl` guarda splits +
+validez por sector de TODA vuelta de pista (incluidas las invalidadas) → la "vuelta ideal" toma el
+mejor sector **limpio** de cada vuelta, rescatando sectores buenos de vueltas con error. Telemetría
+**Moza diferida** (no aporta para tiempos: la fuerza load-cell en kg no está expuesta; `brake-output`
+duplica `mUnfilteredBrake`). Suite: +12 asserts. Pendiente: camber/presión en la UI (beta), balance
+por curva (yaw+slip).

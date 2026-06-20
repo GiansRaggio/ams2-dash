@@ -64,6 +64,15 @@ _SCALAR = [
     ("water_t",   lambda d, p, cap: round(d.mWaterTempCelsius, 1)),
     ("oil_t",     lambda d, p, cap: round(d.mOilTempCelsius, 1)),
     ("fuel_l",    lambda d, p, cap: round(d.mFuelLevel * cap, 2)),
+    # --- handling / powertrain (balance del auto + analisis de cambios) ---
+    ("max_rpm",       lambda d, p, cap: round(d.mMaxRPM)),
+    ("engine_torque", lambda d, p, cap: round(d.mEngineTorque, 1)),
+    ("local_vx",      lambda d, p, cap: round(d.mLocalVelocity[0], 3)),   # lateral m/s -> slip angle del auto
+    ("local_vz",      lambda d, p, cap: round(d.mLocalVelocity[2], 3)),   # longitudinal m/s
+    ("ang_vel_x",     lambda d, p, cap: round(d.mAngularVelocity[0], 4)),  # pitch rate
+    ("ang_vel_y",     lambda d, p, cap: round(d.mAngularVelocity[1], 4)),  # yaw rate (rotacion eje vertical)
+    ("ang_vel_z",     lambda d, p, cap: round(d.mAngularVelocity[2], 4)),  # roll rate
+    ("abs_active",    lambda d, p, cap: int(d.mAntiLockActive)),           # bool dedicado (mas limpio que el flag)
 ]
 _CORNER = [
     ("tyre_temp",   lambda d, i: round(d.mTyreTemp[i], 1)),
@@ -78,6 +87,8 @@ _CORNER = [
     ("ride_h",      lambda d, i: round(d.mRideHeight[i], 5)),
     ("tyre_press",  lambda d, i: round(d.mAirPressure[i], 2)),
     ("tyre_rps",    lambda d, i: round(d.mTyreRPS[i], 2)),
+    ("terrain",     lambda d, i: d.mTerrain[i]),                            # superficie bajo la rueda (codigo)
+    ("carcass_t",   lambda d, i: round(d.mTyreCarcassTemp[i] - 273.15, 1)),  # Kelvin -> C (temp estructura, estable)
 ]
 HEADER = [n for n, _ in _SCALAR] + [f"{n}_{c}" for n, _ in _CORNER for c in CORNERS]
 
@@ -123,6 +134,8 @@ class TelemetryLogger:
         self._pit_this = True     # hubo pit en esta vuelta (1ra de sesion: si)
         self._pit_prev = True     # hubo pit en la vuelta anterior (-> out-lap)
         self._in_pit_prev = False
+        self._sectimes = [0.0, 0.0]
+        self._sec_invalid = [False, False, False]
         self._agg = None          # agregados de resumen
         self._start = None        # {fuel, wear[4]} al inicio de la vuelta
 
@@ -223,8 +236,17 @@ class TelemetryLogger:
                 self._begin_lap(d, p, cap)
                 self._pit_prev = True
 
+            # captura de sectores en vivo: S1/S2 se finalizan a mitad de vuelta y quedan
+            # estables hasta meta (el bug viejo leia mCurrentSector1Time ya reseteado al cruzar).
+            if d.mCurrentSector1Time > 0.1:
+                self._sectimes[0] = round(d.mCurrentSector1Time, 3)
+            if d.mCurrentSector2Time > 0.1:
+                self._sectimes[1] = round(d.mCurrentSector2Time, 3)
             if bool(d.mLapInvalidated):
                 self._invalid = True
+                # atribuir la invalidacion al sector EN CURSO; los previos quedan limpios
+                cs = 0 if self._sectimes[0] <= 0.1 else (1 if self._sectimes[1] <= 0.1 else 2)
+                self._sec_invalid[cs] = True
             if self._mode == "off":
                 self._recording = False
                 return
@@ -240,6 +262,8 @@ class TelemetryLogger:
         self._lap_ok = self._mode != "off"
         self._pit_prev = self._pit_this
         self._pit_this = bool(d.mPitMode in _PIT_INSIDE)
+        self._sectimes = [0.0, 0.0]                  # S1, S2 capturados en vivo (S3 = total - S1 - S2)
+        self._sec_invalid = [False, False, False]    # validez por sector (limites de pista)
         self._agg = {"tmin": [9e9] * 4, "tmax": [-9e9] * 4, "tsum": [0.0] * 4,
                      "bmax": [-9e9] * 4, "n": 0}
         self._start = {"fuel": d.mFuelLevel * cap,
@@ -294,16 +318,38 @@ class TelemetryLogger:
             self._sess_dir = None
 
     def _commit_lap(self, d, p):
-        """Cierra la vuelta recien completada y la guarda si es valida y limpia."""
+        """Cierra la vuelta. SIEMPRE (si es vuelta de pista, no out/in/pit) guarda un
+        registro de sectores con validez por sector -> permite rescatar sectores limpios
+        de vueltas invalidadas. La traza+resumen completos solo si la vuelta es 100% limpia."""
         n_samples = self._agg["n"] if self._agg else 0
-        loggable = (self._lap_ok and self._mode != "off" and not self._invalid
-                    and not self._pit_this and not self._pit_prev
-                    and self._sess_dir is not None
-                    and n_samples >= MIN_LAP_SAMPLES)
-        if not loggable:
+        flying = (self._lap_ok and self._mode != "off"
+                  and not self._pit_this and not self._pit_prev
+                  and self._sess_dir is not None
+                  and n_samples >= MIN_LAP_SAMPLES)
+        if not flying:
             return
         lap_time = d.mLastLapTime if d.mLastLapTime > 0 else None
         lap_no = int(p.mLapsCompleted)
+        # sectores: S1/S2 capturados en vivo (estables), S3 = total - S1 - S2 (robusto)
+        s1, s2 = self._sectimes
+        if lap_time and s1 > 0 and s2 > 0 and (lap_time - s1 - s2) > 0:
+            sectors = [s1, s2, round(lap_time - s1 - s2, 3)]
+        else:
+            sectors = [round(d.mCurrentSector1Time, 3), round(d.mCurrentSector2Time, 3),
+                       round(d.mCurrentSector3Time, 3)]
+        # registro de sectores para TODA vuelta de pista (limpia o invalidada) -> rescate
+        try:
+            with open(os.path.join(self._sess_dir, "sectors.jsonl"), "a", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "lap": lap_no, "lap_time": round(lap_time, 3) if lap_time else None,
+                    "sectors": sectors, "sec_valid": [not x for x in self._sec_invalid],
+                    "invalid": bool(self._invalid),
+                    "ts": datetime.now().isoformat(timespec="seconds"),
+                }, ensure_ascii=False) + "\n")
+        except OSError:
+            pass
+        if self._invalid:     # vuelta sucia: sectores rescatables guardados, pero sin traza/resumen
+            return
         a, st = self._agg, self._start
         end_fuel = d.mFuelLevel * self._cap
         end_wear = [d.mTyreWear[i] for i in range(4)]
@@ -335,9 +381,11 @@ class TelemetryLogger:
                 "ambient_t": round(d.mAmbientTemperature, 1),
                 "track_t": round(d.mTrackTemperature, 1),
                 "rain": round(d.mRainDensity, 3),
-                "sectors": [round(d.mCurrentSector1Time, 3), round(d.mCurrentSector2Time, 3),
-                            round(d.mCurrentSector3Time, 3)],
+                "sectors": sectors,
                 "compound": _safe(bytes(d.mTyreCompound[0])),
+                "tc_setting": int(d.mTractionControlSetting),    # nivel TC configurado (verificar si AMS2 lo puebla)
+                "abs_setting": int(d.mAntiLockSetting),          # nivel ABS configurado
+                "drs": int(d.mDrsState),
                 "trace": tname,
                 "ts": datetime.now().isoformat(timespec="seconds"),
             }

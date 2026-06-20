@@ -83,6 +83,13 @@ def write_session(base):
                      "trace": tname})
     open(os.path.join(d, "summary.jsonl"), "w").write(
         "\n".join(json.dumps(l) for l in laps))
+    # sectors.jsonl: 2 limpias + 1 invalidada con buen S1/S2 a rescatar (S3 sucio)
+    secrecs = [
+        {"lap": 1, "lap_time": 95.0, "sectors": [30.0, 33.0, 32.0], "sec_valid": [True, True, True], "invalid": False},
+        {"lap": 2, "lap_time": 93.0, "sectors": [29.5, 32.0, 31.5], "sec_valid": [True, True, True], "invalid": False},
+        {"lap": 3, "lap_time": 99.0, "sectors": [29.0, 31.0, 39.0], "sec_valid": [True, True, False], "invalid": True},
+    ]
+    open(os.path.join(d, "sectors.jsonl"), "w").write("\n".join(json.dumps(r) for r in secrecs))
     return d
 
 
@@ -100,6 +107,14 @@ def main():
     _ok("interp lineal correcta", abs(A._interp([0, 10], [0, 100], 5) - 50) < 1e-6)
     dm, sm = A._mono([0, 1, 2, 1, 3], [9, 8, 7, 6, 5])[:2]
     _ok("_mono recorta el wrap de meta", dm == [0, 1, 2, 3], dm)
+
+    print("\ntest recuperacion de sectores / vuelta ideal:")
+    rec = A._lap_sectors({"lap_time": 122.42, "sectors": [0.027, 48.42, 48.70]})
+    _ok("recupera S1 roto (~25.30)", rec is not None and abs(rec[0] - 25.30) < 0.02, rec)
+    intact = A._lap_sectors({"lap_time": 90.0, "sectors": [30.0, 30.0, 30.0]})
+    _ok("sectores sanos quedan intactos", intact == [30.0, 30.0, 30.0], intact)
+    _ok("None si falta lap_time", A._lap_sectors({"sectors": [10, 10, 10]}) is None)
+    _ok("None si S1 recuperado da <=0", A._lap_sectors({"lap_time": 50.0, "sectors": [0.02, 30.0, 30.0]}) is None)
 
     print("\ntest reportes end-to-end (sin crash):")
     base = tempfile.mkdtemp(prefix="anatest_")

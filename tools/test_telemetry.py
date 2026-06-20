@@ -57,6 +57,14 @@ class Snap:
         self.mBrakeBias = 0.56
         self.mLocalAcceleration = [2.0, 9.8, 1.0]
         self.mOrientation = [0.5, 0.01, 0.02]
+        self.mLocalVelocity = [1.0, 0.0, 55.0]
+        self.mAngularVelocity = [0.0, 0.2, 0.01]
+        self.mMaxRPM = 7800.0
+        self.mEngineTorque = 320.0
+        self.mAntiLockActive = False
+        self.mTractionControlSetting = 3
+        self.mAntiLockSetting = 2
+        self.mDrsState = 0
         self.mWaterTempCelsius = 90.0
         self.mOilTempCelsius = 105.0
         self.mAmbientTemperature = 22.0
@@ -79,6 +87,8 @@ class Snap:
         self.mRideHeight = q(0.06)
         self.mAirPressure = q(165.0)
         self.mTyreRPS = q(120.0)
+        self.mTerrain = [0, 0, 0, 0]
+        self.mTyreCarcassTemp = q(360.0)    # ~87 C en Kelvin
         self._p = P(laps_completed, dist)
 
     @property
@@ -150,6 +160,14 @@ def main():
             _ok("filas ~260", abs(len(rows) - 260) <= 2, len(rows))
             _ok("cada fila tiene todas las columnas",
                 all(len(r.split(",")) == len(T.HEADER) for r in rows[:5]))
+        secf = os.path.join(sd, "sectors.jsonl") if sd else ""
+        slines = open(secf, encoding="utf-8").read().strip().splitlines() if os.path.exists(secf) else []
+        _ok("sectors.jsonl: 1 registro (limpia)", len(slines) == 1, len(slines))
+        if slines:
+            srec = json.loads(slines[0])
+            _ok("sectores: S1/S2 vivos + S3=total-S1-S2", srec["sectors"] == [100.0, 180.0, 192.5], srec["sectors"])
+            _ok("limpia: sec_valid todos True", srec["sec_valid"] == [True, True, True], srec["sec_valid"])
+            _ok("limpia: invalid=False", srec["invalid"] is False)
 
         print("test_invalid_lap (lap invalida -> NO se guarda):")
         log2 = T.TelemetryLogger(base_dir=tempfile.mkdtemp(prefix="ams2tel2_"))
@@ -158,7 +176,14 @@ def main():
         cross_to(log2, 2)
         sd2 = session_dir(log2._base)
         tr2 = [f for f in os.listdir(sd2) if f.endswith(".csv.gz")] if sd2 else []
-        _ok("vuelta invalida no guardada", len(tr2) == 0, tr2)
+        _ok("vuelta invalida no guardada (sin traza)", len(tr2) == 0, tr2)
+        secf2 = os.path.join(sd2, "sectors.jsonl") if sd2 else ""
+        sl2 = open(secf2, encoding="utf-8").read().strip().splitlines() if os.path.exists(secf2) else []
+        _ok("invalida: sectors.jsonl SI guarda el registro (rescate)", len(sl2) == 1, len(sl2))
+        if sl2:
+            r2 = json.loads(sl2[0])
+            _ok("invalida: invalid=True", r2["invalid"] is True)
+            _ok("invalida: sec_valid marca >=1 sector sucio", r2["sec_valid"].count(False) >= 1, r2["sec_valid"])
         shutil.rmtree(log2._base, ignore_errors=True)
 
         print("test_disabled (modo off -> NO se guarda):")

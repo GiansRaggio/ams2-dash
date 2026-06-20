@@ -53,6 +53,19 @@ def _load(folder):
     return meta, laps
 
 
+def _load_sectors(folder):
+    """Registros de sectores por vuelta (sectors.jsonl): sectores correctos + validez por
+    sector, incluso de vueltas invalidadas (para rescatar sectores limpios). [] si no hay."""
+    out = []
+    p = os.path.join(folder, "sectors.jsonl")
+    if os.path.exists(p):
+        for line in open(p, encoding="utf-8"):
+            line = line.strip()
+            if line:
+                out.append(json.loads(line))
+    return out
+
+
 def _slope(ys):
     """Pendiente de regresion lineal simple (unidad por vuelta)."""
     n = len(ys)
@@ -64,6 +77,25 @@ def _slope(ys):
     num = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
     den = sum((x - mx) ** 2 for x in xs)
     return num / den if den else 0.0
+
+
+def _lap_sectors(l):
+    """Sectores [S1,S2,S3] de una vuelta, recuperando el S1 si el logger lo guardo roto.
+
+    Bug del logger (pre-fix): al cruzar meta leia mCurrentSector1Time de la vuelta
+    NUEVA (ya reseteado a ~0) en vez del de la completada, dejando S1~=0. Como S2/S3 y
+    lap_time son correctos, se recupera S1 = lap_time - S2 - S3. None si no hay datos.
+    """
+    s = l.get("sectors")
+    lt = l.get("lap_time")
+    if not s or len(s) != 3 or lt is None:
+        return None
+    s1, s2, s3 = s
+    if s1 < 1.0 and s2 > 0 and s3 > 0:        # S1 roto -> recuperar del total
+        s1 = lt - s2 - s3
+    if s1 <= 0 or s2 <= 0 or s3 <= 0:
+        return None
+    return [round(s1, 3), s2, s3]
 
 
 def load_trace(folder, lap_no, laps=None):
@@ -271,18 +303,59 @@ def report_session(folder):
     elif degs:
         print("  desgaste        : plano (mTyreWear no avanza en este auto/sesion)")
 
-    # mejores sectores + vuelta teorica
-    secs = [l["sectors"] for l in laps if l.get("sectors") and len(l["sectors"]) == 3
-            and all(s > 0 for s in l["sectors"])]
-    if secs:
-        best_s = [min(s[i] for s in secs) for i in range(3)]
-        print(f"  mejores sectores: {best_s[0]:.3f} / {best_s[1]:.3f} / {best_s[2]:.3f}")
-        print(f"  vuelta teorica  : {_fmt_t(sum(best_s)).strip()}  (suma de mejores sectores)")
-        if len(secs) >= 3:
-            sig = [st.pstdev([s[i] for s in secs]) for i in range(3)]
+    # --- sectores + vuelta ideal (rescata el mejor sector LIMPIO de cada vuelta) ---
+    # Con sectors.jsonl (logger nuevo): sectores correctos + validez por sector, incluso de
+    # vueltas invalidadas -> se rescata un sector bueno de una vuelta con error en otro sector.
+    srecs = _load_sectors(folder)
+    if srecs:
+        sl = [{"lap": r["lap"], "s": r["sectors"], "t": r.get("lap_time"),
+               "v": r.get("sec_valid", [True, True, True]), "inv": r.get("invalid", False)}
+              for r in srecs if r.get("sectors") and len(r["sectors"]) == 3
+              and all(x > 0 for x in r["sectors"])]
+    else:                                  # sesiones viejas: del summary, con S1 recuperado
+        sl = []
+        for l in laps:
+            s = _lap_sectors(l) if l.get("lap_time") else None
+            if s:
+                sl.append({"lap": l["lap"], "s": s, "t": l["lap_time"],
+                           "v": [True, True, True], "inv": False})
+    if sl:
+        clean_t = [r["t"] for r in sl if r["t"] and not r["inv"]]
+        best_lap_time = min(clean_t) if clean_t else min(r["t"] for r in sl if r["t"])
+        best_i = []                        # vuelta dueña de cada sector (solo sectores LIMPIOS)
+        for i in range(3):
+            cands = [r for r in sl if r["v"][i]]
+            best_i.append(min(cands, key=lambda r: r["s"][i]) if cands else None)
+        print(f"\n  {'LAP':>3} {'S1':>10} {'S2':>10} {'S3':>10}")
+        for r in sl:
+            tags = []
+            if r["t"] and r["t"] > best_lap_time * 1.03:
+                tags.append("lenta/calentando")
+            if r["inv"]:
+                tags.append("invalidada")
+            cells = []
+            for i in range(3):
+                own = best_i[i] is not None and best_i[i]["lap"] == r["lap"]
+                mark = "*" if own else (" " if r["v"][i] else "x")   # x = sector sucio (no elegible)
+                cells.append(f"{r['s'][i]:8.3f}{mark}")
+            tail = ("  (" + ", ".join(tags) + ")") if tags else ""
+            print(f"  {r['lap']:>3} " + " ".join(cells) + tail)
+        if all(best_i):
+            best_s = [best_i[i]["s"][i] for i in range(3)]
+            ideal = sum(best_s)
+            owners = " · ".join(
+                f"S{i+1} {best_s[i]:.3f} (L{best_i[i]['lap']}{'^' if best_i[i]['inv'] else ''})"
+                for i in range(3))
+            print(f"  mejores sectores: {owners}   (* dueña · x sucio · ^ rescatado de inválida)")
+            print(f"  vuelta ideal    : {_fmt_t(ideal).strip()}  ·  tu mejor "
+                  f"{_fmt_t(best_lap_time).strip()}  ·  {ideal - best_lap_time:+.3f}s a ganar uniendo sectores")
+        repr_secs = [r["s"] for r in sl
+                     if r["t"] and not r["inv"] and r["t"] <= best_lap_time * 1.03]
+        if len(repr_secs) >= 3:
+            sig = [st.pstdev([s[i] for s in repr_secs]) for i in range(3)]
             worst = max(range(3), key=lambda i: sig[i])
             print(f"  consist. sector : S1 {sig[0]:.2f} · S2 {sig[1]:.2f} · S3 {sig[2]:.2f}s  "
-                  f"(mas disperso S{worst+1})")
+                  f"(mas disperso S{worst+1}; sobre {len(repr_secs)} vueltas limpias repr.)")
 
 
 def report_lap(folder, lap_no):
