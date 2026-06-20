@@ -101,8 +101,7 @@ propios + nativo AMS2 + cero fricción.
 - **Métricas pro desde los canales que ya grabas**: trail braking (brake∩steer + desaceleración
   sostenida), rotation (yaw rate en apex vs vmin/slip), slip management (picos de tyre_slip por rueda),
   smoothness (tasa de cambio de throttle/steer), load transfer (susp vel + ride height + accel lateral).
-- **Diagnóstico de gomas (beta): camber/presión por spread L/C/R** — desbloqueado hoy. Etiquetado
-  beta, dirección "probable", sin números de grados/psi presentados como medidos.
+- ✅ **Diagnóstico de gomas (beta)**: presión térmica (centro vs bordes) + camber por rueda + asimetría izq/der (`--tyres`), etiquetado beta. *(pendiente: integrarlo en la UI del dash)*
 - Delta bar / ghost live vs best propio.
 - Práctica estructurada (focus stint, targets por sector).
 

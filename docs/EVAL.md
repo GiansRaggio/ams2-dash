@@ -177,3 +177,13 @@ baja a **2 vueltas limpias** (cada una vs el benchmark, repetición ≥2) — an
 intra-sesión exigía 3 (best + 2 que repitan). Refactor: `_read_trace` y `_corners_vs` reusables entre
 intra-sesión y vs-referencia, + `load_reference_trace`. `tools/test_insights.py`: +2 asserts (22). Suite
 total: 110. Pendiente del eje referencia: overlay VISUAL de traza completa vs ref (UI/P2).
+
+### it.9 — gomas beta: presión térmica + camber por rueda
+`analyze_telemetry.py --tyres` (desbloqueado tras verificar los canales en it.4): por rueda, sobre las
+vueltas limpias, reporta temps L/C/R + bulk, presión en caliente (Bar×100→psi) y el veredicto de presión
+por método **TÉRMICO** (dCenter = centro − bordes, inmune al bug de unidad): sobre/sub/OK. Más camber
+(dEdge, beta, signo "probable" por SimHub #632) y la asimetría izq/der + del/tras con su lectura
+(curvas dominantes / sesgo). Ventanas GT de referencia (no canónicas en AMS2 → beta). Validado en la
+sesión real (Audi GT4 @ Buenos Aires): las 4 presiones térmicamente OK y en ventana → la asimetría RL
+caliente / FR fría es de la **pista** (dominada por derechas) + sesgo trasero, NO de presión.
+`tools/test_tyres.py` (nuevo): 10 asserts. Suite total: 120.

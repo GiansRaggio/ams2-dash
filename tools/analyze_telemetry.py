@@ -686,6 +686,104 @@ def report_insights(folder):
         print(f"  [{i}] {head} · {ins['msg']} ({ins['proc']})")
 
 
+# ====================== GOMAS (BETA): presion/camber por rueda ======================
+# Ventanas de referencia GT (AMS2 no publica un valor canonico -> beta, afinar por sensacion).
+TEMP_COLD_T, TEMP_OPT_LO, TEMP_OPT_HI, TEMP_HOT_T = 70, 80, 90, 100   # C
+PSI_WIN_LO, PSI_WIN_HI = 26.0, 27.5                                   # psi en caliente (ref)
+DCENTER_OK = 5.0                                                      # |centro - bordes| <= 5C = presion termica OK
+
+
+def tyres_struct(folder):
+    """Gomas por rueda sobre las vueltas limpias: temps L/C/R, presion en caliente, dCenter
+    (centro vs bordes -> presion TERMICA, inmune al bug Bar*100) y dEdge (camber, beta)."""
+    _, laps = _load(folder)
+    clean_set = set(clean_laps(folder)["clean"])
+    clean = [l for l in laps if l.get("trace") and l["lap"] in clean_set]
+    if not clean:
+        return None
+    CORN = ("FL", "FR", "RL", "RR")
+    acc = {c: {"in": [], "mid": [], "out": [], "bulk": [], "press": []} for c in CORN}
+    for l in clean:
+        d = load_trace(folder, l["lap"])
+        if not d:
+            continue
+        for c in CORN:
+            for k, ch in (("in", f"tyre_t_in_{c}"), ("mid", f"tyre_t_mid_{c}"),
+                          ("out", f"tyre_t_out_{c}"), ("bulk", f"tyre_temp_{c}"),
+                          ("press", f"tyre_press_{c}")):
+                acc[c][k] += d.get(ch, [])
+    wheels = {}
+    for c in CORN:
+        a = acc[c]
+        if not a["mid"]:
+            continue
+        i, mi, o = (sum(a[k]) / len(a[k]) for k in ("in", "mid", "out"))
+        b = sum(a["bulk"]) / len(a["bulk"])
+        pr = st.median(a["press"]) if a["press"] else 0.0
+        psi = pr / 100 * 14.5038 if 100 < pr < 400 else (pr if 15 < pr < 40 else None)
+        wheels[c] = {"in": round(i, 1), "mid": round(mi, 1), "out": round(o, 1), "bulk": round(b, 1),
+                     "dCenter": round(mi - (i + o) / 2, 1), "dEdge": round(i - o, 1),
+                     "psi": round(psi, 1) if psi else None}
+    return {"wheels": wheels, "n_clean": len(clean)} if wheels else None
+
+
+def _press_verdict(w):
+    """Veredicto de presion por rueda: termico (centro vs bordes, robusto) + ventana (ref)."""
+    dC, psi = w["dCenter"], w["psi"]
+    if dC > DCENTER_OK:
+        therm = f"centro caliente ({dC:+.1f}C): posible SOBREpresion, baja en frio"
+    elif dC < -DCENTER_OK:
+        therm = f"bordes calientes ({dC:+.1f}C): posible SUBpresion, sube en frio"
+    else:
+        therm = f"centro/bordes OK ({dC:+.1f}C)"
+    if psi is None:
+        win = "psi no fiable"
+    elif psi > PSI_WIN_HI:
+        win = f"{psi:.1f} psi (sobre ~{PSI_WIN_LO:.0f}-{PSI_WIN_HI:.0f}, baja un toque en frio)"
+    elif psi < PSI_WIN_LO:
+        win = f"{psi:.1f} psi (bajo ~{PSI_WIN_LO:.0f}-{PSI_WIN_HI:.0f}, sube un toque en frio)"
+    else:
+        win = f"{psi:.1f} psi (en ventana)"
+    return therm, win
+
+
+def report_tyres(folder):
+    meta, _ = _load(folder)
+    ts = tyres_struct(folder)
+    print(f"\n=== Gomas (BETA) · {meta.get('car', '?')} @ {meta.get('track', '?')} ===")
+    if not ts:
+        print("  sin vueltas limpias con traza todavia.")
+        return
+    print("  live-beta: temps sin calibrar en caliente (SimHub #632: el SIGNO del spread de bordes es")
+    print("  'probable', no medido). La presion se juzga TERMICA (centro vs bordes), que es robusta.")
+    print(f"  ventana ref: 80-90C optima · {PSI_WIN_LO:.0f}-{PSI_WIN_HI:.0f} psi caliente (afinar por sensacion)")
+    print(f"\n  {'rueda':5} {'in/mid/out':>13} {'bulk':>6} {'estado':>9}  presion")
+    for c, w in ts["wheels"].items():
+        b = w["bulk"]
+        state = ("FRIA" if b < TEMP_COLD_T else "caliente" if b > TEMP_HOT_T
+                 else "optima" if TEMP_OPT_LO <= b <= TEMP_OPT_HI else "ok")
+        therm, win = _press_verdict(w)
+        lcr = f"{w['in']:.0f}/{w['mid']:.0f}/{w['out']:.0f}"
+        print(f"  {c:5} {lcr:>13} {b:6.1f} {state:>9}  {therm}; {win}")
+    print("\n  camber (BETA, magnitud del spread de bordes; signo 'probable'):")
+    for ax, l, r in (("delantero", "FL", "FR"), ("trasero", "RL", "RR")):
+        if l in ts["wheels"] and r in ts["wheels"]:
+            print(f"   {ax}: {l} dEdge {ts['wheels'][l]['dEdge']:+.1f}C · {r} dEdge {ts['wheels'][r]['dEdge']:+.1f}C "
+                  "(|spread| alto = un borde trabaja mas)")
+    ws = ts["wheels"]
+    if all(k in ws for k in ("FL", "FR", "RL", "RR")):
+        left = (ws["FL"]["bulk"] + ws["RL"]["bulk"]) / 2
+        right = (ws["FR"]["bulk"] + ws["RR"]["bulk"]) / 2
+        front = (ws["FL"]["bulk"] + ws["FR"]["bulk"]) / 2
+        rear = (ws["RL"]["bulk"] + ws["RR"]["bulk"]) / 2
+        print(f"\n  asimetria: izq {left:.0f}C vs der {right:.0f}C ({left - right:+.0f}) · "
+              f"del {front:.0f}C vs tras {rear:.0f}C ({front - rear:+.0f})")
+        if abs(left - right) >= 5:
+            side, turns = ("izquierdo", "derecha") if left > right else ("derecho", "izquierda")
+            print(f"   lado {side} mas caliente -> pista dominada por curvas a {turns} (carga ese lado): "
+                  "es de la pista, no se corrige con presion; balancea cada goma a su ventana.")
+
+
 def main():
     ap = argparse.ArgumentParser(description="Analisis de telemetria AMS2")
     ap.add_argument("folder", nargs="?", help="carpeta de sesion (default: la ultima)")
@@ -697,6 +795,8 @@ def main():
                     help="motor de insights: 2-4 consejos accionables priorizados (>=3 vueltas limpias)")
     ap.add_argument("--save-ref", nargs="?", type=int, const=-1, metavar="LAP", default=None,
                     help="guarda la mejor vuelta limpia (o LAP) como referencia del auto+pista")
+    ap.add_argument("--tyres", action="store_true",
+                    help="gomas (beta): presion termica + camber por rueda sobre las vueltas limpias")
     a = ap.parse_args()
 
     if a.list:
@@ -719,6 +819,8 @@ def main():
         report_lap(folder, a.lap)
     elif a.insights:
         report_insights(folder)
+    elif a.tyres:
+        report_tyres(folder)
     else:
         report_session(folder)
 
