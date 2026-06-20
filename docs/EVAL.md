@@ -136,3 +136,13 @@ mejor sector **limpio** de cada vuelta, rescatando sectores buenos de vueltas co
 **Moza diferida** (no aporta para tiempos: la fuerza load-cell en kg no está expuesta; `brake-output`
 duplica `mUnfilteredBrake`). Suite: +12 asserts. Pendiente: camber/presión en la UI (beta), balance
 por curva (yaw+slip).
+
+### it.5 — guardrail C3 de dampers (bottoming → no ablandar bump)
+`_recommend` no cruzaba el recorrido de suspensión: la regla `high>=28` podía recomendar ablandar
+fast bump con la suspensión tocando fondo (viola C3). Ahora cruza `tBottom` (peor neumático del eje,
+umbral `BOTTOM_GUARD_PCT`=5% — más bajo que el flag de resortes a 8% a propósito) y, con bottoming,
+suprime todo ablandamiento de bump y avisa la corrección física (rate/altura/packers; revisar también
+rebound/pack-down). Refinado por **revisión adversarial** (2 lentes: física + regresión): se quitó el
+endurecimiento numérico forzado de fast bump — el histograma de velocidad no separa el bombeo de curva
+de los impactos de piano, así que la sugerencia de endurecer va como texto. `tools/test_dampers.py`
+(nuevo): 11 asserts. Suite total: 88.

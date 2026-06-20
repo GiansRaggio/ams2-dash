@@ -24,8 +24,8 @@ Instrucciones obligatorias:
 > - Canales de gomas **L/C/R verificados** (center entre bordes 100%) y presión decodificada
 >   (**Bar×100 → ~27 psi**): el diagnóstico de **camber/presión SÍ es construible** (beta) → sale de
 >   "descartados" y pasa a P1.
-> - **Bug pendiente (C3):** el guardrail de bottoming solo cubre las recs de *travel*; las recs de
->   *clicks* de damper pueden recomendar ablandar bump tocando fondo. Arreglar antes de seguir.
+> - **Bug C3 (RESUELTO, commit 004cdaf):** las recs de *clicks* de damper ahora cruzan el bottoming
+>   (`tBottom`) y nunca recomiendan ablandar bump tocando fondo. Refinado por revisión adversarial.
 > - Telemetría **Moza: diferida** (no aporta para tiempos; la fuerza load-cell en kg no está expuesta).
 
 ---
@@ -48,8 +48,8 @@ frente a herramientas genéricas.
 - Grabación rica y eficiente a 50 Hz, **87 canales** (inputs unfiltered, tyre layers L/C/R, slip,
   susp vel/travel, brake temps, ride height, g's, **yaw, vel local, terrain, carcass**).
 - Estrategia sofisticada (vueltas verdes, márgenes en vueltas, limitante explícito, plan manual).
-- Dampers: histogramas de velocidad (low/high, bump/rebound) + travel + recomendaciones.
-  *(Ojo: el guardrail de bottoming no cubre las recs de clicks — ver bug abajo.)*
+- Dampers: histogramas de velocidad (low/high, bump/rebound) + travel + recomendaciones de clicks
+  con guardrail C3 (bottoming → nunca ablandar bump).
 - Análisis post (CLI): apex/vmin, delta por distancia vs tu best, dónde pierdes/ganas, consistencia
   por sector, coasting, **vuelta ideal por mejores sectores limpios con rescate de vueltas
   invalidadas** (recién arreglado).
@@ -64,8 +64,6 @@ frente a herramientas genéricas.
   smoothness, load transfer) — pese a que **los canales ya están grabados**.
 - Sin coaching automatizado que diga qué entrenar la próxima tanda.
 - Sin práctica estructurada (drills por debilidad).
-- **Bug C3 pendiente:** `_recommend` (dampers) no lee `tBottom`; puede recomendar ablandar bump con
-  bottoming presente.
 - Referencias externas débiles (AMS2 tiene menos comunidad que iRacing).
 
 **Mercado (2026):** SimHub (overlays + logging), Telemetry Tool for AMS2 (Iko Rein), sim-to-motec +
@@ -190,7 +188,7 @@ Fortaleza actual; potenciarla para práctica activa.
 
 **Fase 0 — Consolidación (en curso)**
 - ✅ Sectores arreglados + rescate (`sectors.jsonl`, vuelta ideal).
-- Arreglar **bug C3** del guardrail de dampers (`_recommend` debe leer `tBottom`).
+- ✅ Bug **C3** del guardrail de dampers arreglado (`_recommend` cruza `tBottom`; refinado por revisión adversarial).
 - **Refactor del analyzer → estructuras** (no prints) — habilita insights y UI.
 - Gestión básica de referencias propias (mejor vuelta auto + manual) + `report_vs` contra ref guardada.
 - Actualizar `EVAL.md`.
