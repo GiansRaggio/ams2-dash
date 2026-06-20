@@ -25,6 +25,9 @@ BIN_W = 25                      # mm/s por bin
 BIN_MAX = 400                   # mm/s (borde)
 N_BINS = (2 * BIN_MAX) // BIN_W  # 32
 LOW_HIGH = 50                   # mm/s: umbral low-speed / high-speed
+BOTTOM_GUARD_PCT = 5            # % de travel en tope para gatillar el guardrail anti-soften de bump.
+                                # Mas bajo que el flag de bottoming de _spring_recommend (8%) a proposito:
+                                # no sugerir un click cuesta menos que recomendar algo peligroso (C3).
 CENTERS = [(-BIN_MAX + BIN_W * (i + 0.5)) for i in range(N_BINS)]
 
 SAMPLE_SLEEP = 0.002            # espera entre sondeos con mismo seq
@@ -275,6 +278,7 @@ class DamperAnalyzer:
             SR = (c1["pctSR"] + c2["pctSR"]) / 2
             FR = (c1["pctFR"] + c2["pctFR"]) / 2
             high = FB + FR
+            bottom = max(c1.get("tBottom", 0), c2.get("tBottom", 0))   # peor neumatico del eje (seguridad)
             adj = {"slow bump": 0, "fast bump": 0, "slow reb": 0, "fast reb": 0}
             aS = SB - SR                      # balance bump/rebound de baja velocidad
             if clicks(abs(aS)):
@@ -282,12 +286,22 @@ class DamperAnalyzer:
             aF = FB - FR                      # balance bump/rebound de alta velocidad
             if clicks(abs(aF)):
                 adj["fast bump" if aF > 0 else "fast reb"] -= clicks(abs(aF))
-            if high >= 28:                    # mucho contenido de alta velocidad
+            if high >= 28 and bottom < BOTTOM_GUARD_PCT:   # mucha alta velocidad (salvo bottoming)
                 adj["fast bump"] -= max(1, min(3, round((high - 22) / 6)))
+            # GUARDRAIL FISICO (rubrica C3): con bottoming NUNCA ablandar bump (agravaria el toque de
+            # fondo). NO forzamos un endurecimiento numerico: el histograma de velocidad no separa el
+            # bombeo de curva (donde endurecer fast bump es defensa correcta) de los impactos de piano
+            # (donde endurecer es contraproducente) -> la correccion va como texto.
+            note = ""
+            if bottom >= BOTTOM_GUARD_PCT:
+                adj["slow bump"] = max(0, adj["slow bump"])
+                adj["fast bump"] = max(0, adj["fast bump"])
+                note = (f" | BOTTOMING {bottom:.0f}%: NO ablandar bump -> subir rate/altura/packers "
+                        "o endurecer fast bump; revisar tambien rebound (pack-down)")
             tips = [f"{k} {'+' if dv > 0 else ''}{dv}"
                     for k, dv in ((k, max(-3, min(3, v))) for k, v in adj.items()) if dv]
             body = " · ".join(tips) if tips else "balanceado, sin cambios"
-            return f"{label} [SB{SB:.0f}/FB{FB:.0f}/SR{SR:.0f}/FR{FR:.0f}%]: {body}"
+            return f"{label} [SB{SB:.0f}/FB{FB:.0f}/SR{SR:.0f}/FR{FR:.0f}%]: {body}{note}"
 
         recs.append(axle(0, 1, "DELANTERO"))
         recs.append(axle(2, 3, "TRASERO"))
