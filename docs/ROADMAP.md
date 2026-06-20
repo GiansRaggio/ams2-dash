@@ -193,7 +193,7 @@ Fortaleza actual; potenciarla para práctica activa.
 - Actualizar `EVAL.md`.
 
 **Fase 1 — Insights + comparación (alto impacto inmediato)**
-- ✅ Motor de insights v1 (R2 peor sector, R1 vmin, R3 coasting; CLI `--insights`, guards anti-FP).
+- ✅ Motor de insights (R2/R2-ref sector, R1/R1-ref vmin, R3 coasting, R-consist consistencia; CLI `--insights`, guards anti-FP, identidad de vuelta por traza).
 - Métricas pro: trail braking, rotation/yaw, slip.
 - Gomas beta (camber/presión spread).
 - Probar en pista: ¿identifico y corrijo 1 debilidad clara por sesión?

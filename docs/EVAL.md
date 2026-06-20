@@ -187,3 +187,14 @@ por método **TÉRMICO** (dCenter = centro − bordes, inmune al bug de unidad):
 sesión real (Audi GT4 @ Buenos Aires): las 4 presiones térmicamente OK y en ventana → la asimetría RL
 caliente / FR fría es de la **pista** (dominada por derechas) + sesgo trasero, NO de presión.
 `tools/test_tyres.py` (nuevo): 10 asserts. Suite total: 120.
+
+### it.10 — fix de identidad de vuelta + regla de consistencia (R-consist)
+**Bug real (en datos de pista):** al volver al garage AMS2 resetea el contador → números de vuelta
+repetidos (dos "lap 3", dos "lap 4") en summary/sectors. Las trazas (archivo) son únicas, pero el
+análisis buscaba por NÚMERO → `load_trace` agarraba la vuelta equivocada (a menudo la de calentamiento)
+→ corrompía R1/R3 (basadas en traza). **Fix:** el logger estampa un `uid` monotónico por vuelta; el
+análisis identifica vueltas por su REGISTRO/traza, no por número — `clean_laps` devuelve registros,
+`_lap_trace` carga por archivo, `load_trace` elige la más rápida ante colisión. **Nueva R-consist:**
+flaguea el sector de mayor dispersión vuelta a vuelta (repetibilidad), distinto del gap a tu ideal —
+capturó justo lo de la sesión real (S1 varía 0.86s). `tools/test_insights.py`: +3 asserts (duplicado +
+R-consist). Suite total: 123. Pendiente: que el logger excluya solo la out-lap real tras el garage.

@@ -119,13 +119,21 @@ def _read_trace(path):
 
 
 def load_trace(folder, lap_no, laps=None):
-    """Carga la traza de una vuelta como dict canal->lista de floats."""
+    """Carga la traza de una vuelta por NUMERO. Si varias comparten numero (el contador se
+    resetea al volver al garage), usa la mas rapida (la representativa)."""
     if laps is None:
         _, laps = _load(folder)
-    m = [l for l in laps if l["lap"] == lap_no]
+    m = [l for l in laps if l["lap"] == lap_no and l.get("trace")]
     if not m:
         return None
+    m.sort(key=lambda l: l.get("lap_time") or 9e9)
     return _read_trace(os.path.join(folder, m[0]["trace"]))
+
+
+def _lap_trace(folder, rec):
+    """Carga la traza de un REGISTRO de vuelta por su nombre de archivo (identidad unica,
+    inmune a numeros de vuelta repetidos por reset del garage)."""
+    return _read_trace(os.path.join(folder, rec["trace"])) if rec and rec.get("trace") else None
 
 
 def _mono(dist, *cols):
@@ -421,16 +429,16 @@ def report_lap(folder, lap_no):
 # Funciones *_struct devuelven datos (no print) -> inicio del refactor a estructuras.
 
 def clean_laps(folder):
-    """Vueltas limpias representativas (lap_time <= best*1.03; el summary ya excluye
-    invalidadas y out-laps). Centraliza el filtro de los insights y sus guards."""
+    """Vueltas limpias representativas (lap_time <= best*1.03). Devuelve los REGISTROS (no
+    solo numeros) para identificar cada vuelta por su traza unica -> no confunde vueltas que
+    comparten numero cuando el contador se resetea (visita al garage)."""
     _, laps = _load(folder)
     timed = [l for l in laps if l.get("lap_time")]
     if not timed:
-        return {"best_lap_time": None, "n_clean": 0, "clean": [], "ref_lap": None}
+        return {"best_lap_time": None, "n_clean": 0, "clean": [], "ref": None}
     best = min(l["lap_time"] for l in timed)
     clean = sorted((l for l in timed if l["lap_time"] <= best * 1.03), key=lambda l: l["lap_time"])
-    return {"best_lap_time": best, "n_clean": len(clean),
-            "clean": [l["lap"] for l in clean], "ref_lap": clean[0]["lap"] if clean else None}
+    return {"best_lap_time": best, "n_clean": len(clean), "clean": clean, "ref": clean[0] if clean else None}
 
 
 def sectors_struct(folder):
@@ -496,9 +504,9 @@ def corners_vs_struct(folder, lap_a, ref_lap):
     return _corners_vs(load_trace(folder, lap_a), load_trace(folder, ref_lap))
 
 
-def coasting_struct(folder, lap):
-    """Tramos de coasting + si caen en la zona de entrada (justo antes de un apex)."""
-    t = load_trace(folder, lap)
+def coasting_struct(folder, rec):
+    """Tramos de coasting + si caen en la zona de entrada, para un REGISTRO de vuelta."""
+    t = _lap_trace(folder, rec)
     if not t:
         return []
     d, s, th, br = _mono(t["lap_dist"], t["speed_kmh"], t["throttle"], t["brake"])
@@ -538,29 +546,32 @@ def save_reference(folder, lap=None, force=False):
     car, track = meta.get("car"), meta.get("track")
     if not car or not track:
         return "sin metadata de auto/pista en la sesion"
-    lap = lap if lap is not None else clean_laps(folder)["ref_lap"]
     if lap is None:
+        rec = clean_laps(folder)["ref"]
+    else:
+        cands = sorted((l for l in laps if l["lap"] == lap and l.get("lap_time")),
+                       key=lambda l: l["lap_time"])
+        rec = cands[0] if cands else None
+    if not rec:
         return "no hay vuelta limpia para guardar"
-    m = [l for l in laps if l["lap"] == lap and l.get("lap_time")]
-    if not m:
-        return f"vuelta {lap} no encontrada o sin tiempo"
-    lt = m[0]["lap_time"]
+    lt = rec["lap_time"]
     existing = load_reference(folder)
     if existing and not force and existing.get("lap_time", 9e9) <= lt:
         return (f"la referencia actual ({existing['lap_time']:.3f}s) ya es mas rapida que la vuelta "
-                f"{lap} ({lt:.3f}s); usa --save-ref con la vuelta y force si quieres sobreescribir")
-    sec = next((r["sectors"] for r in _load_sectors(folder) if r["lap"] == lap), None) or _lap_sectors(m[0])
+                f"{rec['lap']} ({lt:.3f}s); usa --save-ref con la vuelta y force si quieres sobreescribir")
+    sec = next((r["sectors"] for r in _load_sectors(folder)
+                if r["lap"] == rec["lap"] and abs((r.get("lap_time") or 0) - lt) < 0.01), None) or _lap_sectors(rec)
     os.makedirs(REFDIR, exist_ok=True)
     name = f"{car}__{track}"
     data = {"car": car, "track": track, "track_variation": meta.get("track_variation"),
-            "lap": lap, "lap_time": round(lt, 3), "sectors": sec, "session": os.path.basename(folder)}
-    src = os.path.join(folder, m[0].get("trace", "") or "")
-    if m[0].get("trace") and os.path.exists(src):
+            "lap": rec["lap"], "lap_time": round(lt, 3), "sectors": sec, "session": os.path.basename(folder)}
+    src = os.path.join(folder, rec.get("trace", "") or "")
+    if rec.get("trace") and os.path.exists(src):
         shutil.copy(src, os.path.join(REFDIR, name + ".csv.gz"))
         data["trace"] = name + ".csv.gz"
     with open(os.path.join(REFDIR, name + ".json"), "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-    return f"referencia guardada: {car} @ {track} = {lt:.3f}s (vuelta {lap})"
+    return f"referencia guardada: {car} @ {track} = {lt:.3f}s (vuelta {rec['lap']})"
 
 
 def reference_struct(folder):
@@ -578,19 +589,20 @@ def reference_struct(folder):
 
 
 def build_insights(folder):
-    """Motor v1: sector debil vs tu REFERENCIA guardada (R2-ref, sirve con >=1 vuelta) o vs tu
-    ideal de sesion (R2, >=3 limpias); deficit de vmin (R1) y coasting (R3) intra-sesion (>=3).
-    Guards: piso de ruido, repeticion en >=2 vueltas, procedencia, dedup. (header, insights, status)."""
+    """Motor v1: sector debil vs tu REFERENCIA (R2-ref) o vs tu ideal (R2); sector INCONSISTENTE
+    (R-consist); deficit de vmin (R1/R1-ref) y coasting (R3). Identifica vueltas por su traza unica
+    (no por numero, que se repite tras el garage). Guards: piso de ruido, repeticion, procedencia."""
     meta, _ = _load(folder)
     cl = clean_laps(folder)
     n = cl["n_clean"]
     rs = reference_struct(folder)
     ref_trace = load_reference_trace(folder) if rs else None
+    ss = sectors_struct(folder)
     header = {"car": meta.get("car", "?"), "track": meta.get("track", "?"), "n_clean": n,
               "best_lap_time": cl["best_lap_time"], "ref_lap_time": rs["ref_lap_time"] if rs else None}
     out = []
 
-    # --- sector debil: vs tu REFERENCIA guardada (medido, sirve con pocas vueltas) o vs tu ideal ---
+    # --- sector debil: vs tu REFERENCIA guardada (medido, >=1 vuelta) o vs tu ideal de sesion ---
     if rs and n >= 1:
         d = rs["sector_deltas"]
         order = sorted(range(3), key=lambda i: d[i], reverse=True)
@@ -599,27 +611,36 @@ def build_insights(folder):
             out.append({"regla": "R2-ref", "t": d[w], "proc": "medido",
                         "msg": f"S{w + 1}: +{d[w]:.2f}s vs tu referencia ({rs['ref_sectors'][w]:.3f}s) — "
                                f"es tu mayor brecha al benchmark, foco ahi."})
-    elif n >= 3:
-        ss = sectors_struct(folder)
-        if ss and ss["n_clean_sec"] >= 3 and all(g is not None for g in ss["gaps"]):
-            order = sorted(range(3), key=lambda i: ss["gaps"][i], reverse=True)
-            w = order[0]
-            gap, gap2 = ss["gaps"][w], ss["gaps"][order[1]]
-            if gap >= 0.30 and (gap - gap2) >= 0.15:
-                out.append({"regla": "R2", "t": gap, "proc": "medido",
-                            "msg": f"S{w + 1} es tu sector debil: pierdes {gap:.2f}s vs tu mejor S{w + 1} "
-                                   f"({ss['best_s'][w]:.3f}s, L{ss['owners'][w]}) — ya lo hiciste mas rapido."})
+    elif ss and ss["n_clean_sec"] >= 3 and all(g is not None for g in ss["gaps"]):
+        order = sorted(range(3), key=lambda i: ss["gaps"][i], reverse=True)
+        w = order[0]
+        gap, gap2 = ss["gaps"][w], ss["gaps"][order[1]]
+        if gap >= 0.30 and (gap - gap2) >= 0.15:
+            out.append({"regla": "R2", "t": gap, "proc": "medido",
+                        "msg": f"S{w + 1} es tu sector debil: pierdes {gap:.2f}s vs tu mejor S{w + 1} "
+                               f"({ss['best_s'][w]:.3f}s, L{ss['owners'][w]}) — ya lo hiciste mas rapido."})
+
+    # --- sector INCONSISTENTE: el de mayor dispersion vuelta a vuelta (repetibilidad) ---
+    if ss and ss["sigma"] and all(s is not None for s in ss["sigma"]):
+        order = sorted(range(3), key=lambda i: ss["sigma"][i], reverse=True)
+        w = order[0]
+        sig, sig2 = ss["sigma"][w], ss["sigma"][order[1]]
+        if sig >= 0.30 and (sig - sig2) >= 0.15:
+            out.append({"regla": "R-consist", "t": round(sig, 2), "proc": "medido",
+                        "msg": f"S{w + 1} es tu sector INCONSISTENTE: varia {sig:.2f}s vuelta a vuelta "
+                               f"(los otros mas parejos) — trabaja la repetibilidad: mismo punto de frenada y linea."})
 
     # --- deficit de vmin por curva: vs tu REFERENCIA (>=2 vueltas) o vs tu mejor de sesion (>=3) ---
     # Con referencia guardada baja el minimo a 2 vueltas (cada una vs el benchmark, repeticion >=2);
     # sin referencia usa tu mejor vuelta de la tanda y necesita 3 (best + 2 que repitan el deficit).
     use_ref = ref_trace is not None and n >= 2
     if use_ref:
-        comps = [_corners_vs(load_trace(folder, lp), ref_trace) for lp in cl["clean"]]
+        comps = [_corners_vs(_lap_trace(folder, rec), ref_trace) for rec in cl["clean"]]
         r1_label, r1_vs = "R1-ref", "tu referencia"
     elif n >= 3:
-        ref_lap = cl["ref_lap"]
-        comps = [corners_vs_struct(folder, lp, ref_lap) for lp in cl["clean"] if lp != ref_lap]
+        ref_rec = cl["ref"]
+        comps = [_corners_vs(_lap_trace(folder, rec), _lap_trace(folder, ref_rec))
+                 for rec in cl["clean"] if rec is not ref_rec]
         r1_label, r1_vs = "R1", "tu mejor"
     else:
         comps, r1_label = [], None
@@ -644,8 +665,8 @@ def build_insights(folder):
     # --- coasting en la entrada: intra-sesion, repeticion en >=2 vueltas (>=3 limpias) ---
     if n >= 3:
         coast = {}
-        for lp in cl["clean"]:
-            for z in coasting_struct(folder, lp):
+        for rec in cl["clean"]:
+            for z in coasting_struct(folder, rec):
                 if z["largo_m"] >= 25 and z["en_zona"] and z["apex_n"]:
                     coast.setdefault(z["apex_n"], []).append(z["largo_m"])
         for cn, largos in coast.items():
@@ -696,15 +717,13 @@ DCENTER_OK = 5.0                                                      # |centro 
 def tyres_struct(folder):
     """Gomas por rueda sobre las vueltas limpias: temps L/C/R, presion en caliente, dCenter
     (centro vs bordes -> presion TERMICA, inmune al bug Bar*100) y dEdge (camber, beta)."""
-    _, laps = _load(folder)
-    clean_set = set(clean_laps(folder)["clean"])
-    clean = [l for l in laps if l.get("trace") and l["lap"] in clean_set]
+    clean = clean_laps(folder)["clean"]
     if not clean:
         return None
     CORN = ("FL", "FR", "RL", "RR")
     acc = {c: {"in": [], "mid": [], "out": [], "bulk": [], "press": []} for c in CORN}
-    for l in clean:
-        d = load_trace(folder, l["lap"])
+    for rec in clean:
+        d = _lap_trace(folder, rec)
         if not d:
             continue
         for c in CORN:

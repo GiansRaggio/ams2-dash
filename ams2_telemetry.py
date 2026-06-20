@@ -136,6 +136,7 @@ class TelemetryLogger:
         self._in_pit_prev = False
         self._sectimes = [0.0, 0.0]
         self._sec_invalid = [False, False, False]
+        self._lap_uid = 0         # id monotonico por vuelta loggeada (no resetea con el garage)
         self._agg = None          # agregados de resumen
         self._start = None        # {fuel, wear[4]} al inicio de la vuelta
 
@@ -330,6 +331,7 @@ class TelemetryLogger:
             return
         lap_time = d.mLastLapTime if d.mLastLapTime > 0 else None
         lap_no = int(p.mLapsCompleted)
+        self._lap_uid += 1                 # identidad unica (el numero de vuelta se repite tras el garage)
         # sectores: S1/S2 capturados en vivo (estables), S3 = total - S1 - S2 (robusto)
         s1, s2 = self._sectimes
         if lap_time and s1 > 0 and s2 > 0 and (lap_time - s1 - s2) > 0:
@@ -341,6 +343,7 @@ class TelemetryLogger:
         try:
             with open(os.path.join(self._sess_dir, "sectors.jsonl"), "a", encoding="utf-8") as f:
                 f.write(json.dumps({
+                    "uid": self._lap_uid,
                     "lap": lap_no, "lap_time": round(lap_time, 3) if lap_time else None,
                     "sectors": sectors, "sec_valid": [not x for x in self._sec_invalid],
                     "invalid": bool(self._invalid),
@@ -364,6 +367,7 @@ class TelemetryLogger:
                     f.write("\n")
             n = max(1, a["n"]) if a else 1
             summary = {
+                "uid": self._lap_uid,
                 "lap": lap_no,
                 "lap_time": round(lap_time, 3) if lap_time else None,
                 "valid": True,

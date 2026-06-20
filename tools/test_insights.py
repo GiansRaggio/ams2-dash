@@ -139,6 +139,27 @@ def main():
     _ok("R3 emite por coasting repetido", len(r3) >= 1, [x["msg"] for x in ins])
     _ok("R3 da accion de frenada", bool(r3) and "Frena" in r3[0]["msg"], r3[0]["msg"] if r3 else "")
 
+    print("\nR-consist (sector inconsistente, por dispersion no por gap):")
+    dcons = build([{"lap": 1, "time": 90.0, "sectors": [30.0, 30.0, 30.0]},
+                   {"lap": 2, "time": 90.0, "sectors": [30.0, 30.0, 30.0]},
+                   {"lap": 3, "time": 90.8, "sectors": [30.8, 30.0, 30.0]}]); dirs.append(dcons)
+    _, inscons, _ = A.build_insights(dcons)
+    rcons = _rules(inscons, "R-consist")
+    _ok("R-consist flagea el sector disperso (S1)",
+        len(rcons) == 1 and "S1" in rcons[0]["msg"], [x["msg"] for x in inscons])
+    _ok("R-consist sin R2 redundante (gap chico)", _rules(inscons, "R2") == [], [x["msg"] for x in inscons])
+
+    print("\nFix: numero de vuelta repetido (reset garage) -> usa la traza correcta:")
+    # lap3 aparece dos veces: una lenta (T1 lento, no limpia) y una rapida (= ref real). lap4/6 son
+    # lentos en T1. Si se usara el lap3 LENTO como ref, no habria deficit y R1 NO dispararia.
+    ddup = build([{"lap": 3, "time": 130.0, "sectors": [30.0, 30.0, 30.0], "corner_slow": 25.0},
+                  {"lap": 3, "time": 122.0, "sectors": [30.0, 30.0, 30.0], "corner_slow": 0.0},
+                  {"lap": 4, "time": 122.5, "sectors": [30.0, 30.0, 30.0], "corner_slow": 25.0},
+                  {"lap": 6, "time": 122.4, "sectors": [30.0, 30.0, 30.0], "corner_slow": 25.0}]); dirs.append(ddup)
+    _, insdup, _ = A.build_insights(ddup)
+    _ok("usa el lap3 RAPIDO como ref (R1 detecta deficit, no confunde con el lap3 lento)",
+        len(_rules(insdup, "R1")) >= 1, [x["msg"] for x in insdup])
+
     print("\nReferencia guardada (benchmark cross-sesion):")
     refdir = tempfile.mkdtemp(prefix="ref_")
     A.REFDIR = refdir                                  # redirige el store a un temp (no toca el repo)
