@@ -100,15 +100,9 @@ def _lap_sectors(l):
     return [round(s1, 3), s2, s3]
 
 
-def load_trace(folder, lap_no, laps=None):
-    """Carga la traza de una vuelta como dict canal->lista de floats."""
-    if laps is None:
-        _, laps = _load(folder)
-    m = [l for l in laps if l["lap"] == lap_no]
-    if not m:
-        return None
-    path = os.path.join(folder, m[0]["trace"])
-    if not os.path.exists(path):
+def _read_trace(path):
+    """Lee una traza .csv.gz como dict canal->lista de floats. None si no existe."""
+    if not path or not os.path.exists(path):
         return None
     data = {}
     with gzip.open(path, "rt", encoding="utf-8") as f:
@@ -122,6 +116,16 @@ def load_trace(folder, lap_no, laps=None):
                 except (ValueError, TypeError):
                     data[c].append(0.0)
     return data
+
+
+def load_trace(folder, lap_no, laps=None):
+    """Carga la traza de una vuelta como dict canal->lista de floats."""
+    if laps is None:
+        _, laps = _load(folder)
+    m = [l for l in laps if l["lap"] == lap_no]
+    if not m:
+        return None
+    return _read_trace(os.path.join(folder, m[0]["trace"]))
 
 
 def _mono(dist, *cols):
@@ -463,9 +467,9 @@ def sectors_struct(folder):
             "n_clean_sec": len(reps)}
 
 
-def corners_vs_struct(folder, lap_a, ref_lap):
-    """Deficit de vmin por curva de lap_a vs ref + tiempo perdido en el tramo del apex."""
-    ta, tb = load_trace(folder, lap_a), load_trace(folder, ref_lap)
+def _corners_vs(ta, tb):
+    """Deficit de vmin por curva de la traza A vs la traza B (referencia) + tiempo perdido
+    en el tramo del apex. Sirve intra-sesion o contra la traza de tu referencia guardada."""
     if not ta or not tb:
         return []
     da, sa = _mono(ta["lap_dist"], ta["speed_kmh"])[:2]
@@ -485,6 +489,11 @@ def corners_vs_struct(folder, lap_a, ref_lap):
         out.append({"n": c["n"], "apex": c["apex"], "vmin_a": ma["vmin"], "vmin_ref": c["vmin"],
                     "deficit": round(c["vmin"] - ma["vmin"], 1), "t_perdido_s": round(seg, 3)})
     return out
+
+
+def corners_vs_struct(folder, lap_a, ref_lap):
+    """Deficit de vmin por curva de lap_a vs ref_lap (ambas en la sesion)."""
+    return _corners_vs(load_trace(folder, lap_a), load_trace(folder, ref_lap))
 
 
 def coasting_struct(folder, lap):
@@ -512,6 +521,14 @@ def load_reference(folder):
         return None
     p = os.path.join(REFDIR, f"{car}__{track}.json")
     return json.load(open(p, encoding="utf-8")) if os.path.exists(p) else None
+
+
+def load_reference_trace(folder):
+    """Traza completa de la referencia guardada del auto+pista, o None."""
+    ref = load_reference(folder)
+    if not ref or not ref.get("trace"):
+        return None
+    return _read_trace(os.path.join(REFDIR, ref["trace"]))
 
 
 def save_reference(folder, lap=None, force=False):
@@ -568,6 +585,7 @@ def build_insights(folder):
     cl = clean_laps(folder)
     n = cl["n_clean"]
     rs = reference_struct(folder)
+    ref_trace = load_reference_trace(folder) if rs else None
     header = {"car": meta.get("car", "?"), "track": meta.get("track", "?"), "n_clean": n,
               "best_lap_time": cl["best_lap_time"], "ref_lap_time": rs["ref_lap_time"] if rs else None}
     out = []
@@ -592,27 +610,39 @@ def build_insights(folder):
                             "msg": f"S{w + 1} es tu sector debil: pierdes {gap:.2f}s vs tu mejor S{w + 1} "
                                    f"({ss['best_s'][w]:.3f}s, L{ss['owners'][w]}) — ya lo hiciste mas rapido."})
 
-    # --- curva/coasting: necesitan repeticion en >=2 vueltas limpias (>=3 limpias en total) ---
-    if n >= 3:
+    # --- deficit de vmin por curva: vs tu REFERENCIA (>=2 vueltas) o vs tu mejor de sesion (>=3) ---
+    # Con referencia guardada baja el minimo a 2 vueltas (cada una vs el benchmark, repeticion >=2);
+    # sin referencia usa tu mejor vuelta de la tanda y necesita 3 (best + 2 que repitan el deficit).
+    use_ref = ref_trace is not None and n >= 2
+    if use_ref:
+        comps = [_corners_vs(load_trace(folder, lp), ref_trace) for lp in cl["clean"]]
+        r1_label, r1_vs = "R1-ref", "tu referencia"
+    elif n >= 3:
         ref_lap = cl["ref_lap"]
-        others = [lp for lp in cl["clean"] if lp != ref_lap]
-        agg = {}
-        for lp in others:
-            for c in corners_vs_struct(folder, lp, ref_lap):
-                if c["deficit"] >= 3.0:
-                    a = agg.setdefault(c["n"], {"defs": [], "tp": [], "apex": c["apex"], "vref": c["vmin_ref"]})
-                    a["defs"].append(c["deficit"])
-                    a["tp"].append(max(0.0, c["t_perdido_s"]))
-        r1_corners = set()
+        comps = [corners_vs_struct(folder, lp, ref_lap) for lp in cl["clean"] if lp != ref_lap]
+        r1_label, r1_vs = "R1", "tu mejor"
+    else:
+        comps, r1_label = [], None
+    agg = {}
+    for comp in comps:
+        for c in comp:
+            if c["deficit"] >= 3.0:
+                a = agg.setdefault(c["n"], {"defs": [], "tp": [], "apex": c["apex"], "vref": c["vmin_ref"]})
+                a["defs"].append(c["deficit"])
+                a["tp"].append(max(0.0, c["t_perdido_s"]))
+    r1_corners = set()
+    if r1_label:
         for cn, a in agg.items():
             if len(a["defs"]) >= 2:                       # repeticion -> no es trafico/one-off
                 md, tp = st.median(a["defs"]), st.median(a["tp"])
                 if md >= 3.0 and tp >= 0.05:
                     r1_corners.add(cn)
-                    out.append({"regla": "R1", "t": tp, "proc": "estimado",
+                    out.append({"regla": r1_label, "t": tp, "proc": "estimado",
                                 "msg": f"T{cn} (apex {a['apex']}m): vmin {a['vref'] - md:.0f} km/h, {md:.0f} bajo "
-                                       f"tu mejor ({a['vref']:.0f}) — ~{tp:.2f}s. Gira antes y carga mas velocidad "
-                                       f"de paso (menos freno a la entrada)."})
+                                       f"{r1_vs} ({a['vref']:.0f}) — ~{tp:.2f}s. Gira antes y carga mas velocidad de paso."})
+
+    # --- coasting en la entrada: intra-sesion, repeticion en >=2 vueltas (>=3 limpias) ---
+    if n >= 3:
         coast = {}
         for lp in cl["clean"]:
             for z in coasting_struct(folder, lp):
@@ -628,7 +658,7 @@ def build_insights(folder):
                                        f"Frena ~{acortar:.0f}m mas tarde y mantente en el freno hasta soltar el volante."})
 
     out.sort(key=lambda x: x["t"], reverse=True)
-    status = "ok" if (out or n >= 3) else "insuficiente"
+    status = "ok" if (out or n >= 3 or rs) else "insuficiente"
     return header, out[:4], status
 
 

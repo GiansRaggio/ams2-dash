@@ -169,3 +169,11 @@ rápida — tu patrón) ya es accionable contra tu benchmark de todas las sesion
 vueltas limpias intra-sesión. `report_insights` muestra la línea de benchmark (referencia vs tu mejor +
 delta por sector). `tools/test_insights.py`: +7 asserts (20). Suite total: 108. Pendiente: overlay de
 traza completa vs referencia en `report_vs` (comparar líneas, no solo sectores).
+
+### it.8 — R1-ref: déficit de vmin por curva vs tu referencia
+Completa el coaching cross-sesión: además del sector (R2-ref), ahora compara la vmin de cada curva de
+tus vueltas limpias contra la **traza de tu referencia guardada** (R1-ref). Con referencia el mínimo
+baja a **2 vueltas limpias** (cada una vs el benchmark, repetición ≥2) — antes el déficit de vmin
+intra-sesión exigía 3 (best + 2 que repitan). Refactor: `_read_trace` y `_corners_vs` reusables entre
+intra-sesión y vs-referencia, + `load_reference_trace`. `tools/test_insights.py`: +2 asserts (22). Suite
+total: 110. Pendiente del eje referencia: overlay VISUAL de traza completa vs ref (UI/P2).

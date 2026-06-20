@@ -190,7 +190,7 @@ Fortaleza actual; potenciarla para práctica activa.
 - ✅ Sectores arreglados + rescate (`sectors.jsonl`, vuelta ideal).
 - ✅ Bug **C3** del guardrail de dampers arreglado (`_recommend` cruza `tBottom`; refinado por revisión adversarial).
 - 🔄 **Refactor del analyzer → estructuras**: iniciado (`clean_laps`/`sectors_struct`/`corners_vs_struct`/`coasting_struct`/`build_insights` devuelven dicts).
-- ✅ Referencias propias: guardar/cargar mejor vuelta por auto+pista (`--save-ref`) + insight de sector vs benchmark (R2-ref, sirve con 1 vuelta). *(pendiente: overlay de traza vs ref en `report_vs`)*
+- ✅ Referencias propias: guardar/cargar mejor vuelta por auto+pista (`--save-ref`) + insights vs benchmark (R2-ref sector con 1 vuelta, R1-ref vmin por curva con 2). *(pendiente: overlay visual de traza vs ref, UI/P2)*
 - Actualizar `EVAL.md`.
 
 **Fase 1 — Insights + comparación (alto impacto inmediato)**

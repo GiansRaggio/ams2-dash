@@ -163,6 +163,13 @@ def main():
         _ok("report_insights con referencia corre", True)
     except Exception as e:
         _ok("report_insights con referencia corre", False, repr(e))
+    # R1-ref: 2 vueltas limpias con T1 lento vs la TRAZA de la referencia (rapida) -> deficit por curva
+    dc = build([{"lap": 1, "time": 90.5, "sectors": [30.0, 30.0, 30.0], "corner_slow": 25.0},
+                {"lap": 2, "time": 90.6, "sectors": [30.0, 30.0, 30.0], "corner_slow": 25.0}]); dirs.append(dc)
+    _, insc, _ = A.build_insights(dc)
+    r1r = _rules(insc, "R1-ref")
+    _ok("R1-ref emite con 2 vueltas vs traza de referencia", len(r1r) >= 1, [x["msg"] for x in insc])
+    _ok("R1-ref dice 'tu referencia'", bool(r1r) and "tu referencia" in r1r[0]["msg"], r1r[0]["msg"] if r1r else "")
     A.REFDIR = os.path.join(HERE, "references")        # restaura
     shutil.rmtree(refdir, ignore_errors=True)
 
