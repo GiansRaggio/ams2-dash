@@ -23,6 +23,7 @@ import statistics as st
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TELEM = os.path.join(HERE, "telemetry")
 REFDIR = os.path.join(HERE, "references")   # mejores vueltas guardadas por auto+pista (benchmark)
+_LAST = None                                # --last N: analizar solo las N vueltas validas mas recientes
 CORNERS = ("FL", "FR", "RL", "RR")
 
 
@@ -48,6 +49,8 @@ def _load(folder):
             line = line.strip()
             if line:
                 laps.append(json.loads(line))
+    if _LAST:
+        laps = laps[-_LAST:]               # las N validas mas recientes (el archivo esta en orden de uid)
     meta = {}
     mf = os.path.join(folder, "session.json")
     if os.path.exists(mf):
@@ -65,6 +68,15 @@ def _load_sectors(folder):
             line = line.strip()
             if line:
                 out.append(json.loads(line))
+    if _LAST and out:                      # alinear con las vueltas recientes del summary (por uid)
+        if out[0].get("uid") is not None:
+            _, laps = _load(folder)
+            uids = [l.get("uid") for l in laps if l.get("uid") is not None]
+            if uids:
+                lo = min(uids)
+                out = [r for r in out if (r.get("uid") or 0) >= lo]
+        else:
+            out = out[-_LAST:]
     return out
 
 
@@ -926,7 +938,12 @@ def main():
                     help="gomas (beta): presion termica + camber por rueda sobre las vueltas limpias")
     ap.add_argument("--balance", action="store_true",
                     help="balance sobre/subviraje por curva + momento de inestabilidad (slip por rueda)")
+    ap.add_argument("--last", type=int, metavar="N",
+                    help="analizar solo las N vueltas validas mas recientes (aislar el stint/setup actual)")
     a = ap.parse_args()
+    if a.last:
+        global _LAST
+        _LAST = a.last
 
     if a.list:
         s = _sessions()

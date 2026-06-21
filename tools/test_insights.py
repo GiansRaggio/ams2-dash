@@ -194,6 +194,24 @@ def main():
     A.REFDIR = os.path.join(HERE, "references")        # restaura
     shutil.rmtree(refdir, ignore_errors=True)
 
+    print("\nFiltro --last (aislar vueltas recientes por uid):")
+    dl = tempfile.mkdtemp(prefix="last_"); dirs.append(dl)
+    json.dump({"track": "T", "car": "C", "channels": T.HEADER}, open(os.path.join(dl, "session.json"), "w"))
+    summ = [{"uid": i, "lap": i, "lap_time": 90.0 + i * 0.1, "valid": True,
+             "sectors": [30, 30, 30], "trace": f"L{i:03d}.csv.gz"} for i in range(1, 7)]
+    open(os.path.join(dl, "summary.jsonl"), "w").write("\n".join(json.dumps(x) for x in summ))
+    secs = [{"uid": i, "lap": i, "lap_time": 90.0 + i * 0.1, "sectors": [30, 30, 30],
+             "sec_valid": [True, True, True], "invalid": False} for i in range(1, 7)]
+    open(os.path.join(dl, "sectors.jsonl"), "w").write("\n".join(json.dumps(x) for x in secs))
+    A._LAST = 2
+    lf = A._load(dl)[1]
+    sf = A._load_sectors(dl)
+    A._LAST = None
+    _ok("--last 2: summary = 2 mas recientes (uid 5,6)", [l["uid"] for l in lf] == [5, 6],
+        [l.get("uid") for l in lf])
+    _ok("--last 2: sectors alineados (uid>=5)", len(sf) == 2 and all(r["uid"] >= 5 for r in sf),
+        [r.get("uid") for r in sf])
+
     print("\nDeterminismo / no-crash:")
     try:
         A.report_insights(dirs[0])
