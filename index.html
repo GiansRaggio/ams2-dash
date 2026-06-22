@@ -302,6 +302,16 @@
 
   /* limitante del stint */
   #slimrow{flex:none;text-align:center}
+  #scross{flex:none;padding:1vh 1.2vw;border-radius:.8vh;text-align:center;
+          display:flex;flex-direction:column;gap:.3vh;line-height:1.15}
+  #scross #scrosstitle{font-size:2.1vh;font-weight:800;letter-spacing:.02em}
+  #scross #scrosssig{font-size:1.3vh;opacity:.85}
+  #scross.cx-green{background:#10331a;color:#7fe0a0;border:1px solid #1d5e33}
+  #scross.cx-amber{background:#3a3010;color:#ffd166;border:1px solid #7a6320}
+  #scross.cx-red{background:#3a1212;color:#ff8a8a;border:1px solid #7a2424;animation:cxpulse 1s infinite}
+  #scross.cx-calib{background:#1a2430;color:#8aa3c0;border:1px solid #2a3a4a}
+  #scross.cx-calib #scrosstitle{font-weight:600}
+  @keyframes cxpulse{0%,100%{opacity:1}50%{opacity:.5}}
   #slimiter{font-size:2vh;font-weight:800;letter-spacing:.05em;padding:.5vh 2.5vw;
             border-radius:5px;display:inline-block;font-variant-numeric:tabular-nums}
   #slimiter.lim-fuel{color:var(--amber);background:rgba(255,176,32,.12)}
@@ -492,6 +502,9 @@
     <div id="scalib">Sin sesión — entra a pista para ver la estrategia</div>
 
     <div id="sbody" class="hidden">
+      <div id="scross" class="hidden">
+        <b id="scrosstitle">—</b><span id="scrosssig"></span>
+      </div>
       <div id="sgrid">
         <div id="sfuel" class="st-green">
           <span class="slabel" id="sfuellabel">Combustible al final</span>
@@ -741,6 +754,7 @@ function renderStrategy(s){
   if(s.no_race){ renderNoRace(s); return; }       // práctica sin formato cargado
 
   /* ----- carrera EN VIVO ----- */
+  renderCrossover(s);             // semáforo lluvia→lisos (solo carrera con goma de agua)
   $("sinfo").textContent = sess + (s.mode==="timed" ? " · tiempo" : s.mode==="laps" ? " · vueltas" : "");
   $("sfuellabel").textContent = "Combustible al final";
   $("sfuelunit").textContent = " L";
@@ -816,8 +830,37 @@ function renderWheels(s){
   });
 }
 
+/* semáforo de cruce lluvia→lisos. Aparece solo en carrera con goma de agua;
+   AMS2 no expone wetness, así que el backend lo infiere de proxies y acá pintamos
+   estado + las señales crudas (no un semáforo opaco). */
+function renderCrossover(s){
+  const el = $("scross"), cx = s.crossover;
+  if(!cx){ el.classList.add("hidden"); return; }
+  el.classList.remove("hidden");
+  const cond = `lluvia ${cx.rain} · pista ${cx.track_t}° · wets ${cx.wet_temp}°`;
+  const sig = (cx.signals && cx.signals.length) ? cx.signals.join(" · ") : cond;
+  if(cx.state==="calibrando"){
+    el.className = "cx-calib";
+    $("scrosstitle").textContent = "CRUCE LLUVIA→LISOS · calibrando…";
+    $("scrosssig").textContent = cond;
+  } else if(cx.state==="amber"){
+    el.className = "cx-amber";
+    $("scrosstitle").textContent = "🟡 VENTANA DE LISOS ABIERTA — prepará boxes";
+    $("scrosssig").textContent = sig;
+  } else if(cx.state==="red"){
+    el.className = "cx-red";
+    $("scrosstitle").textContent = "🔴 VAS TARDE — LISOS YA VAN MÁS RÁPIDO · BOX";
+    $("scrosssig").textContent = sig;
+  } else {
+    el.className = "cx-green";
+    $("scrosstitle").textContent = "🟢 AGUANTÁ LLUVIA — es la goma correcta";
+    $("scrosssig").textContent = cond;
+  }
+}
+
 /* plan ESTIMADO de carrera (práctica/quali con formato cargado a mano) */
 function renderPlan(s){
+  $("scross").classList.add("hidden");
   $("sinfo").textContent = (s.session||"") + " · plan";
   $("sfuel").className = "st-plan";
   $("sfuellabel").textContent = "Combustible carrera";
@@ -837,6 +880,7 @@ function renderPlan(s){
 
 /* práctica sin formato: consumo medido + invitación a configurar la carrera */
 function renderNoRace(s){
+  $("scross").classList.add("hidden");
   $("sinfo").textContent = (s.session||"") + " · ⚙ carrera";
   $("sfuel").className = "st-plan";
   $("sfuellabel").textContent = "Consumo medido";

@@ -70,6 +70,16 @@ TEMP_COLD = 70.0             # ventana termica GT3 generica (C)
 TEMP_HOT = 100.0
 PIT_WINDOW = 3               # +/- vueltas alrededor del objetivo de parada
 
+# --- detector de crossover lluvia->lisos (pista que seca) ---
+# AMS2 NO expone el nivel de mojado de pista por shared memory (verificado vs
+# ams2_shm.py / header CREST2 v14): el unico canal de lluvia es mRainDensity =
+# precipitacion CAYENDO, no agua en superficie. Por eso el secado se INFIERE de
+# proxies: lluvia baja y cayendo + pista calentando + gomas de lluvia recalentando
+# (la wet se refrigera con el agua; sin agua sobrecalienta -> senal mas confiable).
+RAIN_DRY_THR = 0.13          # densidad de lluvia bajo la cual cuenta como "dejo de llover"
+TRACK_WARM_SLOPE = 0.15      # +C/vuelta sostenido => pista calentando/secando
+WET_OVERHEAT = 72.0          # temp (C) de gomas de lluvia que delata pista sin agua
+
 DEFAULT_TANK_L = 100.0       # fallback de capacidad si mFuelCapacity no es fiable
 EPS = 1e-6
 INF = float("inf")
@@ -129,6 +139,11 @@ class StrategyEngine:
         self._skip_next = False        # la proxima vuelta es out-lap (post-pit) -> excluir
         self._has_pitted = False       # cumplio al menos una parada (para pit obligatorio)
         self._stint_lap_times = []     # lap-times del stint actual (para deriva)
+        # --- detector de crossover lluvia->lisos ---
+        self._rain_hist = []           # densidad de lluvia por vuelta (tendencia de secado)
+        self._track_hist = []          # temp de pista por vuelta
+        self._wet_temp_hist = []       # peor temp de neumatico por vuelta (wets recalentando)
+        self._cross_state = "green"    # estado del semaforo (histeresis asimetrica)
         self._last = {"calibrating": True, "live": False, "mode": "none"}
 
     # ---------------- API publica (comandos del dash) ----------------
@@ -181,6 +196,8 @@ class StrategyEngine:
             self._wear_seed = []
             self._wear_flat = 0
             self._lap_times = []
+            self._wet_temp_hist = []       # temps del compuesto anterior no aplican
+            self._cross_state = "green"    # el cruce se reinicia con el compuesto nuevo
         self._compound = comp
 
         if self._time_scale is None:
@@ -267,6 +284,16 @@ class StrategyEngine:
             self._stint_lap_times.append(last_lap)
             del self._stint_lap_times[:-GREEN_KEEP]
 
+        # --- condiciones de pista por vuelta (para el detector de crossover) ---
+        # Se muestrea SIEMPRE al cruzar meta (lluvia/pista son del entorno, no del
+        # compuesto). El peor neumatico delata wets recalentando en pista seca.
+        self._rain_hist.append(d.mRainDensity)
+        del self._rain_hist[:-GREEN_KEEP]
+        self._track_hist.append(d.mTrackTemperature)
+        del self._track_hist[:-GREEN_KEEP]
+        self._wet_temp_hist.append(max(d.mTyreTemp[i] for i in range(4)))
+        del self._wet_temp_hist[:-GREEN_KEEP]
+
         # --- neumaticos: delta de desgaste por rueda al cruzar meta ---
         wear_now = self._wear_vec(d)
         if self._wear_at_cross is not None and not out_lap:
@@ -308,6 +335,82 @@ class StrategyEngine:
             tyres.append({"w": round(w * 100), "t": round(t), "st": st,
                           "tstat": tstat, "warm": self._stint_lap <= TYRE_WARMUP_LAPS})
         return {"tyres": tyres, "worst": worst, "horizon": horizon, "flat": flat}
+
+    # ---------------- detector de crossover lluvia -> lisos ----------------
+    def _is_wet_compound(self):
+        """Heuristica multilenguaje: el compuesto montado es de agua?"""
+        c = (self._compound or b"").lower()
+        return any(k in c for k in (b"wet", b"rain", b"lluv", b"inter",
+                                    b"mojad", b"weather", b"pluie", b"regen"))
+
+    @staticmethod
+    def _slope(xs):
+        """Pendiente por muestra (minimos cuadrados). None si <2 puntos."""
+        n = len(xs)
+        if n < 2:
+            return None
+        mx = (n - 1) / 2.0
+        mean = sum(xs) / n
+        num = sum((i - mx) * (xs[i] - mean) for i in range(n))
+        den = sum((i - mx) ** 2 for i in range(n))
+        return num / den if den > EPS else 0.0
+
+    def _crossover(self, d, in_race):
+        """Cruce lluvia->lisos en pista que seca. Solo carrera + compuesto de agua.
+
+        AMS2 no expone wetness de pista -> se infiere de 3 proxies: (A) lluvia baja
+        y cayendo, (B) pista calentando, (C) gomas de lluvia recalentando (la mas
+        confiable: la wet se enfria con agua). Semaforo con histeresis ASIMETRICA
+        (subir libre, bajar solo si el secado realmente cede) porque el costo de
+        cambiar tarde (~seg/vuelta) supera al de adelantarse (1 out-lap frio).
+        Devuelve None cuando no aplica -> el dash oculta el panel.
+        """
+        if not in_race or not self._is_wet_compound():
+            return None
+        rain = d.mRainDensity
+        track_t = d.mTrackTemperature
+        wet_t = max(d.mTyreTemp[i] for i in range(4))
+        base = {"rain": round(rain, 3), "track_t": round(track_t, 1), "wet_temp": round(wet_t)}
+        if len(self._rain_hist) < 3:            # aun sin tendencia confiable
+            base.update(state="calibrando", n_signals=0, signals=[])
+            return base
+
+        rain_sl = self._slope(self._rain_hist)
+        track_sl = self._slope(self._track_hist)
+        wet_sl = self._slope(self._wet_temp_hist)
+        A = rain < RAIN_DRY_THR and rain_sl is not None and rain_sl < 0
+        B = track_sl is not None and track_sl >= TRACK_WARM_SLOPE
+        C = wet_t >= WET_OVERHEAT and wet_sl is not None and wet_sl > 0
+        n = int(A) + int(B) + int(C)
+        # lap-stall: ya no bajas tiempos pese a pista mejor -> refuerza el ROJO
+        lt_sl = self._slope(self._lap_times) if len(self._lap_times) >= 3 else None
+        D = lt_sl is not None and lt_sl >= -0.05
+
+        # objetivo crudo desde las senales
+        if C and rain < RAIN_DRY_THR * 0.6 and D:
+            tgt = "red"
+        elif n >= 2:
+            tgt = "amber"
+        elif n == 1:
+            tgt = "amber" if C else "green"     # 1 sola senal: solo C (wets) pesa
+        else:
+            tgt = "green"
+        # histeresis: subir libre; bajar solo si las senales realmente cedieron
+        order = {"green": 0, "amber": 1, "red": 2}
+        prev = self._cross_state
+        state = tgt if order[tgt] >= order[prev] else (tgt if (n == 0 and not C) else prev)
+        self._cross_state = state
+
+        active = []
+        if A: active.append("lluvia baja y cayendo")
+        if B: active.append("pista calentando")
+        if C: active.append("gomas de lluvia recalentando")
+        if D: active.append("tiempos planos")
+        base.update(state=state, n_signals=n, signals=active,
+                    rain_slope=round(rain_sl, 4),
+                    track_slope=round(track_sl, 3) if track_sl is not None else None,
+                    wet_slope=round(wet_sl, 2) if wet_sl is not None else None)
+        return base
 
     def _project(self, d, p, live):
         out = {"live": bool(live), "mode": "none", "calibrating": True}
@@ -478,6 +581,9 @@ class StrategyEngine:
         else:
             out["pace_drift"] = None
 
+        # --- detector de crossover lluvia->lisos (pista que seca) ---
+        out["crossover"] = self._crossover(d, in_race)
+
         # --- alertas TTS: solo en la carrera en vivo (no en practica) ---
         out["alerts"] = self._alerts(out, cur_lap) if in_race else []
         return out
@@ -543,6 +649,15 @@ class StrategyEngine:
             add = o.get("add_l")
             txt = f"Ventana de pit abierta, cargá {int(add)} litros" if add else "Ventana de pit abierta"
             a.append({"key": "window", "level": 2, "say": txt})
+
+        # Cruce lluvia->lisos en pista que seca: el error caro es quedarse tarde.
+        cx = o.get("crossover")
+        if cx and cx.get("state") == "red":
+            a.append({"key": "cross_red", "level": 3,
+                      "say": "Pista secándose, los lisos ya van más rápido, entrá a boxes"})
+        elif cx and cx.get("state") == "amber":
+            a.append({"key": "cross_amber", "level": 2,
+                      "say": "Ventana de lisos abierta, preparate para cambiar a boxes"})
         return a
 
     def payload(self):

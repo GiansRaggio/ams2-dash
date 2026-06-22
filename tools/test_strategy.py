@@ -45,6 +45,8 @@ class Snap:
         self.mTyreWear = [0.0, 0.0, 0.0, 0.0]
         self.mTyreTemp = [85.0, 85.0, 85.0, 85.0]
         self.mTyreCompound = [b"Medium", b"Medium", b"Medium", b"Medium"]
+        self.mRainDensity = 0.0                    # seco por defecto
+        self.mTrackTemperature = 25.0
         self._p = P()
         self.__dict__.update(kw)
 
@@ -302,11 +304,75 @@ def test_calibrating():
     _ok("calibrando con <2 vueltas verdes", o["calibrating"], o.get("green_laps"))
 
 
+def feed_wet(e, rains, tracks, wet_temps, lap_times=None, laps_in_event=30, cap=100.0):
+    """Carrera con goma de AGUA y condiciones que evolucionan (listas paralelas,
+    una entrada por update; la 1ra inicializa, el resto cruzan meta)."""
+    n = len(rains)
+    lap_times = lap_times or [120.0] * n
+    fuel = 90.0
+    for i in range(n):
+        s = Snap(mLapsInEvent=laps_in_event, mFuelLevel=fuel / cap, mFuelCapacity=cap,
+                 mLastLapTime=lap_times[i], mCurrentTime=5.0,
+                 mTyreCompound=[b"Lluvia"] * 4,
+                 mRainDensity=rains[i], mTrackTemperature=tracks[i],
+                 mTyreTemp=[wet_temps[i]] * 4)
+        s._p = P(laps_completed=i, current_lap=i + 1)
+        e.update(s)
+        fuel -= 2.8
+    return e.payload()
+
+
+def test_crossover_dry_none():
+    print("test_crossover_dry_none (seco/slick -> sin panel de cruce):")
+    e = S.StrategyEngine()
+    feed_laps(e, lambda **k: Snap(mLapsInEvent=30, **k), 5, 90.0, 2.8)
+    o = e.payload()
+    _ok("crossover None en seco", o.get("crossover") is None, o.get("crossover"))
+
+
+def test_crossover_green_raining():
+    print("test_crossover_green_raining (lluvia firme -> aguantá):")
+    e = S.StrategyEngine()
+    o = feed_wet(e, rains=[0.5, 0.5, 0.5, 0.5, 0.5],
+                 tracks=[20.0, 20.0, 20.0, 20.0, 20.0],
+                 wet_temps=[55, 55, 56, 55, 56])
+    cx = o.get("crossover") or {}
+    _ok("hay panel de cruce con goma de agua", cx.get("state") is not None, cx)
+    _ok("estado green con lluvia firme", cx.get("state") == "green", cx.get("state"))
+    keys = [a["key"] for a in o.get("alerts", [])]
+    _ok("sin alerta de cruce", "cross_amber" not in keys and "cross_red" not in keys, keys)
+
+
+def test_crossover_drying_alerts():
+    print("test_crossover_drying_alerts (pista secándose -> amber/red + voz):")
+    e = S.StrategyEngine()
+    o = feed_wet(e, rains=[0.30, 0.25, 0.18, 0.12, 0.09, 0.07],
+                 tracks=[22.0, 22.4, 22.8, 23.2, 23.6, 24.0],
+                 wet_temps=[60, 64, 68, 72, 75, 77],
+                 lap_times=[120.0, 120.0, 120.3, 120.5, 121.0, 121.2])
+    cx = o.get("crossover") or {}
+    _ok("estado amber/red al secar", cx.get("state") in ("amber", "red"), cx.get("state"))
+    _ok("detecta wets recalentando",
+        "gomas de lluvia recalentando" in (cx.get("signals") or []), cx.get("signals"))
+    keys = [a["key"] for a in o.get("alerts", [])]
+    _ok("dispara alerta de voz", "cross_red" in keys or "cross_amber" in keys, keys)
+
+
+def test_crossover_calibrating():
+    print("test_crossover_calibrating (<3 vueltas de historia):")
+    e = S.StrategyEngine()
+    o = feed_wet(e, rains=[0.3, 0.25, 0.2], tracks=[22, 22.3, 22.6], wet_temps=[60, 64, 68])
+    cx = o.get("crossover") or {}
+    _ok("calibrando con poca historia", cx.get("state") == "calibrando", cx.get("state"))
+
+
 if __name__ == "__main__":
     for t in (test_lap_race, test_timed_race_seconds, test_timed_race_millis,
               test_fuel_deficit, test_capacity_guard, test_tyre_wear,
               test_planning_practice, test_live_overrides_plan,
-              test_all_laps_toggle, test_no_false_fumes, test_calibrating):
+              test_all_laps_toggle, test_no_false_fumes, test_calibrating,
+              test_crossover_dry_none, test_crossover_green_raining,
+              test_crossover_drying_alerts, test_crossover_calibrating):
         t()
         print()
     print("done.")

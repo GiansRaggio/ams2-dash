@@ -97,3 +97,34 @@ Para una carrera de `T` minutos:
   puedes cargar el formato a mano (`set_race_plan`) para ver la proyección.
 
 **Ejemplo (GT4, 40 min @ Buenos Aires):** ~20 vueltas · ~65 L para terminar · **cargar ~70-72 L**.
+
+---
+
+## Cruce LLUVIA → LISOS (pista que seca)
+La decisión más cara de una carrera mixta. **AMS2 no expone un % de mojado** (verificado vs
+`ams2_shm.py`): el secado se **infiere** de proxies. Checklist en vivo:
+
+1. **¿Paró de llover?** → `rain` (densidad de lluvia) **bajando** vuelta a vuelta y ya bajo **~0.13**.
+   (`rain=0` NO es pista seca — la superficie sigue mojada un rato; es señal *adelantada*.)
+2. **¿La pista calienta?** → `track_t` subiendo sostenido (secado y calor van juntos).
+3. **¿Tus gomas de lluvia se recalientan (>72°C)?** → **la señal más confiable.** La wet se enfría con
+   el agua; sin agua sobrecalienta. *(En la carrera GT4 del 21-06 las wets tocaron 75.7°C en la V9 — ya
+   tocaba cambiar; se cambió ~V15 y los lisos fueron ~8s/vuelta más rápidos.)*
+
+**≥2 de las 3, sostenidas 2 vueltas → entra a la PRÓXIMA ventana de pits. NO "una vuelta más".**
+
+- **Confirmación visual (manda sobre la data):** charcos fuera de trazada desapareciendo + menos spray.
+  La data SIEMPRE va un poco atrás de lo que ves en cabina.
+- **Regla de oro (payoff asimétrico):** cambiar temprano = **1 out-lap fría** (~3s, pago único).
+  Cambiar tarde = **~8s CADA vuelta** y crece. **Ante la duda, adelántate.**
+- **Nunca repongas lluvia en pista que seca monótona** (apostar contra la tendencia).
+
+### Detector de crossover (en el dash)
+La página ESTRATEGIA muestra un **semáforo** (`ams2_strategy.py::_crossover`), solo en carrera con goma
+de agua, con voz del ingeniero:
+- 🟢 **VERDE** "aguantá lluvia" · 🟡 **AMARILLO** "ventana de lisos abierta, prepará boxes" (TTS) ·
+  🔴 **ROJO** "vas tarde, lisos ya van más rápido, box" (TTS urgente).
+- Umbrales afinables: `RAIN_DRY_THR=0.13`, `TRACK_WARM_SLOPE=0.15`, `WET_OVERHEAT=72`. Histéresis
+  asimétrica (sube agresivo, baja conservador). Muestra las **señales crudas**, no un semáforo opaco.
+- **Honesto:** infiere de proxies con retardo; la línea seca visual y los rivales NO están en la data →
+  el ojo en cabina manda en el instante del cambio. Reduce el sesgo a quedarse tarde, no elimina el azar.
