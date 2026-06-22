@@ -389,6 +389,7 @@ class TelemetryLogger:
                 "compound": _safe(bytes(d.mTyreCompound[0])),
                 "tc_setting": int(d.mTractionControlSetting),    # nivel TC configurado (verificar si AMS2 lo puebla)
                 "abs_setting": int(d.mAntiLockSetting),          # nivel ABS configurado
+                "brake_bias": round(d.mBrakeBias, 4),            # fraccion delantera (0.48 = 48% adelante / 52% atras)
                 "drs": int(d.mDrsState),
                 "trace": tname,
                 "ts": datetime.now().isoformat(timespec="seconds"),
