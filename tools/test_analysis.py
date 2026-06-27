@@ -93,6 +93,19 @@ def write_session(base):
     return d
 
 
+def write_min_session(telem, track, car, ftype, ts, laps):
+    """Sesion minima (session.json + summary.jsonl, sin trazas) para tests del modo combo.
+    laps = lista de (lap_time, fuel_used)."""
+    d = os.path.join(telem, f"{track}__{car}__{ftype}__{ts}")
+    os.makedirs(d)
+    json.dump({"track": track, "car": car}, open(os.path.join(d, "session.json"), "w"))
+    with open(os.path.join(d, "summary.jsonl"), "w") as f:
+        for i, (lt, fu) in enumerate(laps, 1):
+            f.write(json.dumps({"lap": i, "lap_time": lt, "valid": True,
+                                "fuel_used": fu, "trace": None}) + "\n")
+    return d
+
+
 def main():
     print("test_corners / coasting / interp:")
     dist, spd, thr, brk, tt, _ = make_arrays()
@@ -129,6 +142,52 @@ def main():
             except Exception as e:
                 _ok(f"{label} corre", False, repr(e))
     finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+    print("\ntest modo combo (agrega por auto+pista):")
+    base = tempfile.mkdtemp(prefix="combotest_")
+    old_telem, old_ref = A.TELEM, A.REFDIR
+    try:
+        telem = os.path.join(base, "telemetry")
+        os.makedirs(telem)
+        A.TELEM = telem
+        A.REFDIR = os.path.join(base, "norefs")        # aislar de las referencias reales
+        # combo A: Monza + GTX, 2 practicas + 1 carrera (atipica, NO debe ensuciar el consumo)
+        write_min_session(telem, "Monza", "GTX", "practice", "20260101_100000",
+                          [(90.0, 3.0), (89.5, 3.1), (89.8, 2.9)])
+        write_min_session(telem, "Monza", "GTX", "practice", "20260101_110000",
+                          [(89.2, 3.0), (89.0, 3.0)])
+        write_min_session(telem, "Monza", "GTX", "race", "20260101_120000",
+                          [(95.0, 5.0), (94.0, 5.0)])
+        write_min_session(telem, "Spa", "GTY", "practice", "20260101_130000",
+                          [(120.0, 3.5), (119.5, 3.4)])
+        write_min_session(telem, "x", "x", "race", "20260101_140000", [(80.0, 4.0)])   # placeholder
+
+        groups = A._group_combos()
+        _ok("agrupa en 2 combos (ignora placeholder x)", len(groups) == 2, list(groups))
+        _ok("combo Monza/GTX = 3 sesiones",
+            ("GTX", "Monza") in groups and len(groups[("GTX", "Monza")]) == 3, list(groups))
+        r = A._resolve_combo("gtx")
+        _ok("resuelve combo por filtro (substring)",
+            r is not None and r[0] == "GTX" and len(r[2]) == 3, r and (r[0], len(r[2])))
+
+        cs = A.combo_struct("GTX", "Monza", groups[("GTX", "Monza")])
+        _ok("mejor vuelta del combo = 89.0", abs(cs["best_overall"] - 89.0) < 1e-6, cs["best_overall"])
+        _ok("consumo SOLO de practicas (~3.0, sin la carrera de 5.0)",
+            abs(cs["consumption"] - 3.0) < 0.05, cs["consumption"])
+        _ok("ritmo medio de practicas (~89.5)", abs(cs["lap_time"] - 89.5) < 1.0, cs["lap_time"])
+
+        rf = A.race_fuel_struct(cs, minutes=30)           # 1800/89.5=20.1 -> 20+1 = 21 vueltas
+        _ok("race-fuel timed: ~21 vueltas", rf["laps"] == 21, rf["laps"])
+        _ok("race-fuel timed: carga > combustible para terminar", rf["load"] > rf["to_finish"],
+            (round(rf["load"], 1), round(rf["to_finish"], 1)))
+        rl = A.race_fuel_struct(cs, laps=20)
+        _ok("race-fuel laps: 20 vueltas exactas", rl["laps"] == 20, rl["laps"])
+        _ok("race-fuel laps: carga = 20*3 + margen (63)", abs(rl["load"] - 63.0) < 0.1, rl["load"])
+        _ok("_session_type parsea el tipo", A._session_type("Monza__GTX__race__ts") == "race",
+            A._session_type("Monza__GTX__race__ts"))
+    finally:
+        A.TELEM, A.REFDIR = old_telem, old_ref
         shutil.rmtree(base, ignore_errors=True)
     print("\ndone.")
 

@@ -16,6 +16,7 @@ import csv
 import glob
 import gzip
 import json
+import math
 import os
 import shutil
 import statistics as st
@@ -691,7 +692,7 @@ def build_insights(folder):
         order = sorted(range(3), key=lambda i: d[i], reverse=True)
         w = order[0]
         if d[w] >= 0.30 and (d[w] - d[order[1]]) >= 0.15:
-            out.append({"regla": "R2-ref", "t": d[w], "proc": "medido",
+            out.append({"regla": "R2-ref", "loc": f"S{w + 1}", "t": d[w], "proc": "medido",
                         "msg": f"S{w + 1}: +{d[w]:.2f}s vs tu referencia ({rs['ref_sectors'][w]:.3f}s) — "
                                f"es tu mayor brecha al benchmark, foco ahi."})
     elif ss and ss["n_clean_sec"] >= 3 and all(g is not None for g in ss["gaps"]):
@@ -699,7 +700,7 @@ def build_insights(folder):
         w = order[0]
         gap, gap2 = ss["gaps"][w], ss["gaps"][order[1]]
         if gap >= 0.30 and (gap - gap2) >= 0.15:
-            out.append({"regla": "R2", "t": gap, "proc": "medido",
+            out.append({"regla": "R2", "loc": f"S{w + 1}", "t": gap, "proc": "medido",
                         "msg": f"S{w + 1} es tu sector debil: pierdes {gap:.2f}s vs tu mejor S{w + 1} "
                                f"({ss['best_s'][w]:.3f}s, L{ss['owners'][w]}) — ya lo hiciste mas rapido."})
 
@@ -709,7 +710,7 @@ def build_insights(folder):
         w = order[0]
         sig, sig2 = ss["sigma"][w], ss["sigma"][order[1]]
         if sig >= 0.30 and (sig - sig2) >= 0.15:
-            out.append({"regla": "R-consist", "t": round(sig, 2), "proc": "medido",
+            out.append({"regla": "R-consist", "loc": f"S{w + 1}", "t": round(sig, 2), "proc": "medido",
                         "msg": f"S{w + 1} es tu sector INCONSISTENTE: varia {sig:.2f}s vuelta a vuelta "
                                f"(los otros mas parejos) — trabaja la repetibilidad: mismo punto de frenada y linea."})
 
@@ -741,7 +742,7 @@ def build_insights(folder):
                 md, tp = st.median(a["defs"]), st.median(a["tp"])
                 if md >= 3.0 and tp >= 0.05:
                     r1_corners.add(cn)
-                    out.append({"regla": r1_label, "t": tp, "proc": "estimado",
+                    out.append({"regla": r1_label, "loc": f"T{cn}", "t": tp, "proc": "estimado",
                                 "msg": f"T{cn} (apex {a['apex']}m): vmin {a['vref'] - md:.0f} km/h, {md:.0f} bajo "
                                        f"{r1_vs} ({a['vref']:.0f}) — ~{tp:.2f}s. Gira antes y carga mas velocidad de paso."})
 
@@ -757,7 +758,7 @@ def build_insights(folder):
                 largo = st.median(largos)
                 acortar = min(largo - 10, 15)             # guardrail C3: nunca >15m de golpe
                 if acortar >= 3:
-                    out.append({"regla": "R3", "t": 0.0, "proc": "metros",
+                    out.append({"regla": "R3", "loc": f"T{cn}", "t": 0.0, "proc": "metros",
                                 "msg": f"T{cn}: coasting {largo:.0f}m antes del apex (flotando, gas y freno sueltos). "
                                        f"Frena ~{acortar:.0f}m mas tarde y mantente en el freno hasta soltar el volante."})
 
@@ -923,6 +924,174 @@ def report_balance(folder):
               f"normal (+{m['spike_pct']}%): el trasero se suelta de forma inconsistente ahi.")
 
 
+# ==================== modo COMBO: agrega todas las sesiones de un auto+pista ====================
+# Margenes de combustible para --race-fuel (espejo de la politica de ams2_strategy; se duplican
+# para que este analizador siga siendo SOLO stdlib, sin importar el motor en vivo).
+_SAFETY_LAPS_TIMED = 1.5
+_SAFETY_LAPS_LAPS = 1.0
+_MARGIN_PCT = 0.02
+
+
+def _session_type(folder):
+    """Tipo de sesion (practice/qualify/race) desde el nombre Pista__Auto__tipo__fecha."""
+    parts = os.path.basename(folder).split("__")
+    return parts[2] if len(parts) >= 3 else "?"
+
+
+def _combo_of(folder):
+    """(car, track) de una sesion, o None si falta/placeholder la metadata."""
+    meta, _ = _load(folder)
+    car, track = meta.get("car"), meta.get("track")
+    if not car or not track or car == "x" or track == "x":   # "x" = placeholder de sesiones malas
+        return None
+    return (car, track)
+
+
+def _group_combos():
+    """Agrupa las sesiones por (car, track). dict[(car,track)] = [folders] (cronologico)."""
+    groups = {}
+    for d in _sessions():                       # _sessions ya viene ordenado por mtime
+        k = _combo_of(d)
+        if k:
+            groups.setdefault(k, []).append(d)
+    return groups
+
+
+def _resolve_combo(filtro):
+    """(car, track, [folders], [otros_combos]) para el filtro. filtro vacio/None -> combo de la
+    ultima sesion. Si matchea varios combos usa el mas reciente y devuelve los otros. None si nada."""
+    groups = _group_combos()
+    if not groups:
+        return None
+    if not filtro:
+        k = _combo_of(_sessions()[-1])
+        return (k[0], k[1], groups[k], []) if k in groups else None
+    f = filtro.lower()
+    matched = {k: v for k, v in groups.items()
+               if f in (k[0] or "").lower() or f in (k[1] or "").lower()}
+    if not matched:
+        return None
+    best = max(matched, key=lambda k: os.path.getmtime(matched[k][-1]))
+    return (best[0], best[1], matched[best], [k for k in matched if k != best])
+
+
+def combo_struct(car, track, folders):
+    """Agrega todas las sesiones de un auto+pista: mejor vuelta, tendencia, insights RECURRENTES
+    (en >=2 sesiones) y consumo/ritmo. El consumo/ritmo PREFIERE practica/quali (la carrera es
+    atipica: mojado, trafico, ahorro de combustible); cae a todo si no hay practicas."""
+    sessions, rec = [], {}                      # rec: (regla_base, loc) -> {n, msg, t}
+    best_overall = None
+    for d in folders:
+        cl = clean_laps(d)
+        b = cl["best_lap_time"]
+        if b and (best_overall is None or b < best_overall):
+            best_overall = b
+        _, laps = _load(d)
+        s_fuels = [l["fuel_used"] for l in laps
+                   if l.get("fuel_used") is not None and 0.3 < l["fuel_used"] < 15]   # cordura L/vuelta
+        try:
+            _, ins = build_insights(d)
+        except Exception:
+            ins = []                                       # sin trazas/datos: la sesion no aporta insights
+        seen = set()
+        for it in ins:
+            k = (it["regla"].replace("-ref", ""), it.get("loc", ""))   # R1 y R1-ref = mismo problema
+            if k in seen:
+                continue
+            seen.add(k)
+            r = rec.setdefault(k, {"n": 0, "msg": it.get("msg", ""), "t": it.get("t", 0) or 0})
+            r["n"] += 1
+            r["t"] = max(r["t"], it.get("t", 0) or 0)
+        sessions.append({"type": _session_type(d), "n_clean": cl["n_clean"], "best": b,
+                         "fuels": s_fuels, "lap_times": [l["lap_time"] for l in cl["clean"]]})
+    recurring = sorted(((k, v) for k, v in rec.items() if v["n"] >= 2),
+                       key=lambda kv: (kv[1]["n"], kv[1]["t"]), reverse=True)
+
+    def _pool(types):
+        fu, lt = [], []
+        for s in sessions:
+            if s["type"] in types:
+                fu += s["fuels"]
+                lt += s["lap_times"]
+        return fu, lt
+    fuels, lap_times = _pool({"practice", "qualify"})      # base limpia para consumo/ritmo
+    if not fuels:                                          # fallback: lo que haya (incl. carrera)
+        fuels, lap_times = _pool({"practice", "qualify", "race", "test", "?"})
+    return {"car": car, "track": track, "n_sessions": len(folders), "sessions": sessions,
+            "best_overall": best_overall, "recurring": recurring,
+            "consumption": st.median(fuels) if fuels else None,
+            "lap_time": st.median(lap_times) if lap_times else None, "n_fuel": len(fuels)}
+
+
+def report_combo(filtro):
+    r = _resolve_combo(filtro)
+    if not r:
+        print("No encontre sesiones para ese filtro. Proba --list para ver las combinaciones.")
+        return
+    car, track, folders, others = r
+    cs = combo_struct(car, track, folders)
+    print(f"\n=== Combo · {car} @ {track} · {cs['n_sessions']} sesiones ===")
+    if others:
+        print("  (el filtro tambien matcheo: "
+              + ", ".join(f"{c[0]}@{c[1]}" for c in others) + " — uso el mas reciente)")
+    print("  sesiones (cronologico):")
+    for s in cs["sessions"]:
+        print(f"    {s['type']:>9}  {s['n_clean']:>2} limpias  mejor {_fmt_t(s['best']).strip()}")
+    print(f"  mejor vuelta del combo : {_fmt_t(cs['best_overall']).strip()}")
+    pbests = [s["best"] for s in cs["sessions"] if s["type"] == "practice" and s["best"]]
+    if len(pbests) >= 2:                          # tendencia solo entre practicas (condiciones parejas)
+        delta = pbests[-1] - pbests[0]
+        tag = "bajando" if delta < -0.1 else "subiendo" if delta > 0.1 else "plano"
+        print(f"  tendencia entre practicas (1ra->ult): {delta:+.2f}s  ({tag})")
+    if cs["consumption"]:
+        print(f"  consumo medio: {cs['consumption']:.2f} L/v  ·  ritmo medio "
+              f"{_fmt_t(cs['lap_time']).strip()}  (n={cs['n_fuel']} vueltas)")
+    if cs["recurring"]:
+        print("\n  INSIGHTS RECURRENTES (en >=2 sesiones = lo persistente, no un mal dia):")
+        for (regla, loc), v in cs["recurring"][:6]:
+            print(f"    [{v['n']} ses · {regla}] {v['msg']}")
+    else:
+        print("\n  (sin insights recurrentes aun: corre mas tandas del combo o falta data de trazas)")
+    print()
+
+
+def race_fuel_struct(cs, minutes=None, laps=None):
+    """Estima vueltas + carga de combustible desde el consumo/ritmo agregado del combo."""
+    fpl, lt = cs["consumption"], cs["lap_time"]
+    if not fpl or not lt:
+        return None
+    if laps:
+        laps_total, safety, basis = int(laps), _SAFETY_LAPS_LAPS, f"{int(laps)} vueltas"
+    else:
+        laps_total = math.floor(minutes * 60 / lt) + 1     # + vuelta de cierre (cruzas tras el reloj 0)
+        safety, basis = _SAFETY_LAPS_TIMED, f"{minutes:.0f} min"
+    to_finish = laps_total * fpl
+    margin = max(safety * fpl, _MARGIN_PCT * to_finish)
+    return {"basis": basis, "laps": laps_total, "fpl": fpl, "lap_time": lt,
+            "to_finish": to_finish, "margin": margin, "load": to_finish + margin}
+
+
+def report_race_fuel(filtro, minutes=None, laps=None):
+    r = _resolve_combo(filtro)
+    if not r:
+        print("No encontre sesiones para ese combo. Proba --list.")
+        return
+    car, track, folders, _ = r
+    cs = combo_struct(car, track, folders)
+    rf = race_fuel_struct(cs, minutes=minutes, laps=laps)
+    if not rf:
+        print(f"Sin consumo medido para {car} @ {track} (faltan vueltas con fuel_used). Maneja unas vueltas grabando.")
+        return
+    print(f"\n=== Plan de combustible · {car} @ {track} · carrera de {rf['basis']} ===")
+    print(f"  base ({cs['n_sessions']} sesiones): {rf['fpl']:.2f} L/v · ritmo "
+          f"{_fmt_t(rf['lap_time']).strip()} (n={cs['n_fuel']} vueltas)")
+    print(f"  vueltas estimadas : ~{rf['laps']}")
+    print(f"  para terminar     : {rf['to_finish']:.1f} L")
+    print(f"  CARGA recomendada : {rf['load']:.0f} L  (+{rf['margin']:.1f} L de margen)")
+    print("  ojo: combustible = peso, no sobrecargues; en vivo el ⚙ del dash lo afina con tu consumo real.")
+    print()
+
+
 def main():
     ap = argparse.ArgumentParser(description="Analisis de telemetria AMS2")
     ap.add_argument("folder", nargs="?", help="carpeta de sesion (default: la ultima)")
@@ -940,17 +1109,41 @@ def main():
                     help="balance sobre/subviraje por curva + momento de inestabilidad (slip por rueda)")
     ap.add_argument("--last", type=int, metavar="N",
                     help="analizar solo las N vueltas validas mas recientes (aislar el stint/setup actual)")
+    ap.add_argument("--combo", nargs="?", const="", metavar="FILTRO", default=None,
+                    help="agrega TODAS las sesiones de un auto+pista (insights recurrentes, tendencia, "
+                         "consumo). FILTRO opcional (substring de auto/pista); sin filtro usa la ultima combinacion")
+    ap.add_argument("--race-fuel", type=float, metavar="MIN", dest="race_fuel",
+                    help="carga estimada de combustible para una carrera por TIEMPO (minutos) desde el consumo del combo")
+    ap.add_argument("--race-laps", type=int, metavar="N", dest="race_laps",
+                    help="carga estimada para una carrera por VUELTAS (N) desde el consumo del combo")
     a = ap.parse_args()
     if a.last:
         global _LAST
         _LAST = a.last
 
     if a.list:
-        s = _sessions()
-        print(f"sesiones en {TELEM}:" if s else f"sin sesiones en {TELEM}")
-        for d in s:
-            _, laps = _load(d)
-            print(f"  {os.path.basename(d)}  ({len(laps)} vueltas)")
+        groups = _group_combos()
+        if not groups:
+            print(f"sin sesiones en {TELEM}")
+            return
+        print(f"sesiones en {TELEM} (por combinacion auto+pista):")
+        for k in sorted(groups, key=lambda k: os.path.getmtime(groups[k][-1]), reverse=True):
+            car, track = k
+            fs = groups[k]
+            total = sum(len(_load(d)[1]) for d in fs)
+            print(f"  {track} · {car}  — {len(fs)} sesiones · {total} vueltas")
+            for d in fs:
+                _, laps = _load(d)
+                ts = os.path.basename(d).split("__")[-1]
+                print(f"      {_session_type(d):>9} {ts}  ({len(laps)} v)")
+        return
+
+    # modo COMBO / plan de combustible desde el historico (agrega por auto+pista)
+    if a.race_fuel is not None or a.race_laps is not None:
+        report_race_fuel(a.combo, minutes=a.race_fuel, laps=a.race_laps)
+        return
+    if a.combo is not None:
+        report_combo(a.combo)
         return
 
     folder = a.folder or (_sessions()[-1] if _sessions() else None)

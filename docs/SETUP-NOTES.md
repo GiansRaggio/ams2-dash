@@ -98,6 +98,15 @@ Para una carrera de `T` minutos:
 
 **Ejemplo (GT4, 40 min @ Buenos Aires):** ~20 vueltas · ~65 L para terminar · **cargar ~70-72 L**.
 
+### Modo combo — agrega TODAS tus sesiones de un auto+pista (offline)
+Además del ⚙ en vivo (que usa solo la sesión actual), el analizador consolida el histórico por combinación:
+- `analyze_telemetry.py --list` — sesiones **agrupadas por combinación** pista-auto.
+- `analyze_telemetry.py --combo [filtro]` — mejor vuelta, **tendencia entre prácticas**, consumo medio e
+  **insights RECURRENTES** (los que se repiten en ≥2 tandas = lo persistente, no un mal día). Sin filtro usa
+  la última combinación; con filtro (`--combo GT4`) matchea substring de auto/pista.
+- `analyze_telemetry.py --race-fuel <min>` o `--race-laps <N>` — **carga estimada** desde el consumo de las
+  **prácticas** del combo (excluye carreras, que son atípicas: mojado/tráfico/ahorro). Ej: `--race-fuel 40 --combo GT4`.
+
 ---
 
 ## Cruce LLUVIA → LISOS (pista que seca)
