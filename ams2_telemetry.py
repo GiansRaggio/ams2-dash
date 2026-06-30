@@ -120,38 +120,8 @@ class TelemetryLogger:
         self._laps_logged = 0
         self._last_file = None
         self._recording = False
-        self._player_name = self._read_player_name()   # ancla al auto del jugador (no al de la camara)
+        self._player_name = ams2_shm.read_player_name()   # ancla a TU auto (no al de la camara, bug MP)
         self._reset_session()
-
-    def _read_player_name(self):
-        """Nombre del jugador para anclar el recorder a SU participante (no al que mira
-        la camara). Orden: env AMS2_PLAYER_NAME, luego player.txt junto al script.
-        Vacio => cae al comportamiento viejo (mViewedParticipantIndex)."""
-        name = os.environ.get("AMS2_PLAYER_NAME", "").strip()
-        if not name:
-            try:
-                pf = os.path.join(os.path.dirname(os.path.abspath(__file__)), "player.txt")
-                if os.path.exists(pf):
-                    name = open(pf, encoding="utf-8").read().strip()
-            except Exception:
-                name = ""
-        return name.lower()
-
-    def _player_idx(self, d):
-        """Indice del participante del JUGADOR. En multiplayer mViewedParticipantIndex
-        sigue a la CAMARA (transmision / otros pilotos), NO a tu auto -> corrompe la
-        deteccion de vuelta y la distancia de traza (mezcla tu fisica con las vueltas de
-        otro). Anclamos por NOMBRE (inmune a la camara). Fallback: el visto, si no hay
-        nombre configurado o no matchea (p.ej. single-player, donde visto == jugador)."""
-        n = max(0, min(d.mNumParticipants, ams2_shm.STORED_PARTICIPANTS_MAX))
-        if self._player_name:
-            for i in range(n):
-                p = d.mParticipantInfo[i]
-                if p.mIsActive and self._player_name in \
-                        bytes(p.mName).split(b"\x00")[0].decode("utf-8", "replace").lower():
-                    return i
-        v = d.mViewedParticipantIndex
-        return v if 0 <= v < n else 0
 
     def _reset_session(self):
         self._sig = None
@@ -236,7 +206,7 @@ class TelemetryLogger:
             with self._lock:
                 self._recording = False
             return
-        v = self._player_idx(d)                   # TU auto, no el que mira la camara (bug MP)
+        v = ams2_shm.player_index(d, self._player_name)   # TU auto, no el que mira la camara (bug MP)
         if not (0 <= v < ams2_shm.STORED_PARTICIPANTS_MAX):
             return
         p = d.mParticipantInfo[v]

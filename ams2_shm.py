@@ -16,6 +16,7 @@ CREST2-AMS2. Todos los campos son <= 4 bytes => alineacion natural estandar (sin
 Solo Windows (usa kernel32 OpenFileMapping / MapViewOfFile).
 """
 import ctypes
+import os
 from ctypes import wintypes
 
 MAP_NAME = "$pcars2$"
@@ -37,6 +38,37 @@ CAR_ENGINE_WARNING = 0x04
 CAR_SPEED_LIMITER = 0x08
 CAR_ABS = 0x10
 CAR_TC = 0x40
+
+
+# --- anclaje al participante del JUGADOR (compartido por recorder, estrategia y bridge) ---
+def read_player_name():
+    """Nombre del jugador para anclar la captura/estrategia a SU participante (no al que mira la
+    camara). Orden: env AMS2_PLAYER_NAME, luego player.txt junto a este modulo. '' = sin anclaje
+    (cae a mViewedParticipantIndex; en single-player el visto YA es el jugador)."""
+    name = os.environ.get("AMS2_PLAYER_NAME", "").strip()
+    if not name:
+        try:
+            pf = os.path.join(os.path.dirname(os.path.abspath(__file__)), "player.txt")
+            if os.path.exists(pf):
+                name = open(pf, encoding="utf-8").read().strip()
+        except Exception:
+            name = ""
+    return name.lower()
+
+
+def player_index(d, name):
+    """Indice del participante del JUGADOR. En MULTIPLAYER mViewedParticipantIndex sigue a la
+    CAMARA (transmision / otros pilotos), NO a tu auto -> corrompe vueltas/distancia/estrategia.
+    Con nombre, lo matchea por mName (inmune a la camara); si no hay o no matchea, cae al visto."""
+    n = max(0, min(d.mNumParticipants, STORED_PARTICIPANTS_MAX))
+    if name:
+        for i in range(n):
+            p = d.mParticipantInfo[i]
+            if p.mIsActive and name in \
+                    bytes(p.mName).split(b"\x00")[0].decode("utf-8", "replace").lower():
+                return i
+    v = d.mViewedParticipantIndex
+    return v if 0 <= v < n else 0
 
 
 class ParticipantInfo(ctypes.Structure):
