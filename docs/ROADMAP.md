@@ -183,6 +183,33 @@ Fortaleza actual; potenciarla para práctica activa.
 
 ---
 
+### 9. Captura multi-participante + condiciones de pista (alimenta la BD de comparación) — plataforma
+*Feature de producto (cross-driver) — prerequisito de la comparación entre pilotos de la BD en la nube.*
+
+**9a. Telemetría posicional de RIVALES (in-session).** La SHM **no** expone física de otros autos (solo
+la tuya — fue el bug del anclaje). Pero `ParticipantInfo` SÍ da, por participante y a 50Hz: nombre,
+**posición mundo (XYZ)**, distancia de vuelta, posición de carrera, vueltas, sector.
+- Capturar los participantes **activos** (no solo el jugador) → derivar: tiempos de vuelta/sector,
+  **gaps/deltas en vivo**, **trazada** (trace XYZ) y **perfil de velocidad** (derivada de la posición —
+  aprox pero real), e inferir puntos de frenada/aceleración. NO se obtiene inputs/gomas/fuel/setup ajenos
+  → se entrena sobre **línea y velocidad de paso** (la mayor parte del tiempo de vuelta).
+- **Valor:** comparación in-session "dónde el líder es más rápido por curva" **sin nube ni cooperación
+  del rival** — sortea privacidad/cold-start del pooling para el caso in-race, y **alimenta la BD** con
+  las líneas/perfiles de los rápidos por combo (el caso cross-sesión sí usa la nube).
+- **Impl:** el recorder ya itera `mParticipantInfo`; capturar los activos (storage chico, solo posiciones)
+  en un logger posicional aparte + derivación offline. No tocar la captura de física del jugador.
+
+**9b. Condiciones de pista como CLAVE DE NORMALIZACIÓN (obligatoria).** Sin condiciones, comparar
+pilotos/vueltas queda confundido por setup + clima (lección **Sebring vs Bathurst**; el análisis de
+estrategia lo marcó como *filtro obligatorio, no opcional*).
+- **Ya capturamos por vuelta:** `ambient_t`, `track_t`, `rain`, `compound`. **Agregar/consolidar:** estado
+  de mojado/secado (tendencia de `rain`), viento, hora/tiempo de sesión, y un **bucket de condición**
+  (seco/húmedo/mojado × rango de temp) para que TODA comparación filtre por `(sim, auto, pista, layout,
+  clase, condición)`. (AMS2 no expone % de wetness directo → se infiere de `rain`+temp, ver crossover.)
+- Es el **prerequisito** de la BD de comparación cross-sesión del plan de producto.
+
+---
+
 ## Roadmap por Fases
 
 **Fase 0 — Consolidación (en curso)**
@@ -206,8 +233,11 @@ Fortaleza actual; potenciarla para práctica activa.
 - Página de análisis (overlays de trazas, mapa, delta por distancia, tabla por curva).
 - Export MoTeC, import de referencias externas.
 
-**Fase 4 (futuro)**
+**Fase 4 (futuro / plataforma)**
 - Video + data overlay, compartir laps de forma controlada, integración con setups.
+- **Captura multi-participante (línea + velocidad de paso de rivales) + condiciones como clave de
+  normalización (área 9) → comparación cross-driver in-session y BD del producto.** *(implementar sí o sí:
+  alimenta la BD; el caso in-race no necesita nube.)*
 
 ---
 
