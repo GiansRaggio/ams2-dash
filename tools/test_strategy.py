@@ -366,13 +366,63 @@ def test_crossover_calibrating():
     _ok("calibrando con poca historia", cx.get("state") == "calibrando", cx.get("state"))
 
 
+def test_player_index():
+    print("test_player_index (anclaje al JUGADOR, no a la camara — bug MP):")
+    import ams2_shm as SHM
+
+    class _P:
+        def __init__(self, name):
+            self.mName = name.encode("utf-8")
+            self.mIsActive = True
+
+    class _D:
+        def __init__(self, names, viewed):
+            self._ps = [_P(n) for n in names]
+            self.mNumParticipants = len(names)
+            self.mViewedParticipantIndex = viewed
+
+        @property
+        def mParticipantInfo(self):
+            return self._ps
+
+    d = _D(["Edu Moreno", "Anselmo Acuna", "Gians", "lockfaiker"], viewed=1)
+    _ok("matchea por nombre (ignora el visto=1)", SHM.player_index(d, "gians") == 2, SHM.player_index(d, "gians"))
+    _ok("sin nombre -> cae al visto", SHM.player_index(d, "") == 1, SHM.player_index(d, ""))
+    _ok("nombre inexistente -> cae al visto", SHM.player_index(d, "zzz") == 1, SHM.player_index(d, "zzz"))
+    d2 = _D(["A", "B"], viewed=9)
+    _ok("visto fuera de rango -> 0", SHM.player_index(d2, "") == 0, SHM.player_index(d2, ""))
+
+
+def test_speech_server():
+    print("test_speech_server (voz edge-trigger, sin hablar de verdad):")
+    import bridge_shm
+    ss = bridge_shm.SpeechServer(enabled=True)
+    spoken = []
+    ss._speak = lambda t, lvl=0: spoken.append(t)
+    a2 = [{"key": "window", "level": 2, "say": "ventana"},
+          {"key": "enforced", "level": 3, "say": "pit obligatorio"}]
+    ss.handle({"alerts": a2})
+    _ok("habla la mas urgente primero", spoken == ["pit obligatorio"], spoken)
+    ss.handle({"alerts": a2})
+    _ok("no repite la dicha; dice la nueva", spoken == ["pit obligatorio", "ventana"], spoken)
+    ss.handle({"alerts": [{"key": "window", "level": 2, "say": "ventana"}]})   # desaparece enforced
+    ss.handle({"alerts": [{"key": "enforced", "level": 3, "say": "pit obligatorio"}]})  # reaparece
+    _ok("re-suena tras desaparecer/reaparecer", spoken[-1] == "pit obligatorio", spoken)
+    ss2 = bridge_shm.SpeechServer(enabled=False)
+    said = []
+    ss2._speak = lambda t, lvl=0: said.append(t)
+    ss2.handle({"alerts": [{"key": "x", "level": 3, "say": "no"}]})
+    _ok("disabled no habla", said == [], said)
+
+
 if __name__ == "__main__":
     for t in (test_lap_race, test_timed_race_seconds, test_timed_race_millis,
               test_fuel_deficit, test_capacity_guard, test_tyre_wear,
               test_planning_practice, test_live_overrides_plan,
               test_all_laps_toggle, test_no_false_fumes, test_calibrating,
               test_crossover_dry_none, test_crossover_green_raining,
-              test_crossover_drying_alerts, test_crossover_calibrating):
+              test_crossover_drying_alerts, test_crossover_calibrating,
+              test_player_index, test_speech_server):
         t()
         print()
     print("done.")

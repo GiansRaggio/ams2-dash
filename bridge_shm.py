@@ -20,6 +20,7 @@ import http.server
 import json
 import os
 import socket
+import subprocess
 import threading
 import time
 
@@ -82,6 +83,63 @@ strategy = ams2_strategy.StrategyEngine()
 
 # Logger de telemetria por vuelta (corre su propio hilo+reader; se crea en main()).
 telemetry = None
+
+# Anclaje al auto del JUGADOR (mismo helper que recorder/estrategia): en MP la camara
+# (mViewedParticipantIndex) sigue a otros autos, no a ti. Se lee una vez al arrancar.
+_player_name = ams2_shm.read_player_name()
+
+
+class SpeechServer:
+    """Habla las alertas de estrategia por la voz de Windows (SAPI), sin depender de que haya un
+    navegador/iPad abierto. Edge-trigger como el TTS del dash: cada alerta suena UNA vez al
+    aparecer y vuelve a poder sonar si desaparece y reaparece; la mas urgente primero. No bloquea
+    el loop (subprocess fire-and-forget)."""
+
+    def __init__(self, enabled=True):
+        self.enabled = enabled
+        self._announced = set()
+
+    def handle(self, strat):
+        alerts = (strat or {}).get("alerts") or []
+        active = {a.get("key") for a in alerts}
+        self._announced &= active                 # re-arme: las que ya no estan podran re-sonar
+        if not self.enabled:
+            return
+        fresh = [a for a in alerts if a.get("key") not in self._announced]
+        if not fresh:
+            return
+        a = max(fresh, key=lambda x: x.get("level", 0))   # la mas urgente primero
+        self._announced.add(a.get("key"))
+        self._speak(a.get("say", ""), a.get("level", 0))
+
+    def _speak(self, text, level=0):
+        if not text:
+            return
+        # SAPI via PowerShell: sin dependencias pip. Texto por stdin -> sin escaping/inyeccion.
+        # Para cortar el audio del juego: beep de atencion ('click de radio') + voz a volumen 100,
+        # mas lenta = mas clara; las CRITICAS (level>=3) se repiten para no perderlas. Fire-and-forget.
+        beep = "[console]::beep(1100,120);[console]::beep(1500,180);"
+        speak = "$s.Speak($t);" * (2 if level >= 3 else 1)
+        ps = ("$t=[Console]::In.ReadToEnd();"
+              "Add-Type -AssemblyName System.Speech;"
+              "$s=New-Object System.Speech.Synthesis.SpeechSynthesizer;"
+              "$s.Volume=100; $s.Rate=-2;"
+              "$v=$s.GetInstalledVoices()|?{$_.VoiceInfo.Culture.Name -like 'es-*'}|select -First 1;"
+              "if($v){$s.SelectVoice($v.VoiceInfo.Name)};"
+              + beep + speak)
+        try:
+            p = subprocess.Popen(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            p.stdin.write(text.encode("utf-8"))
+            p.stdin.close()
+        except Exception:
+            pass
+
+
+# Voz del ingeniero en el PC (sin navegador). AMS2_VOICE=0 para apagarla.
+speech = SpeechServer(enabled=os.environ.get("AMS2_VOICE", "1") != "0")
 
 # Economia de combustible (identica a bridge.py: delta de nivel al cruzar meta)
 _fuel_lap_start = None
@@ -170,7 +228,7 @@ def update_state(d):
     state["event_remaining"] = ev if ev >= 0 else None
 
     state["num_participants"] = max(d.mNumParticipants, 0)
-    v = d.mViewedParticipantIndex
+    v = ams2_shm.player_index(d, _player_name)   # TU auto (pos/vuelta/economia/leaderboard), no el visto
     if 0 <= v < ams2_shm.STORED_PARTICIPANTS_MAX:
         p = d.mParticipantInfo[v]
         state["position"] = p.mRacePosition
@@ -224,6 +282,10 @@ def update_state(d):
         state["strategy"] = strategy.payload()
     except Exception:
         pass   # nunca tumbar el broadcast por un error del analizador de estrategia
+    try:
+        speech.handle(state.get("strategy"))   # voz del ingeniero en el PC (sin navegador)
+    except Exception:
+        pass
     if telemetry is not None:
         try:
             state["telemetry"] = telemetry.status()

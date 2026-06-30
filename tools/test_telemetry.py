@@ -23,6 +23,7 @@ class P:
         self.mCurrentLapDistance = dist
         self.mWorldPosition = [10.0, 1.0, 20.0]
         self.mRacePosition = 1
+        self.mName = b"Player"        # no matchea player.txt -> player_index cae al visto (índice 0)
         self.mIsActive = True
 
 

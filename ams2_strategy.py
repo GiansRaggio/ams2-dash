@@ -115,6 +115,7 @@ class StrategyEngine:
     def __init__(self):
         self._race_override = None      # formato de carrera manual {mode,value,additional}
         self._use_all_laps = True       # contar vueltas anomalas/invalidas (default: si)
+        self._player_name = ams2_shm.read_player_name()   # ancla a TU auto en MP (alerta de pit, fuel)
         self._reset_session()
 
     # ---------------- ciclo de sesion ----------------
@@ -172,7 +173,7 @@ class StrategyEngine:
         # Guard de corrupcion (AMS2 comparte el nombre de mapeo con PCARS2).
         if d.mVersion != ams2_shm.SHARED_MEMORY_VERSION or d.mNumParticipants <= 0:
             return
-        v = d.mViewedParticipantIndex
+        v = ams2_shm.player_index(d, self._player_name)   # TU auto, no el que mira la camara (bug MP)
         if not (0 <= v < ams2_shm.STORED_PARTICIPANTS_MAX):
             return
         p = d.mParticipantInfo[v]
