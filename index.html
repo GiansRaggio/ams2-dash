@@ -18,7 +18,7 @@
     --chamfer:polygon(10px 0,100% 0,100% calc(100% - 10px),calc(100% - 10px) 100%,0 100%,0 10px);
   }
   *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-  html,body{height:100%;overflow:hidden}
+  html,body{height:100vh;height:100dvh;overflow:hidden;touch-action:manipulation}
   body{
     background:
       radial-gradient(120% 90% at 50% -20%, #0b1220 0%, var(--bg) 55%),
@@ -136,10 +136,21 @@
   body.limiter #pitlimit{display:block;animation:limitpulse .6s ease infinite}
   @keyframes limitpulse{50%{opacity:.45}}
 
-  #conn{flex:none;width:18vw;display:flex;align-items:center;justify-content:center;
+  /* aviso: la pantalla puede apagarse (Wake Lock no disponible / se soltó).
+     Anclado ARRIBA (no abajo) para no tapar la lectura de combustible/#conn de la banda inferior. */
+  #nolock{position:fixed;top:calc(1vh + env(safe-area-inset-top));left:50%;
+    transform:translateX(-50%);z-index:45;display:none;flex-direction:column;align-items:center;gap:.2vh;
+    padding:.5vh 3vw;font-size:clamp(10px,1.8vh,15px);font-weight:800;letter-spacing:.12em;color:#04060a;
+    background:var(--amber);clip-path:var(--chamfer);box-shadow:0 0 20px rgba(255,176,32,.5)}
+  #nolock.show{display:flex}
+  #nolock small{font-weight:600;letter-spacing:.06em;font-size:.7em;color:#3a2c05}
+  #nosleep{position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;left:0;top:0}
+
+  #conn{flex:none;white-space:nowrap;padding:0 2.5vw;display:flex;align-items:center;justify-content:center;
         font-size:1.8vh;letter-spacing:.18em;color:var(--dim);gap:.6vw}
-  #conn::before{content:"";width:1.2vh;height:1.2vh;border-radius:50%;background:#333}
+  #conn::before{content:"";width:clamp(9px,1.4vh,14px);height:clamp(9px,1.4vh,14px);border-radius:50%;background:#333}
   #conn.ok{color:var(--green)} #conn.ok::before{background:var(--green);box-shadow:0 0 10px var(--green)}
+  #conn.warn{color:var(--amber)} #conn.warn::before{background:var(--amber);box-shadow:0 0 10px var(--amber)}
 
   /* ================= TAP PARA FULLSCREEN ================= */
   #fshint{position:fixed;inset:0;z-index:50;display:flex;flex-direction:column;
@@ -158,7 +169,7 @@
   .btn{pointer-events:auto;cursor:pointer;display:inline-flex;align-items:center;gap:.5vw;
        font-family:var(--mono);font-size:1.9vh;font-weight:700;letter-spacing:.1em;
        color:var(--txt);background:rgba(13,17,24,.85);border:1px solid var(--line);
-       border-radius:6px;padding:.6vh 1.5vw;-webkit-user-select:none;user-select:none}
+       border-radius:6px;padding:.6vh 1.5vw;-webkit-user-select:none;user-select:none;touch-action:manipulation}
   .btn:active{background:var(--panel2);border-color:var(--cyan);color:var(--cyan)}
   #ctrlbar{flex:none;display:flex;justify-content:flex-end;gap:1vw;padding:.5vh 1.4vw 0}
   #tbar{flex:none;display:flex;align-items:center;justify-content:space-between;
@@ -258,7 +269,7 @@
   #sbar .stitle{font-size:1.9vh;letter-spacing:.16em;color:var(--dim);font-weight:700;white-space:nowrap}
   #sbar .stitle b{color:var(--txt)}
   #sbar #sinfo{color:var(--cyan);font-variant-numeric:tabular-nums}
-  #srec{font-size:1.5vh;letter-spacing:.06em;color:var(--dim);font-variant-numeric:tabular-nums}
+  #srec{font-size:clamp(12px,1.9vh,20px);letter-spacing:.06em;color:var(--dim);font-variant-numeric:tabular-nums}
   #srec.on{color:var(--red)}
   #sbar .sbtns{display:flex;gap:.8vw}
   #scalib{flex:1;display:flex;align-items:center;justify-content:center;text-align:center;
@@ -338,19 +349,77 @@
   #sadd.hidden{display:none}
   #sadd b{color:var(--cyan);font-size:1.2em}
   #saddwarn{color:var(--red);font-size:.7em;font-weight:700;letter-spacing:.02em}
+
+  /* ================= LAYOUT VERTICAL (PORTRAIT) ================= */
+  /* iPhone/iPad de pie en el cockpit: el dash landscape colapsa, acá se apila. */
+  @media (orientation:portrait){
+    /* dash principal: una columna, la marcha protagonista */
+    #grid{grid-template-columns:1fr;grid-template-rows:auto;gap:.8vh;padding:.8vh}
+    #center{order:1;width:100%;min-height:36vh;overflow:visible}
+    #grid>.col:nth-child(3){order:2}   /* tiempos (derecha) suben */
+    #grid>.col:nth-child(1){order:3}   /* splits/posición (izquierda) al final */
+    /* las columnas laterales pasan a bandas horizontales (el centro NO: la marcha
+       sigue apilada en columna — :not(#center) evita que esta regla lo capture) */
+    #grid>.col:not(#center){flex-direction:row;flex-wrap:wrap;gap:.6vh}
+    #grid>.col:not(#center) .box{flex:1 1 45%;min-height:8vh;min-width:0}
+
+    /* marcha y velocidad dimensionadas por ANCHO (no por alto) */
+    #gear{font-size:clamp(80px,44vw,220px)}
+    #speed{font-size:clamp(26px,14vw,72px)}
+    .pedal{min-width:10px}
+
+    /* .duo (position+lap) hereda flex-basis 0 del base y se mete de astilla en la
+       primera fila en vez de envolver: en portrait ocupa su propia fila completa */
+    #grid>.col:not(#center) .duo{flex:1 1 100%}
+
+    /* clamps por ancho: las cajas al 45% ≈ 165px en un viewport de 375px */
+    .lap{font-size:clamp(14px,6.5vw,34px)}
+    .split{font-size:clamp(16px,8vw,40px)}
+    .small{font-size:clamp(14px,7vw,36px)}
+    #rpmnum{font-size:clamp(12px,4.5vw,20px)}
+    #fuelval{font-size:clamp(15px,5.5vw,26px)}
+    #fuellaps b{font-size:clamp(14px,5vw,24px)}
+    #fuellaps span{font-size:clamp(9px,3vw,13px)}
+    #fuelpct{font-size:clamp(10px,3.5vw,16px)}
+
+    /* fila inferior: que #conn pueda envolver debajo sin recortarse */
+    #bottom{height:auto;min-height:10vh;flex-wrap:wrap;padding-bottom:calc(1vh + env(safe-area-inset-bottom))}
+    #fuelbox{min-width:0}
+    /* #conn sin width fija se quedaría en 1.8vh (~ilegible en teléfono): clamp por alto */
+    #conn{font-size:clamp(11px,1.8vh,18px)}
+
+    /* touch targets cómodos SOLO en portrait */
+    .btn{min-height:44px;padding:.6vh max(3vw,12px)}
+    #btnstop,#btnfs,#btnfs2,#btnfs3,#btnfs4,#btnreset,#btnracecfg,#btntts{min-width:44px;justify-content:center}
+
+    /* páginas secundarias apiladas + scroll vertical */
+    /* los títulos de header ceden espacio (elipsis) para que los botones ⚙/🔊/⛶ no salgan de pantalla */
+    #sbar .stitle,#dbar .dtitle{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+    #dgrid{grid-template-columns:1fr;grid-template-rows:repeat(4,minmax(22vh,1fr))}
+    #damperview{overflow-y:auto}
+    #sgrid{grid-template-columns:1fr}
+    #sfuel .sbignum{font-size:clamp(38px,16vw,96px)}
+    #strategyview{overflow-y:auto}
+    #srec{font-weight:700}   /* REC más grueso/legible en el teléfono (en landscape queda normal) */
+    #ttable td{font-size:clamp(14px,3.4vw,24px)}
+    #ttable td,#ttable th{padding-left:2vw;padding-right:2vw}
+  }
 </style>
 </head>
 <body>
 
   <div id="fshint">Toca para pantalla completa
-    <small>la pantalla no se apagará</small></div>
+    <small>intenta mantener la pantalla activa · iPhone: Compartir → Agregar a inicio</small></div>
 
   <div id="pitlimit">PIT LIMITER</div>
+
+  <div id="nolock">⚠ PANTALLA PUEDE APAGARSE<small>toca la pantalla para reintentar</small></div>
+  <video id="nosleep" src="nosleep.mp4" muted playsinline loop disableRemotePlayback></video>
 
   <div id="stopconfirm" class="modal hidden">
     <div class="modalbox">
       <div class="modaltitle">¿Detener el servidor del dash?</div>
-      <div class="modalsub">El dashboard se desconectará. Para reiniciarlo, corré <b>start-dash.bat</b> en el PC.</div>
+      <div class="modalsub">El dashboard se desconectará. Para reiniciarlo, corre <b>start-dash.bat</b> en el PC.</div>
       <div class="modalbtns">
         <button class="btn" id="stopcancel">Cancelar</button>
         <button class="btn danger" id="stopok">Detener</button>
@@ -360,7 +429,7 @@
   <div id="stopped" class="modal hidden">
     <div class="modalbox">
       <div class="modaltitle">Servidor detenido</div>
-      <div class="modalsub">Corré <b>start-dash.bat</b> en el PC para reiniciarlo y recargá esta página.</div>
+      <div class="modalsub">Corre <b>start-dash.bat</b> en el PC para reiniciarlo y recarga esta página.</div>
     </div>
   </div>
 
@@ -368,7 +437,7 @@
     <div class="modalbox">
       <div class="modaltitle">Formato de carrera</div>
       <div class="modalsub">La shared memory no conoce la carrera futura en práctica.<br>
-        Cargalo a mano y el plan se calcula con tu consumo medido.<br>
+        Cárgalo a mano y el plan se calcula con tu consumo medido.<br>
         <b>En carrera, los datos en vivo mandan.</b></div>
       <div class="rcfgtabs">
         <button class="btn rcfgtab on" id="rcfgtimed">⏱ Tiempo</button>
@@ -510,7 +579,7 @@
           <span class="slabel" id="sfuellabel">Combustible al final</span>
           <div class="sbignum"><span id="sfuelnum">--</span><small id="sfuelunit"> L</small></div>
           <div id="sfuelmargin">margen — v</div>
-          <div id="ssave" class="hidden">AHORRÁ <b id="ssaveval">--</b> L/v<div id="ssavehint"></div></div>
+          <div id="ssave" class="hidden">AHORRA <b id="ssaveval">--</b> L/v<div id="ssavehint"></div></div>
         </div>
         <div id="swheels">
           <div class="swheel" id="swFL"><b>FL</b><span class="sw">--%</span><span class="stmp">--°</span></div>
@@ -771,9 +840,9 @@ function renderStrategy(s){
     sv.classList.remove("hidden");
     sv.className = s.save_level==="impossible" ? "imposs" : "";
     $("ssaveval").textContent = s.save_per_lap.toFixed(2);
-    $("ssavehint").textContent = s.save_level==="easy" ? "ahorro suave, llegás"
+    $("ssavehint").textContent = s.save_level==="easy" ? "ahorro suave, llegas"
       : s.save_level==="hard" ? "lift & coast en las frenadas duras"
-      : "no alcanza — planificá parar";
+      : "no alcanza — planifica parar";
   } else sv.classList.add("hidden");
 
   /* 4 ruedas: desgaste + temperatura, peor resaltada */
@@ -783,10 +852,10 @@ function renderStrategy(s){
   const lim = $("slimiter");
   if(s.limiter==="tyre"){
     lim.className = "lim-tyre";
-    lim.textContent = `PARÁS POR: gomas (${s.limiter_laps} v)`;
+    lim.textContent = `PARAS POR: gomas (${s.limiter_laps} v)`;
   } else {
     lim.className = "lim-fuel";
-    lim.textContent = `PARÁS POR: combustible (${s.limiter_laps} v)`;
+    lim.textContent = `PARAS POR: combustible (${s.limiter_laps} v)`;
   }
 
   /* ventana de pit + barra de stint */
@@ -845,7 +914,7 @@ function renderCrossover(s){
     $("scrosssig").textContent = cond;
   } else if(cx.state==="amber"){
     el.className = "cx-amber";
-    $("scrosstitle").textContent = "🟡 VENTANA DE LISOS ABIERTA — prepará boxes";
+    $("scrosstitle").textContent = "🟡 VENTANA DE LISOS ABIERTA — prepara boxes";
     $("scrosssig").textContent = sig;
   } else if(cx.state==="red"){
     el.className = "cx-red";
@@ -853,7 +922,7 @@ function renderCrossover(s){
     $("scrosssig").textContent = sig;
   } else {
     el.className = "cx-green";
-    $("scrosstitle").textContent = "🟢 AGUANTÁ LLUVIA — es la goma correcta";
+    $("scrosstitle").textContent = "🟢 AGUANTA LLUVIA — es la goma correcta";
     $("scrosssig").textContent = cond;
   }
 }
@@ -870,7 +939,7 @@ function renderPlan(s){
   $("ssave").classList.add("hidden");
   const lim = $("slimiter");
   lim.className = "lim-plan";
-  lim.textContent = `LARGÁ CON ${s.race_start_fuel_l} L · ${s.race_stops} parada${s.race_stops===1?"":"s"} · stint ~${s.stint_full_laps} v`;
+  lim.textContent = `LARGA CON ${s.race_start_fuel_l} L · ${s.race_stops} parada${s.race_stops===1?"":"s"} · stint ~${s.stint_full_laps} v`;
   renderWheels(s);
   $("spitwin").textContent = "Plan estimado (práctica)";
   $("sstops").textContent = "";
@@ -900,6 +969,15 @@ function renderNoRace(s){
 /* ---- voz del ingeniero (Web Speech API): edge-trigger, sin spam ---- */
 let ttsOn = true;
 const announced = new Set();       // alertas ya dichas mientras siguen activas
+
+/* iOS bloquea speechSynthesis hasta hablar dentro de un gesto de usuario;
+   una utterance muda en el primer tap lo desbloquea para las alertas posteriores. */
+let ttsPrimed = false;
+function primeTTS(){
+  if(ttsPrimed || !("speechSynthesis" in window)) return;
+  try{ const u = new SpeechSynthesisUtterance(" "); u.volume = 0; u.lang = "es-ES";
+       speechSynthesis.speak(u); ttsPrimed = true; }catch(e){}
+}
 function speak(text){
   if(!ttsOn || !("speechSynthesis" in window)) return;
   try{
@@ -919,15 +997,28 @@ function handleStrategyTTS(s){
   if(fresh.length){ announced.add(fresh[0].key); speak(fresh[0].say); }
 }
 
+/* watchdog: tras suspender/reanudar el WS puede quedar half-open (onclose nunca
+   dispara) y el dash se congela con datos viejos. Marcamos cada mensaje y si el
+   backend (que empuja ~10-20Hz continuo) calla >3s, forzamos reconexión. */
+let lastMsgAt = 0;
+function forceReconnect(){
+  if(stopping) return;                              // servidor detenido: no reconectar
+  try{ if(sock){ sock.onclose = null; sock.close(); } }catch(e){}
+  sock = null;
+  els.conn.textContent = "RECONECTANDO…"; els.conn.className = "warn";
+  connect();
+}
 function connect(){
   const ws = new WebSocket(`ws://${location.hostname}:8765`);
   sock = ws;
+  lastMsgAt = performance.now();
   ws.onopen = () => {                              // re-aplica ajustes guardados
     const p = loadPlan(); if(p) sendPlan(p);
     sendAllLaps(loadAllLaps());
     sendTelemMode(loadTelemMode());
   };
   ws.onmessage = e => {
+    lastMsgAt = performance.now();
     const m = JSON.parse(e.data);
     if(m.dampers){ lastDampers = m.dampers; renderDampers(m.dampers); return; }
     target = m; applyStatic(m); renderTiming(m.leaderboard||[]);
@@ -935,29 +1026,74 @@ function connect(){
     if(m.telemetry) updateRec(m.telemetry);
   };
   ws.onclose = () => {
+    if(sock !== ws) return;                         // ya reconectó el watchdog: onclose del socket viejo
     if(stopping){ $("stopped").classList.remove("hidden"); return; }
-    els.conn.textContent="RECONECTANDO…"; els.conn.className="";
+    els.conn.textContent="RECONECTANDO…"; els.conn.className="warn";
     setTimeout(connect, 1500);
   };
 }
 connect();
+/* si el socket sigue "abierto" pero no llegan datos hace >3s, está congelado */
+setInterval(() => {
+  if(stopping) return;
+  if(sock && sock.readyState === 1 && performance.now() - lastMsgAt > 3000){
+    els.conn.textContent = "SIN DATOS"; els.conn.className = "warn";
+    forceReconnect();
+  }
+}, 2000);
 
-/* ---- Wake Lock: mantiene la pantalla encendida ---- */
-let wl = null;
+/* ---- Wake Lock endurecido: mantiene la pantalla encendida ---- */
+/* el sentinel se suelta solo (screen-off, cambio de app, bfcache); reaccionamos
+   al evento 'release', reintentamos si seguimos visibles y mostramos aviso si falla. */
+let wl = null, lockActive = false;
+function updateLockUI(ok){
+  const v = $("nosleep");                           // el video fallback también protege la pantalla
+  $("nolock").classList.toggle("show", !(ok || (v && !v.paused)));
+}
 async function lock(){
-  if(!("wakeLock" in navigator)) return;
-  try{ wl = await navigator.wakeLock.request("screen"); }catch{}
+  if(!("wakeLock" in navigator)){ updateLockUI(false); return; }
+  if(wl) return;                                    // ya hay sentinel válido (idempotente)
+  try{
+    wl = await navigator.wakeLock.request("screen");
+    lockActive = true; updateLockUI(true);
+    if(lockActive){ try{ $("nosleep").pause(); }catch(e){} }   // wake lock real → apaga el fallback de video
+    wl.addEventListener("release", () => {
+      wl = null; lockActive = false; updateLockUI(false);
+      if(document.visibilityState === "visible") lock();
+    });
+  }catch(e){ wl = null; lockActive = false; updateLockUI(false); }
 }
 lock();
+
+/* fallback para iPads sin Wake Lock funcional o con el request rechazado:
+   un video oculto en loop impide el auto-sleep. Se auto-anula si el lock real está activo. */
+function startNoSleep(){
+  if(lockActive) return;
+  const v = $("nosleep");
+  v.play().then(() => updateLockUI(false)).catch(()=>{});  // si el video corre, el badge se oculta
+}
+
+/* al volver a ser visible (o tras bfcache) el sentinel viejo es inválido:
+   lo descartamos y re-lockeamos; si el WS quedó congelado, reconectamos. */
+function onResume(){
+  if(stopping) return;                              // servidor detenido: no re-lockear ni reconectar
+  wl = null; lock();
+  if(sock && sock.readyState === 1){
+    if(performance.now() - lastMsgAt > 3000) forceReconnect();
+  }
+  // si sock es null o CLOSING/CLOSED, el retry de onclose (setTimeout 1.5s) ya actúa — no duplicar sockets
+}
 document.addEventListener("visibilitychange",
-  () => document.visibilityState==="visible" && lock());
+  () => { if(document.visibilityState==="visible") onResume(); });
+window.addEventListener("pageshow", onResume);
 
 /* ---- Fullscreen: un tap entra y reasegura el wake lock ---- */
 const root = document.documentElement, hint = $("fshint");
 function goFullscreen(){
   const req = root.requestFullscreen || root.webkitRequestFullscreen;
   if(req) req.call(root).catch(()=>{});   // iPhone no soporta la API: usa "Agregar a inicio"
-  lock();
+  lock().then(() => startNoSleep());       // fallback de video solo si el lock real no quedó activo
+  primeTTS();                              // desbloquea la voz del ingeniero dentro del gesto (iOS)
   hint.classList.add("hide");
 }
 hint.addEventListener("click", goFullscreen);
@@ -1047,6 +1183,12 @@ $("stopok").addEventListener("click", () => {
 /* si el SO devuelve el foco al dash (p.ej. tras un screen-off), reasegura el lock */
 document.addEventListener("fullscreenchange",
   () => (document.fullscreenElement) && lock());
+
+/* reintento global por tap: si el lock se soltó, cualquier toque lo re-adquiere
+   (o arranca el fallback) y desbloquea la voz. Anti-pinch para no hacer zoom. */
+document.addEventListener("pointerdown", () => { if(!lockActive){ lock(); startNoSleep(); } primeTTS(); }, {passive:true});
+document.addEventListener("gesturestart", e => e.preventDefault());
+document.addEventListener("touchmove", e => { if(e.touches.length > 1) e.preventDefault(); }, {passive:false});
 </script>
 </body>
 </html>

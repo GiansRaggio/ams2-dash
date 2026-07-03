@@ -630,13 +630,13 @@ class StrategyEngine:
         if stops == 0 and o.get("save_per_lap") and o.get("save_level") in ("easy", "hard"):
             lvl = 2 if o.get("save_level") == "hard" else 1
             a.append({"key": "save", "level": lvl,
-                      "say": f"Ahorrá {o['save_per_lap']:.2f} litros por vuelta para llegar"})
+                      "say": f"Ahorra {o['save_per_lap']:.2f} litros por vuelta para llegar"})
 
         # Combustible FISICO bajo en el estanque (menos de ~1 vuelta): urgente y real.
         tl = o.get("tank_laps")
         if tl is not None and tl < 1.0:
             a.append({"key": "fumes", "level": 3,
-                      "say": "Menos de una vuelta de combustible, entrá a boxes"})
+                      "say": "Menos de una vuelta de combustible, entra a boxes"})
 
         # Pit obligatorio acercandose.
         en = o.get("enforced_lap")
@@ -648,17 +648,17 @@ class StrategyEngine:
         pf, pt = o.get("pit_from"), o.get("pit_to")
         if pf and pt and pf <= cur_lap <= pt:
             add = o.get("add_l")
-            txt = f"Ventana de pit abierta, cargá {int(add)} litros" if add else "Ventana de pit abierta"
+            txt = f"Ventana de pit abierta, carga {int(add)} litros" if add else "Ventana de pit abierta"
             a.append({"key": "window", "level": 2, "say": txt})
 
         # Cruce lluvia->lisos en pista que seca: el error caro es quedarse tarde.
         cx = o.get("crossover")
         if cx and cx.get("state") == "red":
             a.append({"key": "cross_red", "level": 3,
-                      "say": "Pista secándose, los lisos ya van más rápido, entrá a boxes"})
+                      "say": "Pista secándose, los lisos ya van más rápido, entra a boxes"})
         elif cx and cx.get("state") == "amber":
             a.append({"key": "cross_amber", "level": 2,
-                      "say": "Ventana de lisos abierta, preparate para cambiar a boxes"})
+                      "say": "Ventana de lisos abierta, prepárate para cambiar a boxes"})
         return a
 
     def payload(self):
