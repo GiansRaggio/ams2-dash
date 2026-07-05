@@ -70,6 +70,34 @@ def main():
     _ok("bottoming 4% (<5): comportamiento normal, ablanda",
         "slow bump -" in linef and "BOTTOMING" not in linef, linef)
 
+    print("test ancla al jugador en multiplayer (no a la camara):")
+
+    class P:
+        def __init__(self, name, lap):
+            self.mName = name
+            self.mCurrentLap = lap
+            self.mIsActive = True
+
+    class Snap:
+        """Camara mirando al rival (viewed=0, vuelta 9); el jugador va en [2], vuelta 3."""
+        mGameState = D._LIVE[0]
+        mViewedParticipantIndex = 0
+        mNumParticipants = 3
+        mTrackLocation = b"Ibarra"
+        mSpeed = 30.0
+        mLastLapTime = 90.0
+        mLapInvalidated = False
+        mSuspensionVelocity = [0.01] * 4
+        mSuspensionTravel = [0.05] * 4
+        mParticipantInfo = ([P(b"Rival Uno", 9), P(b"Rival Dos", 7), P(b"Player", 3)]
+                            + [P(b"", 0)] * 61)
+
+    an = D.DamperAnalyzer()
+    an._player_name = "player"                     # como si player.txt dijera "Player"
+    an._ingest(Snap())
+    _ok("cuenta vueltas del JUGADOR (3), no de la camara (9)", an._last_lap == 3, an._last_lap)
+    _ok("acumula muestras del snapshot", an._cur_n == 1, an._cur_n)
+
     print("done.")
 
 

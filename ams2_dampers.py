@@ -65,6 +65,7 @@ class DamperAnalyzer:
     def __init__(self):
         self._lock = threading.Lock()
         self._stop = False
+        self._player_name = ams2_shm.read_player_name()   # ancla al JUGADOR (no a la camara) en MP
         self._thread = None
         self._cur = _zeros()          # histograma de velocidad, vuelta en curso
         self._acc = _zeros()          # acumulado de velocidad (vueltas validas)
@@ -128,9 +129,11 @@ class DamperAnalyzer:
     def _ingest(self, d):
         if d.mGameState not in _LIVE:
             return
-        v = d.mViewedParticipantIndex
-        if not (0 <= v < ams2_shm.STORED_PARTICIPANTS_MAX):
-            return
+        # mViewedParticipantIndex sigue a la CAMARA (en multiplayer puede ser otro auto y
+        # desarma el conteo de vueltas del histograma) -> anclar por nombre del jugador,
+        # igual que recorder/estrategia/bridge. La fisica (mSuspensionVelocity) es global
+        # del jugador siempre; esto solo corrige el corte de vueltas.
+        v = ams2_shm.player_index(d, self._player_name)
         track = d.mTrackLocation            # bytes (recortado en NUL)
         lap = d.mParticipantInfo[v].mCurrentLap
         speed = d.mSpeed * 3.6
