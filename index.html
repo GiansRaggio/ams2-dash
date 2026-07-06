@@ -395,8 +395,11 @@
     /* páginas secundarias apiladas + scroll vertical */
     /* los títulos de header ceden espacio (elipsis) para que los botones ⚙/🔊/⛶ no salgan de pantalla */
     #sbar .stitle,#dbar .dtitle{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
-    #dgrid{grid-template-columns:1fr;grid-template-rows:repeat(4,minmax(22vh,1fr))}
+    /* flex:none -> el grid toma su alto natural (4x22vh) en vez de que flex:1 lo aplaste
+       y el contenido desborde encima de #drecs; la pagina scrollea con #damperview */
+    #dgrid{grid-template-columns:1fr;grid-template-rows:repeat(4,minmax(22vh,1fr));flex:none}
     #damperview{overflow-y:auto}
+    #drecs{max-height:none;overflow:visible}   /* recs fluyen en el scroll de la pagina, sin scroll anidado */
     #sgrid{grid-template-columns:1fr}
     #sfuel .sbignum{font-size:clamp(38px,16vw,96px)}
     #strategyview{overflow-y:auto}
