@@ -9,6 +9,9 @@ vuelca:
       session.json                 metadatos de la sesion
       summary.jsonl                1 linea por vuelta valida (resumen)
       L003_92.451s.csv.gz          traza completa de la vuelta (todos los canales)
+      timeline.jsonl               linea de tiempo COMPLETA (aditiva): 1 registro por CADA
+                                   vuelta cruzada (out/in/pit/invalida/corta incluidas) +
+                                   eventos (largada, pit_in/out, cambio de goma)
 
 La traza es CSV gzippeado: 1 fila por muestra (~50 Hz), columnas = canales
 (velocidad, pedales, direccion, g-forces, posicion, y por esquina: temps de goma
@@ -106,6 +109,13 @@ def _safe(b):
     return "".join(c if c.isalnum() else "_" for c in s).strip("_") or "x"
 
 
+def _label(b):
+    """Nombre de compuesto para MOSTRAR (timeline): decode utf-8 + strip de nulls,
+    conservando espacios/puntuacion. A diferencia de _safe (pensado para nombres de
+    archivo) no colapsa la puntuacion, asi que 'P Zero' y 'P.Zero' no se confunden."""
+    return b.split(b"\x00")[0].decode("utf-8", "replace").strip() or "x"
+
+
 class TelemetryLogger:
     """Graba la traza completa de cada vuelta valida en disco (CSV gz + resumen)."""
 
@@ -135,6 +145,7 @@ class TelemetryLogger:
         self._pit_this = True     # hubo pit en esta vuelta (1ra de sesion: si)
         self._pit_prev = True     # hubo pit en la vuelta anterior (-> out-lap)
         self._in_pit_prev = False
+        self._compound_prev = None  # compuesto de las 4 gomas visto (para detectar cambio de goma)
         self._sectimes = [0.0, 0.0]
         self._sec_invalid = [False, False, False]
         self._lap_uid = 0         # id monotonico por vuelta loggeada (no resetea con el garage)
@@ -223,7 +234,6 @@ class TelemetryLogger:
             in_pit = d.mPitMode in _PIT_INSIDE
             if in_pit:
                 self._pit_this = True
-            self._in_pit_prev = in_pit
 
             lap = p.mLapsCompleted
             if self._last_lap < 0:
@@ -251,7 +261,28 @@ class TelemetryLogger:
                 self._sec_invalid[cs] = True
             if self._mode == "off":
                 self._recording = False
-                return
+                self._in_pit_prev = in_pit    # sembrar el estado de boxes: al reactivar (off->full)
+                return                         # parado en el pit no dispara un pit_in fantasma
+            # --- linea de tiempo: eventos discretos (solo si SI se graba; en off ya salimos) ---
+            if self._sess_dir is not None:
+                if in_pit and not self._in_pit_prev:
+                    self._timeline_event("pit_in", d, p)
+                elif not in_pit and self._in_pit_prev:
+                    self._timeline_event("pit_out", d, p)
+                comp = tuple(bytes(d.mTyreCompound[i]).split(b"\x00")[0] for i in range(4))
+                # AMS2 puebla los strings de goma con lag (primeros frames tras cargar la
+                # sesion) y la SHM se escribe sin lock (torn frames): una lectura vacia da
+                # basura. Solo comparar/emitir con las 4 gomas pobladas -> 'start' espera el
+                # primer compuesto REAL y los torn frames no generan cambios fantasma.
+                if all(comp):
+                    if self._compound_prev is None:
+                        self._timeline_event("start", d, p, extra={"compound": [_label(c) for c in comp]})
+                    elif comp != self._compound_prev:
+                        self._timeline_event("tyre_change", d, p,
+                                             extra={"from": [_label(c) for c in self._compound_prev],
+                                                    "to": [_label(c) for c in comp]})
+                    self._compound_prev = comp
+            self._in_pit_prev = in_pit
             self._update_agg(d)                       # agregados de resumen (ambos modos)
             if self._mode == "full":                  # la traza completa solo en full
                 self._buf.append(_row(d, p, cap))
@@ -296,6 +327,8 @@ class TelemetryLogger:
         self._pit_this = True
         self._pit_prev = True
         self._agg = None
+        self._compound_prev = None    # sesion nueva -> no emitir tyre_change espurio
+        self._in_pit_prev = False      # ni pit_in/out espurio del estado anterior
         label = _SESS.get(int(d.mSessionState), "session")
         self._sess_label = label
         name = (f"{_safe(bytes(d.mTrackLocation))}__{_safe(bytes(d.mCarName))}"
@@ -319,6 +352,27 @@ class TelemetryLogger:
         except OSError:
             self._sess_dir = None
 
+    # ---------------- linea de tiempo (aditiva, no toca vueltas limpias) ----------------
+    def _write_timeline(self, rec):
+        """Append de un registro a timeline.jsonl. Guarda ante OSError y sin carpeta de sesion."""
+        if self._sess_dir is None:
+            return
+        try:
+            with open(os.path.join(self._sess_dir, "timeline.jsonl"), "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        except OSError:
+            pass
+
+    def _timeline_event(self, event, d, p, extra=None):
+        """Emite un evento discreto (start / pit_in / pit_out / tyre_change) a la linea de tiempo."""
+        rec = {"type": "event", "event": event, "lap": int(p.mLapsCompleted),
+               "rain": round(d.mRainDensity, 3), "track_t": round(d.mTrackTemperature, 1),
+               "fuel_l": round(d.mFuelLevel * self._cap, 2),
+               "ts": datetime.now().isoformat(timespec="seconds")}
+        if extra:
+            rec.update(extra)
+        self._write_timeline(rec)
+
     def _commit_lap(self, d, p):
         """Cierra la vuelta. SIEMPRE (si es vuelta de pista, no out/in/pit) guarda un
         registro de sectores con validez por sector -> permite rescatar sectores limpios
@@ -328,10 +382,36 @@ class TelemetryLogger:
                   and not self._pit_this and not self._pit_prev
                   and self._sess_dir is not None
                   and n_samples >= MIN_LAP_SAMPLES)
+        # --- linea de tiempo: UNA linea por CADA vuelta cruzada (out/in/pit/invalida/corta) ---
+        # gateado en modo != off (en off _commit_lap SI se llama, pero no debe escribir nada).
+        lap_no = int(p.mLapsCompleted)
+        lap_time = d.mLastLapTime if d.mLastLapTime > 0 else None
+        if self._sess_dir is not None and self._mode != "off":
+            if self._pit_this:
+                kind = "pit"
+            elif self._pit_prev:
+                kind = "out"
+            elif self._invalid:
+                kind = "invalid"
+            elif n_samples < MIN_LAP_SAMPLES:
+                kind = "short"
+            else:
+                kind = "flying"
+            a = self._agg
+            n = max(1, a["n"]) if a else 1
+            self._write_timeline({
+                "type": "lap", "lap": lap_no, "lap_time": round(lap_time, 3) if lap_time else None,
+                "kind": kind, "pit": bool(self._pit_this), "out": bool(self._pit_prev),
+                "invalid": bool(self._invalid), "samples": n_samples,
+                "compound": [_label(bytes(d.mTyreCompound[i])) for i in range(4)],
+                "fuel_start": round(self._start["fuel"], 2) if self._start else None,
+                "fuel_end": round(d.mFuelLevel * self._cap, 2),
+                "rain": round(d.mRainDensity, 3), "track_t": round(d.mTrackTemperature, 1),
+                "tyre_temp_avg": [round(a["tsum"][i] / n, 1) for i in range(4)] if a else None,
+                "ts": datetime.now().isoformat(timespec="seconds"),
+            })
         if not flying:
             return
-        lap_time = d.mLastLapTime if d.mLastLapTime > 0 else None
-        lap_no = int(p.mLapsCompleted)
         self._lap_uid += 1                 # identidad unica (el numero de vuelta se repite tras el garage)
         # sectores: S1/S2 capturados en vivo (estables), S3 = total - S1 - S2 (robusto)
         s1, s2 = self._sectimes

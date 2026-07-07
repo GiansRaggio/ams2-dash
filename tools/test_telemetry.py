@@ -28,7 +28,7 @@ class P:
 
 
 class Snap:
-    def __init__(self, laps_completed=0, invalid=False, pit=0, dist=0.0):
+    def __init__(self, laps_completed=0, invalid=False, pit=0, dist=0.0, compound=b"Soft"):
         self.mVersion = 14
         self.mNumParticipants = 5
         self.mViewedParticipantIndex = 0
@@ -39,7 +39,7 @@ class Snap:
         self.mCarName = b"Porsche 992 GT3 R"
         self.mCarClassName = b"GT3"
         self.mTrackLength = 20832.0
-        self.mTyreCompound = [b"Soft", b"Soft", b"Soft", b"Soft"]
+        self.mTyreCompound = [compound, compound, compound, compound]
         self.mPitMode = pit
         self.mLapInvalidated = invalid
         self.mLastLapTime = 472.5
@@ -102,23 +102,24 @@ def _ok(name, cond, extra=""):
     return cond
 
 
-def feed_lap(log, lap_completed, n=260, invalid=False, pit=0, fuel0=0.5, wear0=0.05):
+def feed_lap(log, lap_completed, n=260, invalid=False, pit=0, fuel0=0.5, wear0=0.05,
+             compound=b"Soft"):
     """Alimenta n muestras de una vuelta (mLapsCompleted=lap_completed)."""
     for k in range(n):
         s = Snap(laps_completed=lap_completed, invalid=invalid, pit=pit,
-                 dist=k / n * 20000.0)
+                 dist=k / n * 20000.0, compound=compound)
         s.mFuelLevel = fuel0 - k / n * 0.03      # va consumiendo
         s.mTyreWear = [wear0 + k / n * 0.02] * 4
         log._ingest(s)
 
 
-def cross_to(log, lap_completed, fuel=0.5, wear=0.05):
+def cross_to(log, lap_completed, fuel=0.5, wear=0.05, pit=0, compound=b"Soft"):
     """Una muestra con el nuevo contador de vueltas -> dispara commit + begin.
 
     El combustible/desgaste se leen EN EL CRUCE DE META (begin/commit usan estos
     snapshots), asi que para simular consumo hay que bajar fuel entre cruces.
     """
-    s = Snap(laps_completed=lap_completed, dist=0.0)
+    s = Snap(laps_completed=lap_completed, dist=0.0, pit=pit, compound=compound)
     s.mFuelLevel = fuel
     s.mTyreWear = [wear] * 4
     log._ingest(s)
@@ -196,6 +197,9 @@ def main():
         tr3 = ([f for f in os.listdir(sd3) if f.endswith(".csv.gz")]
                if sd3 and os.path.isdir(sd3) else [])
         _ok("off no guarda", len(tr3) == 0, tr3)
+        # regresion critica: en OFF no debe crearse timeline.jsonl
+        tlf3 = os.path.join(sd3, "timeline.jsonl") if sd3 else ""
+        _ok("off: NO crea timeline.jsonl", not os.path.exists(tlf3), tlf3)
         st = log3.status()
         _ok("status refleja mode=off", st["mode"] == "off" and st["enabled"] is False)
         shutil.rmtree(log3._base, ignore_errors=True)
@@ -218,7 +222,177 @@ def main():
             _ok("resumen: fuel_used > 0", rec4["fuel_used"] > 0, rec4["fuel_used"])
         shutil.rmtree(log4._base, ignore_errors=True)
 
+        test_timeline()
+        test_compound_empty_start()
+        test_report_timeline_reader()
+
         print("done.")
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_timeline():
+    """La linea de tiempo (timeline.jsonl) captura TODA vuelta cruzada (no solo las limpias) +
+    eventos de largada / pit / cambio de goma. Simula: largada en Lisos, unas vueltas, entrada a
+    pit con cambio a Lluvia, y salida."""
+    print("test_timeline (timeline.jsonl: toda vuelta + eventos largada/pit/goma):")
+    base = tempfile.mkdtemp(prefix="ams2tel5_")
+    try:
+        log = T.TelemetryLogger(base_dir=base)
+        LISOS, LLUVIA = b"Lisos", b"Lluvia"
+
+        # largada en Lisos: lap1 = out-lap, lap2 = limpia
+        feed_lap(log, 0, compound=LISOS)                 # emite evento start (Lisos)
+        cross_to(log, 1, fuel=0.50, wear=0.05, compound=LISOS)   # commit lap1 (out)
+        feed_lap(log, 1, compound=LISOS)                 # lap2 limpia
+        cross_to(log, 2, fuel=0.47, wear=0.08, compound=LISOS)   # commit lap2 (flying)
+        # vuelta de pit: entra a boxes (pit_in) y cambia de goma a Lluvia (tyre_change)
+        feed_lap(log, 2, n=120, pit=1, compound=LISOS)   # pit_in en V2 (corta, en boxes)
+        feed_lap(log, 2, n=120, pit=1, compound=LLUVIA)  # tyre_change Lisos -> Lluvia (parado)
+        cross_to(log, 3, fuel=0.44, wear=0.02, pit=0, compound=LLUVIA)  # pit_out + commit vuelta de pit
+        feed_lap(log, 3, compound=LLUVIA)                # sigue con Lluvia
+        cross_to(log, 4, fuel=0.41, wear=0.05, compound=LLUVIA)
+
+        sd = session_dir(base)
+        tlf = os.path.join(sd, "timeline.jsonl") if sd else ""
+        recs = ([json.loads(x) for x in open(tlf, encoding="utf-8").read().strip().splitlines()]
+                if os.path.exists(tlf) else [])
+        _ok("timeline.jsonl existe", len(recs) > 0, len(recs))
+
+        laps = [r for r in recs if r.get("type") == "lap"]
+        events = [r for r in recs if r.get("type") == "event"]
+        lap_nums = sorted(r["lap"] for r in laps)
+        # cada vuelta cruzada deja un registro lap: se cruzaron 4 metas (a laps 1,2,3,4)
+        _ok(">=1 registro lap por CADA vuelta cruzada (4)", len(laps) == 4, lap_nums)
+
+        # la vuelta de pit (la que se cruza al salir de boxes) es kind pit u out
+        pit_kinds = [r["kind"] for r in laps if r["kind"] in ("pit", "out")]
+        _ok("hay vuelta(s) marcada pit/out (no solo flying)", len(pit_kinds) >= 1, [r["kind"] for r in laps])
+        # la vuelta que contuvo la parada (cruzada al salir, lap 3) es kind 'pit'
+        pit_lap = next((r for r in laps if r["lap"] == 3), None)
+        _ok("la vuelta de la parada es kind 'pit'", pit_lap is not None and pit_lap["kind"] == "pit",
+            pit_lap["kind"] if pit_lap else None)
+        # la vuelta cruzada DESPUES de la parada (lap 4) es la out-lap -> kind 'out'
+        out_lap = next((r for r in laps if r["lap"] == 4), None)
+        _ok("la vuelta post-pit es kind 'out'", out_lap is not None and out_lap["kind"] == "out",
+            out_lap["kind"] if out_lap else None)
+
+        start = [r for r in events if r["event"] == "start"]
+        _ok("evento start presente", len(start) == 1, len(start))
+        _ok("start: compuesto de largada = Lisos",
+            bool(start) and start[0].get("compound") == ["Lisos"] * 4,
+            start[0].get("compound") if start else None)
+
+        tc = [r for r in events if r["event"] == "tyre_change"]
+        _ok("evento tyre_change presente", len(tc) == 1, len(tc))
+        _ok("tyre_change: from Lisos -> to Lluvia",
+            bool(tc) and tc[0].get("from") == ["Lisos"] * 4 and tc[0].get("to") == ["Lluvia"] * 4,
+            (tc[0].get("from"), tc[0].get("to")) if tc else None)
+        # el cambio de goma se hizo PARADO en boxes en la misma vuelta (V2), sin cruzar meta:
+        # debe emitirse UNA sola vez (ni 0 ni 2) y quedar atribuido a V2, no a la vuelta siguiente
+        _ok("tyre_change parado sin cruzar meta: exactamente 1", len(tc) == 1, len(tc))
+        _ok("tyre_change atribuido a V2 (parado en box)", bool(tc) and tc[0].get("lap") == 2,
+            tc[0].get("lap") if tc else None)
+
+        _ok("evento pit_in presente", any(r["event"] == "pit_in" for r in events),
+            [r["event"] for r in events])
+        _ok("evento pit_out presente", any(r["event"] == "pit_out" for r in events),
+            [r["event"] for r in events])
+
+        # zero-regression: las vueltas LIMPIAS (summary/traza) no cambian -> solo lap2 es flying+valida
+        sumf = os.path.join(sd, "summary.jsonl") if sd else ""
+        sumlines = (open(sumf, encoding="utf-8").read().strip().splitlines()
+                    if os.path.exists(sumf) else [])
+        _ok("summary sigue con solo las limpias (1: la lap2 flying)", len(sumlines) == 1, len(sumlines))
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_compound_empty_start():
+    """AMS2 puebla los strings de goma con lag: los primeros frames tras cargar la sesion
+    suelen tener mTyreCompound vacio. 'start' NO debe capturar esa basura ('x'): tiene que
+    esperar al primer compuesto REAL y NO debe dispararse un tyre_change fantasma cuando el
+    compuesto real puebla. Ademas un torn frame (goma vacia a mitad de carrera) tampoco genera
+    un cambio de goma inexistente."""
+    print("test_compound_empty_start (largada con goma vacia -> sin basura ni cambio fantasma):")
+    base = tempfile.mkdtemp(prefix="ams2tel6_")
+    try:
+        log = T.TelemetryLogger(base_dir=base)
+        EMPTY, SOFT = b"", b"Soft"
+        feed_lap(log, 0, n=30, compound=EMPTY)     # goma sin poblar: NO debe emitir start aun
+        feed_lap(log, 0, n=230, compound=SOFT)     # llega la goma real -> start = Soft
+        cross_to(log, 1, fuel=0.50, wear=0.05, compound=SOFT)
+        feed_lap(log, 1, compound=SOFT)
+        cross_to(log, 2, fuel=0.47, wear=0.08, compound=SOFT)
+        sd = session_dir(base)
+        tlf = os.path.join(sd, "timeline.jsonl") if sd else ""
+        recs = ([json.loads(x) for x in open(tlf, encoding="utf-8").read().strip().splitlines()]
+                if os.path.exists(tlf) else [])
+        events = [r for r in recs if r.get("type") == "event"]
+        starts = [r for r in events if r["event"] == "start"]
+        tcs = [r for r in events if r["event"] == "tyre_change"]
+        _ok("start unico pese a la goma vacia inicial", len(starts) == 1, len(starts))
+        _ok("start NO captura basura ('x'): compuesto = Soft real",
+            bool(starts) and starts[0].get("compound") == ["Soft"] * 4,
+            starts[0].get("compound") if starts else None)
+        _ok("sin tyre_change fantasma al poblar la goma", len(tcs) == 0, len(tcs))
+
+        # torn frame a mitad de carrera (Soft -> vacio -> Soft): 0 cambios de goma
+        log2 = T.TelemetryLogger(base_dir=tempfile.mkdtemp(prefix="ams2tel6b_"))
+        feed_lap(log2, 0, n=260, compound=SOFT)
+        cross_to(log2, 1, fuel=0.50, wear=0.05, compound=SOFT)
+        feed_lap(log2, 1, n=100, compound=SOFT)
+        log2._ingest(Snap(laps_completed=1, dist=8000.0, compound=EMPTY))   # torn frame
+        feed_lap(log2, 1, n=160, compound=SOFT)
+        cross_to(log2, 2, fuel=0.47, wear=0.08, compound=SOFT)
+        sd2 = session_dir(log2._base)
+        tlf2 = os.path.join(sd2, "timeline.jsonl") if sd2 else ""
+        recs2 = ([json.loads(x) for x in open(tlf2, encoding="utf-8").read().strip().splitlines()]
+                 if os.path.exists(tlf2) else [])
+        tcs2 = [r for r in recs2 if r.get("type") == "event" and r["event"] == "tyre_change"]
+        _ok("torn frame (goma vacia) no genera cambio de goma", len(tcs2) == 0, len(tcs2))
+        shutil.rmtree(log2._base, ignore_errors=True)
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_report_timeline_reader():
+    """El lado LECTOR (analyze_telemetry.report_timeline / _load_timeline) debe: (1) no crashear
+    cuando falta timeline.jsonl; (2) sobrevivir una ULTIMA linea truncada (taskkill a mitad del
+    f.write) sin reventar con JSONDecodeError, saltandola y leyendo el resto."""
+    print("test_report_timeline_reader (lector: timeline ausente + linea corrupta por taskkill):")
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
+    import analyze_telemetry as A
+    base = tempfile.mkdtemp(prefix="ams2tel7_")
+    try:
+        # (1) carpeta sin timeline.jsonl -> _load_timeline devuelve [] y report_timeline no crashea
+        _ok("timeline ausente: _load_timeline devuelve []", A._load_timeline(base) == [])
+        try:
+            A.report_timeline(base)
+            _ok("timeline ausente: report_timeline no crashea", True)
+        except Exception as e:
+            _ok("timeline ausente: report_timeline no crashea", False, repr(e))
+
+        # (2) timeline.jsonl con 2 registros validos + una ULTIMA linea truncada (JSON partido)
+        good1 = json.dumps({"type": "event", "event": "start", "lap": 0, "compound": ["Soft"] * 4})
+        good2 = json.dumps({"type": "lap", "lap": 1, "kind": "flying", "lap_time": 92.5,
+                            "compound": ["Soft"] * 4, "rain": 0.0})
+        tlf = os.path.join(base, "timeline.jsonl")
+        with open(tlf, "w", encoding="utf-8") as f:
+            f.write(good1 + "\n")
+            f.write(good2 + "\n")
+            f.write('{"type": "lap", "lap": 2, "kind": "fly')   # taskkill a mitad del write
+        try:
+            recs = A._load_timeline(base)
+            ok = len(recs) == 2 and recs[0]["event"] == "start" and recs[1]["lap"] == 1
+            _ok("linea corrupta final: se salta, se leen los 2 registros validos", ok, len(recs))
+        except Exception as e:
+            _ok("linea corrupta final: se salta (no JSONDecodeError)", False, repr(e))
+        try:
+            A.report_timeline(base)
+            _ok("linea corrupta: report_timeline no crashea", True)
+        except Exception as e:
+            _ok("linea corrupta: report_timeline no crashea", False, repr(e))
     finally:
         shutil.rmtree(base, ignore_errors=True)
 

@@ -35,6 +35,29 @@ def _fmt_t(s):
     return f"{int(m):>3d}:{sec:06.3f}"
 
 
+def _read_jsonl(path):
+    """Lee un .jsonl tolerando una ULTIMA linea truncada. El recorder hace append-only con
+    un f.write() por registro que NO es atomico: un taskkill a mitad de escritura deja la
+    ultima linea partida. Esa linea corrupta se salta (la promesa es sobrevivir al taskkill
+    sin perder los datos previos). [] si el archivo no existe."""
+    out = []
+    if not os.path.exists(path):
+        return out
+    with open(path, encoding="utf-8") as f:
+        lines = f.read().splitlines()
+    for i, line in enumerate(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            if i == len(lines) - 1:        # ultima linea partida por un taskkill -> tolerar
+                continue
+            raise                          # corrupcion en medio del archivo -> no la ocultamos
+    return out
+
+
 def _sessions():
     if not os.path.isdir(TELEM):
         return []
@@ -43,13 +66,7 @@ def _sessions():
 
 
 def _load(folder):
-    sumf = os.path.join(folder, "summary.jsonl")
-    laps = []
-    if os.path.exists(sumf):
-        for line in open(sumf, encoding="utf-8"):
-            line = line.strip()
-            if line:
-                laps.append(json.loads(line))
+    laps = _read_jsonl(os.path.join(folder, "summary.jsonl"))
     if _LAST:
         laps = laps[-_LAST:]               # las N validas mas recientes (el archivo esta en orden de uid)
     meta = {}
@@ -62,13 +79,7 @@ def _load(folder):
 def _load_sectors(folder):
     """Registros de sectores por vuelta (sectors.jsonl): sectores correctos + validez por
     sector, incluso de vueltas invalidadas (para rescatar sectores limpios). [] si no hay."""
-    out = []
-    p = os.path.join(folder, "sectors.jsonl")
-    if os.path.exists(p):
-        for line in open(p, encoding="utf-8"):
-            line = line.strip()
-            if line:
-                out.append(json.loads(line))
+    out = _read_jsonl(os.path.join(folder, "sectors.jsonl"))
     if _LAST and out:                      # alinear con las vueltas recientes del summary (por uid)
         if out[0].get("uid") is not None:
             _, laps = _load(folder)
@@ -383,6 +394,57 @@ def report_session(folder):
             worst = max(range(3), key=lambda i: sig[i])
             print(f"  consist. sector : S1 {sig[0]:.2f} · S2 {sig[1]:.2f} · S3 {sig[2]:.2f}s  "
                   f"(mas disperso S{worst+1}; sobre {len(repr_secs)} vueltas limpias repr.)")
+
+
+def _load_timeline(folder):
+    """Registros de timeline.jsonl (linea de tiempo de la carrera): 1 por vuelta cruzada
+    (out/in/pit/invalida/corta incluidas) + eventos (start/pit_in/pit_out/tyre_change).
+    [] si la sesion es anterior a la captura de timeline."""
+    return _read_jsonl(os.path.join(folder, "timeline.jsonl"))
+
+
+def _comp_str(compound):
+    """Los 4 compuestos como texto corto: 'Lisos' si las 4 gomas son iguales, si no 'FL/FR/RL/RR'."""
+    if not compound:
+        return "?"
+    if len(set(compound)) == 1:
+        return compound[0]
+    return "/".join(compound)
+
+
+def report_timeline(folder):
+    """Imprime la linea de tiempo completa de la carrera, cronologica: con que goma largaste,
+    cada vuelta que cruzo meta (incluidas out/in/pit/invalida/corta) y los eventos de pit y de
+    cambio de goma. Lo que _commit_lap/summary NO guarda (solo vueltas limpias)."""
+    tl = _load_timeline(folder)
+    meta, _ = _load(folder)
+    print(f"\n=== Linea de tiempo · {meta.get('car', '?')} @ {meta.get('track', '?')} "
+          f"({meta.get('track_variation', '')}) · {meta.get('session', '?')} ===")
+    if not tl:
+        print("  (esta sesion es anterior a la captura de timeline: no hay timeline.jsonl)")
+        return
+    # largada: primer evento start
+    start = next((r for r in tl if r.get("type") == "event" and r.get("event") == "start"), None)
+    if start:
+        print(f"  Largaste con: {_comp_str(start.get('compound'))}")
+    for r in tl:
+        if r.get("type") == "lap":
+            lt = r.get("lap_time")
+            lt_s = f"{lt:.3f}s" if lt else "--"
+            comp = _comp_str(r.get("compound"))
+            rain = r.get("rain", 0.0)
+            print(f"  V{r.get('lap')} {r.get('kind', '?')} {comp} {lt_s} lluvia{rain:.2f}")
+        elif r.get("type") == "event":
+            ev, lap = r.get("event"), r.get("lap")
+            if ev == "pit_in":
+                print(f"  >> PIT IN en V{lap}")
+            elif ev == "pit_out":
+                print(f"  >> PIT OUT en V{lap}")
+            elif ev == "tyre_change":
+                print(f"  >> cambio de goma en V{lap}: "
+                      f"{_comp_str(r.get('from'))} -> {_comp_str(r.get('to'))}")
+            # "start" ya se imprimio arriba como "Largaste con"
+    print()
 
 
 def report_lap(folder, lap_no):
@@ -1107,6 +1169,10 @@ def main():
                     help="gomas (beta): presion termica + camber por rueda sobre las vueltas limpias")
     ap.add_argument("--balance", action="store_true",
                     help="balance sobre/subviraje por curva + momento de inestabilidad (slip por rueda)")
+    ap.add_argument("--timeline", nargs="?", const="", metavar="FILTRO", default=None,
+                    help="linea de tiempo COMPLETA de la carrera: con que goma largaste, cada vuelta "
+                         "cruzada (out/in/pit/invalida/corta) y los eventos de pit / cambio de goma. "
+                         "FILTRO opcional (substring de auto/pista); sin filtro usa la ultima sesion")
     ap.add_argument("--last", type=int, metavar="N",
                     help="analizar solo las N vueltas validas mas recientes (aislar el stint/setup actual)")
     ap.add_argument("--combo", nargs="?", const="", metavar="FILTRO", default=None,
@@ -1144,6 +1210,24 @@ def main():
         return
     if a.combo is not None:
         report_combo(a.combo)
+        return
+
+    # linea de tiempo de la carrera: con FILTRO resuelve el combo (sesion mas reciente que matchea);
+    # sin filtro usa la ultima sesion (misma resolucion que el modo por defecto de abajo).
+    if a.timeline is not None:
+        if a.timeline:
+            r = _resolve_combo(a.timeline)
+            if not r:
+                print("No encontre sesiones para ese filtro. Proba --list.")
+                return
+            _, _, folders, _ = r
+            report_timeline(folders[-1])           # folders viene cronologico -> la mas reciente
+        else:
+            folder = a.folder or (_sessions()[-1] if _sessions() else None)
+            if not folder or not os.path.isdir(folder):
+                print(f"No hay sesiones en {TELEM}. Maneja con el dash grabando y volve.")
+                return
+            report_timeline(folder)
         return
 
     folder = a.folder or (_sessions()[-1] if _sessions() else None)
