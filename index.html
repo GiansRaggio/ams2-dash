@@ -167,7 +167,7 @@
   .page.hidden{display:none}
   /* ---- botones de control (dash / tiempos / fullscreen) ---- */
   .btn{pointer-events:auto;cursor:pointer;display:inline-flex;align-items:center;gap:.5vw;
-       font-family:var(--mono);font-size:1.9vh;font-weight:700;letter-spacing:.1em;
+       font-family:var(--mono);font-size:max(12px,1.9vh);font-weight:700;letter-spacing:.1em;
        color:var(--txt);background:rgba(13,17,24,.85);border:1px solid var(--line);
        border-radius:6px;padding:.6vh 1.5vw;-webkit-user-select:none;user-select:none;touch-action:manipulation}
   .btn:active{background:var(--panel2);border-color:var(--cyan);color:var(--cyan)}
@@ -202,13 +202,13 @@
   /* ---- página DAMPERS (histograma de velocidad de amortiguador) ---- */
   #damperview{padding:1vh 1.4vw;gap:1vh}
   #dbar,#ybar{flex:none;display:flex;align-items:center;justify-content:space-between;gap:1vw}
-  #dbar .dtitle,#ybar .ytitle{font-size:1.9vh;letter-spacing:.16em;color:var(--dim);font-weight:700;white-space:nowrap}
+  #dbar .dtitle,#ybar .ytitle{font-size:max(12px,1.9vh);letter-spacing:.16em;color:var(--dim);font-weight:700;white-space:nowrap}
   #dbar .dtitle b,#ybar .ytitle b{color:var(--txt)}
   #dbar #dinfo,#ybar #yinfo{color:var(--cyan);font-variant-numeric:tabular-nums}
   #dbar .dbtns,#ybar .dbtns{display:flex;gap:.8vw}
   /* el titulo cede espacio (elipsis) o un nombre de auto largo empuja el ⛶ fuera de
      pantalla: .ytitle es nowrap y sin esto no puede encoger bajo su min-content */
-  #ybar .ytitle{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+  #sbar .stitle,#dbar .dtitle,#ybar .ytitle{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
   #dgrid{flex:1;min-height:0;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:1vh}
   .dcorner{min-height:0;display:flex;flex-direction:column;padding:.6vh 1vw;
            background:linear-gradient(180deg,var(--panel2),var(--panel));
@@ -364,7 +364,7 @@
   /* ================= PÁGINA ESTRATEGIA ================= */
   #strategyview{padding:1vh 1.4vw;gap:1vh}
   #sbar{flex:none;display:flex;align-items:center;justify-content:space-between;gap:1vw}
-  #sbar .stitle{font-size:1.9vh;letter-spacing:.16em;color:var(--dim);font-weight:700;white-space:nowrap}
+  #sbar .stitle{font-size:max(12px,1.9vh);letter-spacing:.16em;color:var(--dim);font-weight:700;white-space:nowrap}
   #sbar .stitle b{color:var(--txt)}
   #sbar #sinfo{color:var(--cyan);font-variant-numeric:tabular-nums}
   #srec{font-size:clamp(12px,1.9vh,20px);letter-spacing:.06em;color:var(--dim);font-variant-numeric:tabular-nums}
@@ -492,7 +492,6 @@
 
     /* páginas secundarias apiladas + scroll vertical */
     /* los títulos de header ceden espacio (elipsis) para que los botones ⚙/🔊/⛶ no salgan de pantalla */
-    #sbar .stitle,#dbar .dtitle,#ybar .ytitle{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
     /* flex:none -> el grid toma su alto natural (4x22vh) en vez de que flex:1 lo aplaste
        y el contenido desborde encima de #drecs; la pagina scrollea con #damperview */
     #dgrid{grid-template-columns:1fr;grid-template-rows:repeat(4,minmax(22vh,1fr));flex:none}
