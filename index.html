@@ -201,11 +201,11 @@
 
   /* ---- página DAMPERS (histograma de velocidad de amortiguador) ---- */
   #damperview{padding:1vh 1.4vw;gap:1vh}
-  #dbar{flex:none;display:flex;align-items:center;justify-content:space-between;gap:1vw}
-  #dbar .dtitle{font-size:1.9vh;letter-spacing:.16em;color:var(--dim);font-weight:700;white-space:nowrap}
-  #dbar .dtitle b{color:var(--txt)}
-  #dbar #dinfo{color:var(--cyan);font-variant-numeric:tabular-nums}
-  #dbar .dbtns{display:flex;gap:.8vw}
+  #dbar,#ybar{flex:none;display:flex;align-items:center;justify-content:space-between;gap:1vw}
+  #dbar .dtitle,#ybar .ytitle{font-size:1.9vh;letter-spacing:.16em;color:var(--dim);font-weight:700;white-space:nowrap}
+  #dbar .dtitle b,#ybar .ytitle b{color:var(--txt)}
+  #dbar #dinfo,#ybar #yinfo{color:var(--cyan);font-variant-numeric:tabular-nums}
+  #dbar .dbtns,#ybar .dbtns{display:flex;gap:.8vw}
   #dgrid{flex:1;min-height:0;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:1vh}
   .dcorner{min-height:0;display:flex;flex-direction:column;padding:.6vh 1vw;
            background:linear-gradient(180deg,var(--panel2),var(--panel));
@@ -224,6 +224,43 @@
   .dbars i.bump{background:var(--amber)}
   .dbars i.hi{opacity:.4}
   #drecs{flex:none;display:flex;flex-direction:column;gap:.5vh;max-height:36vh;overflow-y:auto}
+  /* ---- pagina GOMAS: reusa la reja 2x2 de dampers, celda propia ---- */
+  #ygrid{flex:1;min-height:0;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:1vh}
+  .ycorner{min-height:0;display:flex;flex-direction:column;gap:.5vh;padding:.7vh 1vw;
+           background:linear-gradient(180deg,var(--panel2),var(--panel));
+           border:1px solid var(--line);clip-path:var(--chamfer)}
+  .yhead{flex:none;display:flex;justify-content:space-between;align-items:baseline;gap:.8vw}
+  .yname{font-weight:800;font-size:2.1vh;letter-spacing:.1em}
+  .ywear{font-size:1.5vh;color:var(--dim);font-variant-numeric:tabular-nums}
+  .ywear b{color:var(--txt);font-size:1.8vh}
+  .ywear.amber b{color:var(--amber)} .ywear.red b{color:var(--red)}
+  /* presion: numero grande + delta a aplicar */
+  .ypress{flex:none;display:flex;align-items:baseline;gap:.7vw;font-variant-numeric:tabular-nums}
+  .ypress .pv{font-size:3.4vh;font-weight:800;line-height:1}
+  .ypress .pu{font-size:1.4vh;color:var(--dim);letter-spacing:.1em}
+  .ypress .pd{margin-left:auto;font-size:2.1vh;font-weight:800}
+  .ypress.ok .pv{color:var(--green)}   .ypress.ok .pd{color:var(--dim)}
+  .ypress.high .pv{color:var(--amber)} .ypress.high .pd{color:var(--amber)}
+  .ypress.low .pv{color:var(--cyan)}   .ypress.low .pd{color:var(--cyan)}
+  /* zonas I/M/E: tres barras horizontales proporcionales a la temp */
+  .yzones{flex:1;min-height:0;display:flex;flex-direction:column;justify-content:center;gap:.4vh}
+  .yz{display:flex;align-items:center;gap:.6vw;font-size:1.35vh;font-variant-numeric:tabular-nums}
+  .yz span.zl{width:2.4em;color:var(--dim);letter-spacing:.1em;flex:none}
+  .yz span.zb{flex:1;height:1.2vh;background:#ffffff12;position:relative;overflow:hidden}
+  .yz span.zb i{position:absolute;left:0;top:0;bottom:0;background:var(--cyan);opacity:.85}
+  .yz span.zb i.warm{background:var(--amber)} .yz span.zb i.hotz{background:var(--red)}
+  .yz span.zv{width:3.2em;text-align:right;color:var(--txt);flex:none}
+  /* pie de celda: carcasa + veredicto de camber */
+  .yfoot{flex:none;display:flex;justify-content:space-between;gap:.8vw;font-size:1.35vh;
+         color:var(--dim);font-variant-numeric:tabular-nums;
+         overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .yfoot b{font-weight:700}
+  .yfoot b.ok{color:var(--green)} .yfoot b.cold{color:var(--cyan)} .yfoot b.hot{color:var(--red)}
+  .yfoot .cam.warn{color:var(--amber)}
+  #yfooter{flex:none;display:flex;justify-content:space-between;align-items:center;gap:1vw;
+           font-size:1.5vh;color:var(--dim);padding-top:.4vh}
+  #yfooter b{color:var(--txt)}
+  #ywarn{color:var(--amber)}
   .drec{font-size:1.55vh;line-height:1.3;color:var(--txt);background:#0d1118;
         border-left:3px solid var(--amber);padding:.5vh 1vw;border-radius:0 4px 4px 0}
   .drec.spring{border-left-color:var(--cyan)}
@@ -390,16 +427,19 @@
 
     /* touch targets cómodos SOLO en portrait */
     .btn{min-height:44px;padding:.6vh max(3vw,12px)}
-    #btnstop,#btnfs,#btnfs2,#btnfs3,#btnfs4,#btnreset,#btnracecfg,#btntts{min-width:44px;justify-content:center}
+    #btnstop,#btnfs,#btnfs2,#btnfs3,#btnfs4,#btnfs5,#btnreset,#btnracecfg,#btntts,#btntgt{min-width:44px;justify-content:center}
 
     /* páginas secundarias apiladas + scroll vertical */
     /* los títulos de header ceden espacio (elipsis) para que los botones ⚙/🔊/⛶ no salgan de pantalla */
-    #sbar .stitle,#dbar .dtitle{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+    #sbar .stitle,#dbar .dtitle,#ybar .ytitle{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
     /* flex:none -> el grid toma su alto natural (4x22vh) en vez de que flex:1 lo aplaste
        y el contenido desborde encima de #drecs; la pagina scrollea con #damperview */
     #dgrid{grid-template-columns:1fr;grid-template-rows:repeat(4,minmax(22vh,1fr));flex:none}
     #damperview{overflow-y:auto}
     #drecs{max-height:none;overflow:visible}   /* recs fluyen en el scroll de la pagina, sin scroll anidado */
+    /* mismo criterio que #dgrid: alto natural + scroll de la pagina, sin aplastar celdas */
+    #ygrid{grid-template-columns:1fr;grid-template-rows:repeat(4,minmax(24vh,1fr));flex:none}
+    #tyreview{overflow-y:auto}
     #sgrid{grid-template-columns:1fr}
     #sfuel .sbignum{font-size:clamp(38px,16vw,96px)}
     #strategyview{overflow-y:auto}
@@ -467,6 +507,29 @@
     </div>
   </div>
 
+  <!-- Objetivo de presión: modal propio, NO prompt() nativo — en iOS "agregar a inicio"
+       (standalone) WebKit no pinta alert/confirm/prompt y la acción moriría en silencio. -->
+  <div id="tgtcfg" class="modal hidden">
+    <div class="modalbox">
+      <div class="modaltitle">Presión objetivo</div>
+      <div class="modalsub">En <b>caliente</b>, por rueda (bar). El dash muestra cuánto<br>
+        agregar o sacar para llegar. Se aplica en <b>frío</b>: el cambio<br>
+        se traslada casi 1:1 a la presión caliente.<br>
+        <span id="tgtcar">—</span></div>
+      <div class="rcfgvalrow">
+        <!-- type=text (no number): con type=number el navegador vacía .value si el
+             usuario escribe la coma decimal del teclado en español y el guardar moría
+             en silencio. Validamos a mano, que además acepta "1,68" y "1.68". -->
+        <input id="tgtval" type="text" inputmode="decimal" maxlength="5" value="1.75">
+        <span>bar</span>
+      </div>
+      <div class="modalbtns">
+        <button class="btn" id="tgtcancel">Cancelar</button>
+        <button class="btn go" id="tgtsave">Guardar</button>
+      </div>
+    </div>
+  </div>
+
   <div id="dashview" class="page">
   <div id="ledwrap">
     <div id="leds"></div>
@@ -485,6 +548,7 @@
     <button class="btn" id="btntimes">TIEMPOS ▸</button>
     <button class="btn" id="btndamp">DAMPERS ▸</button>
     <button class="btn" id="btnstrat" title="Estrategia">⛽ ▸</button>
+    <button class="btn" id="btntyres" title="Gomas">🛞 ▸</button>
   </div>
 
   <div id="grid">
@@ -558,6 +622,24 @@
       <div class="dcorner" id="dRR"><div class="dchead"><span class="dcname">RR</span><span class="dcmeta">sin datos</span></div><div class="dbars"></div></div>
     </div>
     <div id="drecs"></div>
+  </div>
+
+  <div id="tyreview" class="page hidden">
+    <div id="ybar">
+      <button class="btn" id="btnbacky">◂ DASH</button>
+      <span class="ytitle"><b>GOMAS</b> <span id="yinfo">—</span></span>
+      <span class="dbtns">
+        <button class="btn" id="btntgt" title="Presión objetivo en caliente">🎯</button>
+        <button class="btn" id="btnfs5" title="Pantalla completa">⛶</button>
+      </span>
+    </div>
+    <div id="ygrid">
+      <div class="ycorner" id="yFL"></div>
+      <div class="ycorner" id="yFR"></div>
+      <div class="ycorner" id="yRL"></div>
+      <div class="ycorner" id="yRR"></div>
+    </div>
+    <div id="yfooter"><span id="yaxle">—</span><span id="ywarn"></span></div>
   </div>
 
   <div id="strategyview" class="page hidden">
@@ -731,12 +813,12 @@ function frame(){
 requestAnimationFrame(frame);
 
 /* ---- Páginas: Dash <-> Tiempos (botones de control) ---- */
-let page = 0;            // 0 = dash, 1 = tiempos, 2 = dampers, 3 = estrategia
-let lastLbSig = "", lastDampers = null, lastStrat = null, sock = null, stopping = false;
+let page = 0;            // 0 = dash, 1 = tiempos, 2 = dampers, 3 = estrategia, 4 = gomas
+let lastLbSig = "", lastDampers = null, lastStrat = null, lastTyres = null, sock = null, stopping = false;
 const dashview=$("dashview"), timingview=$("timingview"), damperview=$("damperview"),
-      strategyview=$("strategyview");
+      strategyview=$("strategyview"), tyreview=$("tyreview");
 const tboard=$("tboard"), tempty=$("tempty");
-const pages = [dashview, timingview, damperview, strategyview];
+const pages = [dashview, timingview, damperview, strategyview, tyreview];
 const esc = s => String(s).replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
 
 function showPage(n){
@@ -746,7 +828,60 @@ function showPage(n){
   if(n===1 && target) renderTiming(target.leaderboard||[]);
   if(n===2 && lastDampers) renderDampers(lastDampers);
   if(n===3 && lastStrat) renderStrategy(lastStrat);
+  if(n===4 && lastTyres) renderTyres(lastTyres);
   lock();
+}
+
+/* ---- GOMAS: temps por zona (interior/medio/exterior), presión y desgaste ----
+   La presión objetivo la fija el piloto (🎯) y el bridge la persiste por auto; el
+   delta es lo que hay que AGREGAR (+) o SACAR (−) para llegar. Se aplica en frío:
+   el cambio se traslada ~1:1 a la presión en caliente. */
+const YC = ["FL","FR","RL","RR"];
+/* escala de la barra de zona: rango util de temp de piso de goma */
+const ZLO = 30, ZHI = 110;
+function zoneBar(v){
+  if(v == null) return '<span class="zb"></span><span class="zv">—</span>';
+  const pct = Math.max(0, Math.min(100, (v - ZLO) / (ZHI - ZLO) * 100));
+  const cls = v >= 95 ? "hotz" : v >= 75 ? "warm" : "";
+  return `<span class="zb"><i class="${cls}" style="width:${pct.toFixed(0)}%"></i></span>`
+       + `<span class="zv">${Math.round(v)}°</span>`;
+}
+function renderTyres(y){
+  lastTyres = y;
+  if(page !== 4) return;
+  const cs = y.corners || [];
+  $("yinfo").textContent = y.car ? `${y.car}${y.compound ? " · " + y.compound : ""} · obj ${y.target} bar` : "—";
+  for(let i = 0; i < 4; i++){
+    const cell = $("y" + YC[i]), c = cs[i];
+    if(!cell) continue;
+    if(!c){ cell.innerHTML = `<div class="yhead"><span class="yname">${YC[i]}</span></div>`; continue; }
+    /* delta: +0.06 = agregar; −0.06 = sacar. Con la goma fría no se muestra (no decide nada). */
+    const dTxt = (c.delta == null || !y.warm) ? "—"
+               : (c.delta > 0 ? "+" : c.delta < 0 ? "−" : "±") + Math.abs(c.delta).toFixed(2);
+    const wCls = c.wear == null ? "" : c.wear >= 80 ? "red" : c.wear >= 50 ? "amber" : "";
+    const camWarn = (c.camber && c.camber !== "ok") ? "warn" : "";
+    cell.innerHTML =
+      `<div class="yhead"><span class="yname">${YC[i]}</span>`
+    + `<span class="ywear ${wCls}">desg <b>${c.wear == null ? "—" : c.wear.toFixed(1) + "%"}</b></span></div>`
+    + `<div class="ypress ${c.pstat || ""}">`
+    +   `<span class="pv">${c.press == null ? "—" : c.press.toFixed(2)}</span>`
+    +   `<span class="pu">BAR${c.psi == null ? "" : " · " + c.psi.toFixed(1) + " PSI"}</span>`
+    +   `<span class="pd">${dTxt}</span></div>`
+    + `<div class="yzones">`
+    +   `<div class="yz"><span class="zl">INT</span>${zoneBar(c.t_in)}</div>`
+    +   `<div class="yz"><span class="zl">MED</span>${zoneBar(c.t_mid)}</div>`
+    +   `<div class="yz"><span class="zl">EXT</span>${zoneBar(c.t_out)}</div></div>`
+    + `<div class="yfoot"><span>carcasa <b class="${c.tstat || ""}">${c.carcass == null ? "—" : c.carcass + "°"}</b>`
+    +   `${c.brake == null ? "" : " · freno " + c.brake + "°"}</span>`
+    +   `<span class="cam ${camWarn}">${c.spread == null ? "" : "Δ" + c.spread.toFixed(1) + "° "}${c.camber || ""}</span></div>`;
+  }
+  const ax = y.axle || {};
+  $("yaxle").textContent = ax.bias
+    ? `carcasa del ${ax.front}° / tras ${ax.rear}° (Δ${ax.diff > 0 ? "+" : ""}${ax.diff}°) — ${ax.bias}`
+    : "—";
+  /* el delta de presión sólo vale con la goma en temperatura: decirlo, no ocultarlo */
+  $("ywarn").textContent = !y.live ? "detenido — lectura en frío"
+                         : !y.warm ? "goma fría — el delta aparece al entrar en temperatura" : "";
 }
 
 function renderTiming(lb){
@@ -1026,6 +1161,7 @@ function connect(){
     if(m.dampers){ lastDampers = m.dampers; renderDampers(m.dampers); return; }
     target = m; applyStatic(m); renderTiming(m.leaderboard||[]);
     if(m.strategy) renderStrategy(m.strategy);
+    if(m.tyres) renderTyres(m.tyres);
     if(m.telemetry) updateRec(m.telemetry);
   };
   ws.onclose = () => {
@@ -1110,6 +1246,23 @@ $("btnfs3").addEventListener("click", goFullscreen);
 $("btnstrat").addEventListener("click", () => showPage(3));
 $("btnbacks").addEventListener("click", () => showPage(0));
 $("btnfs4").addEventListener("click", goFullscreen);
+$("btnfs5").addEventListener("click", goFullscreen);
+$("btntyres").addEventListener("click", () => showPage(4));
+$("btnbacky").addEventListener("click", () => showPage(0));
+/* 🎯 fija la presión objetivo EN CALIENTE del auto montado; el bridge la persiste
+   por nombre de auto, así que se pide una vez por coche y queda. */
+$("btntgt").addEventListener("click", () => {
+  $("tgtval").value = (lastTyres && lastTyres.target) ? lastTyres.target : 1.75;
+  $("tgtcar").textContent = (lastTyres && lastTyres.car) ? "Se guarda para: " + lastTyres.car : "";
+  $("tgtcfg").classList.remove("hidden");
+});
+$("tgtcancel").addEventListener("click", () => $("tgtcfg").classList.add("hidden"));
+$("tgtsave").addEventListener("click", () => {
+  const bar = parseFloat(String($("tgtval").value).replace(",", "."));
+  if(!isFinite(bar) || bar < 0.5 || bar > 4) return;      // fuera de rango: no cerrar, que corrija
+  try{ if(sock && sock.readyState === 1) sock.send(JSON.stringify({cmd:"set_tyre_target", bar})); }catch(e){}
+  $("tgtcfg").classList.add("hidden");
+});
 $("btntts").addEventListener("click", () => {
   ttsOn = !ttsOn;
   $("btntts").textContent = ttsOn ? "🔊" : "🔇";

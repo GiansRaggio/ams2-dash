@@ -100,5 +100,34 @@ Notas para adaptarlo:
   el nivel configurado de TC/ABS.
 - `connected` pasa a "SIN SEÑAL" si no llegan paquetes por 3 s: la telemetría solo
   se emite en pista, no en menús.
-- Las temperaturas de neumáticos están pendientes de calibrar en caliente.
+
+## Página GOMAS (`ams2_tyres.py`)
+
+Por esquina: temperatura de las tres zonas (**interior/medio/exterior**), presión en
+caliente con el **delta contra el objetivo** (cuánto agregar o sacar), desgaste,
+temperatura de carcasa y de freno. Abajo, el sesgo térmico entre ejes.
+
+El objetivo de presión se fija con el botón 🎯 y el bridge lo **persiste por auto**
+en `tyre_targets.json`. El delta se aplica **en frío** en el garaje: el cambio se
+traslada casi 1:1 a la presión en caliente. Sólo aparece con la goma en temperatura
+(en frío la lectura no decide nada, y el dash lo dice en vez de mostrar un número
+que engaña).
+
+Los canales se **midieron en pista** con `tools/tyre_probe.py`, no se sacaron de la
+documentación. Lo que salió de ahí:
+
+- `mAirPressure` viene en **Bar×100**; `mTyreCarcassTemp` en **Kelvin**.
+- **La carcasa es el canal térmico bueno.** Leyó 75-109 °C, dentro de la ventana
+  operativa 70-100. `mTyreTemp` (bulk) leía 39-70 °C al mismo tiempo — contra esa
+  ventana daría "frío" siempre. Por eso el veredicto térmico usa carcasa.
+- `mTyreTempLeft/Right` están en marco **absoluto del auto** (izquierda/derecha de la
+  pista), no relativo a la rueda: hay que mapear interior/exterior por lado. Se dedujo
+  del dato, porque el borde interior salió más caliente en las cuatro esquinas de forma
+  espejada — firma de camber negativo, que sólo cuadra si L/R son absolutos.
+- **`mTyreTempCenter` es idéntico a `mTyreTemp`**, o sea el "centro" no es una tercera
+  medición independiente del piso de la goma. Por eso el dash **no** deriva presión del
+  perfil centro-vs-hombros (el clásico "centro caliente = sobreinflado"): ese diagnóstico
+  necesita un centro real. Las tres zonas se muestran igual, y el spread
+  interior-exterior sí se usa (esa sí es distribución lateral medida) para opinar del
+  camber. Caveat de referencia: SimHub #632.
 ```

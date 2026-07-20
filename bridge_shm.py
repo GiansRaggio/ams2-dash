@@ -30,6 +30,7 @@ import ams2_shm
 import ams2_dampers
 import ams2_strategy
 import ams2_telemetry
+import ams2_tyres
 
 WS_PORT = 8765
 HTTP_PORT = 8080
@@ -75,11 +76,16 @@ state = {
     "fuel_laps_left": None,
     "leaderboard": [],   # [{pos, name, best, last, lap, me}] top-N por posicion
     "strategy": {"calibrating": True, "live": False, "mode": "none"},   # director de estrategia
+    "tyres": {"live": False, "corners": []},   # gomas: temps por zona, presion, desgaste
 }
 
 # Director de estrategia (combustible/neumaticos/paradas). Se alimenta del mismo
 # snapshot que update_state y mantiene su estado por vuelta.
 strategy = ams2_strategy.StrategyEngine()
+
+# Gomas: temperatura por zona (interior/medio/exterior), presion en caliente y
+# diferencial contra el objetivo. El desgaste se lo pide a strategy (unica verdad).
+tyres = ams2_tyres.TyreAnalyzer()
 
 # Logger de telemetria por vuelta (corre su propio hilo+reader; se crea en main()).
 telemetry = None
@@ -286,6 +292,14 @@ def update_state(d):
         speech.handle(state.get("strategy"))   # voz del ingeniero en el PC (sin navegador)
     except Exception:
         pass
+
+    # Gomas: mismo snapshot. El desgaste llega ya resuelto por strategy (que detecta
+    # la direccion de mTyreWear) para no tener dos lecturas distintas del mismo dato.
+    try:
+        tyres.update(d, wear=strategy.wear_vec(d))
+        state["tyres"] = tyres.payload()
+    except Exception:
+        pass   # nunca tumbar el broadcast por un error del analizador de gomas
     if telemetry is not None:
         try:
             state["telemetry"] = telemetry.status()
@@ -324,6 +338,11 @@ async def ws_handler(ws):
                 strategy.clear_race_plan()
             elif cmd == "set_alllaps":            # contar vueltas anomalas/invalidas
                 strategy.set_use_all_laps(bool(msg.get("on", True)))
+            elif cmd == "set_tyre_target":        # presion objetivo en caliente (bar), por auto
+                try:
+                    tyres.set_target(msg.get("bar"))
+                except (TypeError, ValueError):
+                    pass
             elif cmd == "set_telemetry":          # grabar telemetria: off / summary / full
                 if telemetry is not None:
                     m = msg.get("mode")

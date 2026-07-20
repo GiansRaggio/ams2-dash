@@ -245,6 +245,11 @@ class StrategyEngine:
         else:
             self._time_scale = 1.0
 
+    def wear_vec(self, d):
+        """Desgaste resuelto (0=nuevo .. 1=gastado). Publico: lo consume ams2_tyres,
+        que no debe re-implementar la deteccion de direccion de mTyreWear."""
+        return self._wear_vec(d)
+
     def _wear_vec(self, d):
         """Desgaste efectivo por rueda (0=nuevo .. 1=gastado), con direccion resuelta."""
         raw = [d.mTyreWear[i] for i in range(4)]
