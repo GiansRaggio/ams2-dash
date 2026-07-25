@@ -129,7 +129,12 @@
   .badge.show{display:inline-block}
   #bAbs{color:#04060a;background:var(--amber)}
   #bWarn{color:#fff;background:var(--red);animation:strobe .4s steps(2) infinite}
-  #pitlimit{position:fixed;top:7vh;left:50%;transform:translateX(-50%);z-index:40;
+  /* Baja de 7vh a 17vh para librar la fila de botones (#ctrlbar): a 390px de alto el
+     banner caia en y=27-49 y #ctrlbar vive en 34-58, o sea justo encima de btnstop y
+     btnfs. Y pointer-events:none porque un aviso de ESTADO no debe comerse un toque
+     nunca -- antes tenia 'auto' y se tragaba el click aunque vieras el boton debajo. */
+  #pitlimit{position:fixed;top:17vh;left:50%;transform:translateX(-50%);z-index:40;
+            pointer-events:none;
             display:none;padding:.9vh 3.5vw;font-size:3.2vh;font-weight:800;
             letter-spacing:.32em;color:#04060a;background:var(--amber);
             clip-path:var(--chamfer);box-shadow:0 0 34px rgba(255,176,32,.6)}
@@ -138,8 +143,14 @@
 
   /* aviso: la pantalla puede apagarse (Wake Lock no disponible / se soltó).
      Anclado ARRIBA (no abajo) para no tapar la lectura de combustible/#conn de la banda inferior. */
+  /* pointer-events:none por lo mismo que #pitlimit: es un AVISO, no un control. Tenia
+     'auto' y tapaba botones del header (ej. el boton de config de estrategia en modo
+     vertical). El reintento no cuelga de este nodo -- el texto dice "toca la PANTALLA"
+     y el listener vive a nivel de documento, asi que dejar pasar el toque es lo que se
+     quiere. */
   #nolock{position:fixed;top:calc(1vh + env(safe-area-inset-top));left:50%;
-    transform:translateX(-50%);z-index:45;display:none;flex-direction:column;align-items:center;gap:.2vh;
+    transform:translateX(-50%);z-index:45;pointer-events:none;
+    display:none;flex-direction:column;align-items:center;gap:.2vh;
     padding:.5vh 3vw;font-size:clamp(10px,1.8vh,15px);font-weight:800;letter-spacing:.12em;color:#04060a;
     background:var(--amber);clip-path:var(--chamfer);box-shadow:0 0 20px rgba(255,176,32,.5)}
   #nolock.show{display:flex}
