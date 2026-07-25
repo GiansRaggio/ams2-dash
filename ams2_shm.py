@@ -50,7 +50,20 @@ def read_player_name():
         try:
             pf = os.path.join(os.path.dirname(os.path.abspath(__file__)), "player.txt")
             if os.path.exists(pf):
-                name = open(pf, encoding="utf-8").read().strip()
+                # Se lee en bytes y se prueban varias codificaciones: setup.bat escribe con
+                # el codepage OEM de la consola (CP850 en Windows es-CL), no UTF-8. Un nick
+                # con tilde o ñ reventaba en UnicodeDecodeError -> el except dejaba name=""
+                # -> el dash caia a la CAMARA justo en multiplayer, que es el bug que este
+                # archivo existe para prevenir, y fallando SIN aviso.
+                raw = open(pf, "rb").read()
+                for enc in ("utf-8-sig", "utf-8", "cp1252", "cp850"):
+                    try:
+                        name = raw.decode(enc).strip()
+                        break
+                    except UnicodeDecodeError:
+                        continue
+                else:
+                    name = raw.decode("utf-8", "replace").strip()
         except Exception:
             name = ""
     return name.lower()

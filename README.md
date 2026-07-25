@@ -6,79 +6,203 @@ Automobilista 2.
 > **Fork con extensiones** del proyecto original de **Luciano Grandi**
 > ([lucianograndim/ams2-dash](https://github.com/lucianograndim/ams2-dash)).
 > Este fork añade: variante **Shared Memory** para Windows (sin stutter, `bridge_shm.py`),
-> **leaderboard** de tiempos, y un **analizador de dampers** (histograma de velocidad de
-> amortiguador + recomendaciones de clicks 4-way) con **guardrail de recorrido/resortes**.
-
-## Archivos
-- `bridge.py` — escucha el broadcast de AMS2 (UDP :5606, protocolo Project CARS 2),
-  parsea telemetría/timings/time-stats y publica el estado por WebSocket (:8765).
-  También calcula economía de combustible y sirve la página por HTTP (:8080).
-- `index.html` — el dashboard estilo display GT3.
-- `index-v1-backup.html` — la versión anterior, por si quieres volver.
-- `ams2-dash-launch.sh` — wrapper de Steam para levantar el bridge junto con el
-  juego (ver "Arranque automático"). **Específico del setup del autor**, ajustable.
-- `tools/fake_telemetry.py` — emite paquetes sintéticos a :5606 para iterar la UI
-  sin estar en pista.
+> **leaderboard** de tiempos, páginas de **GOMAS**, **ESTRATEGIA** y **DAMPERS**, un
+> **grabador de telemetría a disco** y un **analizador offline** (`tools/analyze_telemetry.py`).
 
 ## Qué muestra
-- Tira de 20 LEDs de cambio (verde/ámbar/rojo + strobe azul al límite), marcha con
-  glow y velocidad.
-- Splits a coche de adelante/atrás, posición, vuelta, current/last/best lap (flash
-  púrpura al mejorar), tiempo restante de sesión.
-- **Combustible**: barra que se vacía con color por nivel, litros, % y **vueltas
-  restantes** + consumo por vuelta (se calcula al cruzar meta).
-- **Pit limiter** (banner), e indicadores **TC/ABS** que se encienden cuando el
-  asistente interviene (no el nivel configurado — eso no viaja por UDP).
-- Interpolación a 60fps y Wake Lock para que la pantalla no se apague.
 
-## Setup desde cero (para otra persona)
+- **Página principal**: tira de 20 LEDs de cambio (verde/ámbar/rojo + strobe azul al
+  límite), marcha con glow y velocidad. Splits a coche de adelante/atrás, posición,
+  vuelta, current/last/best lap (flash púrpura al mejorar), tiempo restante de sesión.
+  **Combustible**: barra que se vacía con color por nivel, litros, % y **vueltas
+  restantes** + consumo por vuelta (se calcula al cruzar meta). **Pit limiter**
+  (banner), e indicadores **TC/ABS** que se encienden cuando el asistente interviene
+  (no el nivel configurado — eso no viaja por telemetría). Interpolación a 60fps y
+  Wake Lock para que la pantalla no se apague.
+- **LEADERBOARD**: posiciones y tiempos del resto de la parrilla.
+- **GOMAS** (`ams2_tyres.py`): temperatura por zona (interior/medio/exterior),
+  presión en caliente con delta contra el objetivo, desgaste, temp de carcasa y de
+  freno, y sesgo térmico entre ejes. Ver detalle más abajo.
+- **ESTRATEGIA** (`ams2_strategy.py`): combustible/vueltas restantes, plan de
+  carrera y el semáforo de cruce lluvia→lisos. Ver `docs/SETUP-NOTES.md` para el
+  detalle de cómo se calcula.
+- **DAMPERS** (`ams2_dampers.py`): histograma de velocidad de amortiguador por
+  esquina + recomendaciones heurísticas de clicks 4-way.
+- **Grabador de telemetría a disco** (parte de `ams2_telemetry.py`, corre solo con
+  `bridge_shm.py`): por cada vuelta válida guarda un resumen y la traza completa
+  (todos los canales) en `telemetry/<pista>__<auto>__<sesión>__<fecha>/`, pensado
+  para analizar después.
+- **Analizador offline** (`tools/analyze_telemetry.py`): lee lo que grabó el
+  punto anterior. `--list` (sesiones agrupadas), `--insights`, `--tyres`,
+  `--balance` (sobre/subviraje), `--vs LAP1 LAP2` (compara dos vueltas), `--combo`
+  (tendencia entre prácticas de un mismo auto+pista), `--race-fuel <min>` (carga
+  de combustible estimada desde el consumo real medido). Ver `docs/SETUP-NOTES.md`
+  para cómo se usa en la práctica.
 
-Lo mínimo, en cualquier SO (Linux o Windows):
+## Setup desde cero, en Windows (el camino real para instalar esto)
 
-1. **Python 3** con el paquete **`websockets`**.
-2. **AMS2** con UDP activado: *Options → System → `UDP = On`,
-   `Protocol = Project CARS 2`, `Frequency = 1`* (si hay lag, subir a 4).
-   El Shared Memory puede quedar en Project CARS 2 para MOZA; son independientes.
-3. Un **celular en la misma red WiFi** que el PC.
-4. Que el **firewall del PC permita los puertos 8080 y 8765** en la LAN.
+Esto asume que nunca has tocado Python ni una terminal. Sigue los pasos en orden.
 
-```bash
-git clone <url-del-repo> ams2-dash
+### 1. Instalar Python
+
+En Windows 11 limpio, si escribes `python` en una terminal sin tener Python
+instalado, **Windows abre la Microsoft Store** — no es un error, pero tampoco es
+lo que queremos.
+
+- Instálalo desde **[python.org/downloads](https://www.python.org/downloads/)**
+  (botón amarillo "Download Python"). Al ejecutar el instalador, **marca la
+  casilla "Add python.exe to PATH"** en la primera pantalla — si no la marcas,
+  nada de lo que sigue va a encontrar `python`.
+- Alternativa si ya tienes el *Python Launcher* de Windows: usar `py -3` en vez
+  de `python` en cualquier comando de esta guía funciona igual.
+
+### 2. Descargar el proyecto
+
+```
+git clone https://github.com/GiansRaggio/ams2-dash.git
 cd ams2-dash
-
-# instalar websockets (cualquiera de estas opciones):
-python -m venv .venv && .venv/bin/pip install websockets      # venv estándar
-#  o:  uv venv .venv && uv pip install --python .venv/bin/python websockets
-#  o:  pip install --user websockets                          # global
-
-# correr el bridge (imprime la URL del dashboard)
-.venv/bin/python bridge.py
 ```
 
-En el celular: abrir `http://IP_DEL_PC:8080`, girar a horizontal y "Agregar a
-pantalla de inicio" para modo fullscreen.
+(O bajar el ZIP desde GitHub y descomprimirlo, si no usas git.)
 
-`bridge.py` e `index.html` son **100% portables**. En **Windows** ni siquiera hace
-falta el launcher: se abre AMS2 normal y se corre `python bridge.py` aparte.
+### 3. Instalar dependencias y configurar el nombre de piloto
 
-### Windows sin stutter: variante Shared Memory (`bridge_shm.py`)
+Doble clic a **`setup.bat`**. Crea el entorno virtual (`.venv`), instala lo
+necesario, y te pregunta tu nombre de piloto en AMS2 (para `player.txt`, ver
+el paso 4 — por qué importa). Si algo falla (por ejemplo Python no instalado),
+`setup.bat` te lo dice en español en vez de cerrarse solo.
 
-Activar el **UDP** en AMS2 puede causar **stuttering** en el juego (serializa y emite
-un paquete por frame). Para evitarlo en Windows está `bridge_shm.py`, que lee la
-**Shared Memory** de AMS2 (`$pcars2$`, formato Project CARS 2) en vez del UDP — el
-juego ya la escribe siempre, nosotros solo la leemos: **costo ~cero, sin stutter**.
-Salida idéntica (mismo WebSocket, mismo `index.html`).
+Si prefieres hacerlo a mano en vez de `setup.bat`:
 
-- En AMS2: *Options → System → `Shared Memory = On`, `Type = Project CARS 2`*
-  (no hace falta el UDP).
-- Lanzar: doble clic a `start-dash.bat`, o `.venv\Scripts\python.exe bridge_shm.py`.
-- Módulo `ams2_shm.py`: mapea la estructura `SharedMemory` v14 con `ctypes`
-  (solo lectura, snapshots protegidos por `mSequenceNumber`). Solo Windows.
+```
+py -3 -m venv .venv
+.venv\Scripts\pip.exe install -r requirements.txt
+```
+
+### 4. `player.txt` — obligatorio si vas a jugar ONLINE (multiplayer)
+
+**Este paso no es opcional si corres carreras online.** AMS2 expone en su
+telemetría un índice de "participante visto" que en **multiplayer sigue a la
+CÁMARA** (transmisión, otros pilotos, replay), no necesariamente a TU auto. Sin
+anclar el dash a tu nombre, en cuanto la cámara se va a otro competidor el dash
+empieza a leer y grabar **el auto de otra persona**: vueltas, distancia,
+combustible, estrategia y la telemetría grabada a disco quedan corrompidas sin
+ningún error visible. En single-player no pasa (el participante visto ya eres tú),
+pero en online es un bug real y silencioso.
+
+La solución: el archivo `player.txt` (en la raíz del proyecto, uno por línea, tu
+nombre de piloto tal como aparece en AMS2) o la variable de entorno
+`AMS2_PLAYER_NAME`. Con eso, el bridge te busca por nombre entre los participantes
+en vez de confiar en la cámara. `setup.bat` te lo pide y lo crea la primera vez;
+si necesitas cambiarlo después, edita `player.txt` a mano (no hace falta que sea
+el nombre completo, basta con que sea parte única de tu nombre en el juego).
+
+### 5. Configurar AMS2
+
+*Options → System*:
+
+- **`Shared Memory = On`**, **`Shared Memory Type = Project CARS 2`**.
+- No hace falta tocar el UDP para el camino recomendado (ver más abajo si de
+  verdad quieres esa variante).
+
+### 6. Firewall — el paso que falla en silencio
+
+En un PC/red nueva, Windows 11 suele clasificar el WiFi como red **Pública**. La
+primera vez que corras el dash, Windows va a mostrar un cuadro de diálogo pidiendo
+permiso de firewall para `python.exe` — **pero ese cuadro trae marcada solo la
+casilla "Redes privadas"**. Si tu red quedó como Pública, el permiso no aplica:
+el bridge arranca perfecto, en la consola dice que todo está bien, pero el celular
+**nunca va a conectar** y no vas a ver ningún error que lo explique.
+
+Cómo arreglarlo:
+
+1. **Poner la red en Privada**: *Configuración → Red e Internet → Wi-Fi* → clic en
+   la red conectada → **Perfil de red: Privada** (u "Otros PC's pueden verlo").
+2. Cuando corras el bridge por primera vez y aparezca el aviso de firewall de
+   Windows Defender, **marca las dos casillas** (Privadas y Públicas, o al menos
+   Privadas si ya hiciste el paso 1) y **Permitir acceso**.
+3. Si ya lo cerraste sin marcarlo: *Configuración → Privacidad y seguridad →
+   Seguridad de Windows → Firewall y protección de red → Permitir una app a
+   través del firewall* → busca **Python** → marca **Privada**.
+
+### 7. Arrancar el dash
+
+Doble clic a **`start-dash.bat`**. La consola va a imprimir algo como:
+
+```
+[bridge-shm] Dash : http://192.168.1.XX:8080  <- abrir en el celular
+```
+
+Esa es la IP real de tu PC en tu red — **cópiala tal cual la imprime la
+consola** en vez de adivinarla. En el celular (misma red WiFi): abre esa URL,
+gira a horizontal y "Agregar a pantalla de inicio" para que quede en modo
+fullscreen como una app.
+
+> ⚠️ **Úsalo en tu red de casa, no en WiFi público.** Mientras el bridge corre,
+> cualquiera en la misma red puede abrir esa URL — y además el servidor expone la
+> carpeta del proyecto, o sea tu telemetría grabada y tu `player.txt`. No hay
+> contraseña. En tu casa da lo mismo; en la WiFi de un café o una universidad, no
+> lo levantes.
+
+## Archivos
+
+- `setup.bat` — instalador de doble clic: detecta Python, crea `.venv`, instala
+  `requirements.txt` y configura `player.txt`.
+- `start-dash.bat` — lanzador de doble clic: corre `bridge_shm.py`. Si falta el
+  `.venv`, te manda a correr `setup.bat` primero en vez de fallar en silencio.
+- `requirements.txt` — dependencias fijadas (`websockets`).
+- `player.txt` — tu nombre de piloto en AMS2, para anclar el dash a tu auto en
+  multiplayer (ver paso 4 más arriba). No se versiona (está en `.gitignore`).
+- `bridge_shm.py` — **el bridge recomendado en Windows.** Lee la Shared Memory
+  de AMS2 (sin UDP, sin stutter) y publica el estado por WebSocket (:8765) +
+  sirve el dashboard por HTTP (:8080). Emite telemetría, leaderboard, estrategia,
+  gomas y dampers.
+- `ams2_shm.py` — mapea la Shared Memory de AMS2 (`$pcars2$`, v14) con `ctypes`.
+  Solo Windows.
+- `ams2_telemetry.py`, `ams2_strategy.py`, `ams2_tyres.py`, `ams2_dampers.py` —
+  los módulos de cada página / feature, todos alimentados por `ams2_shm.py`.
+- `index.html` — el dashboard estilo display GT3, servido al celular.
+- `index-v1-backup.html` — la versión anterior, por si quieres volver.
+- `tools/analyze_telemetry.py` — analizador offline de lo grabado en `telemetry/`.
+- `tools/fake_telemetry.py` — emite paquetes UDP sintéticos a :5606 para iterar
+  la UI de la variante UDP sin estar en pista.
+- `bridge.py` — variante **UDP** (protocolo Project CARS 2, puerto 5606), la
+  original del fork base. Ver la sección "Variante UDP" más abajo: **no** emite
+  leaderboard, estrategia, gomas ni dampers, y no graba telemetría a disco.
+- `ams2-dash-launch.sh` — wrapper de Steam para levantar `bridge.py` junto con el
+  juego en Linux (ver "Arranque automático en Linux"). Específico del setup del
+  autor, ajustable.
+
+## Variante UDP (Linux, o si de verdad la necesitas en Windows): `bridge.py`
+
+`bridge.py` es la variante original del fork base: escucha el broadcast UDP de
+AMS2 (puerto 5606, protocolo Project CARS 2) en vez de leer la Shared Memory.
+Es la única opción portable a Linux/macOS (la Shared Memory es exclusiva de
+Windows), pero tiene dos limitaciones importantes frente a `bridge_shm.py`:
+
+- **Activar el UDP en AMS2 puede causar stuttering** en el juego, porque lo
+  obliga a serializar y emitir un paquete por frame.
+- **Solo emite la página principal** (velocidad, marcha, combustible, splits,
+  TC/ABS). **No tiene leaderboard, ESTRATEGIA, GOMAS ni DAMPERS**, y no graba
+  telemetría a disco — esas features viven en `bridge_shm.py` / `ams2_*.py` y
+  dependen de la Shared Memory. Si usas `bridge.py`, esas 4 páginas van a
+  quedar vacías; no es un bug, es que la fuente de datos no las trae.
+
+En AMS2: *Options → System → `UDP = On`, `Protocol = Project CARS 2`,
+`Frequency = 1`* (si hay lag, subir a 4). Correr con:
+
+```
+.venv\Scripts\python.exe bridge.py
+```
+
+(en Linux/macOS: `.venv/bin/python bridge.py`, instalando antes con
+`.venv/bin/pip install -r requirements.txt`). El resto del setup (celular,
+firewall) es igual al de la variante Shared Memory.
 
 ## Arranque automático con el juego (Linux / Steam)
 
-`ams2-dash-launch.sh` levanta el bridge cuando arranca AMS2 y lo cierra al salir.
-En *AMS2 → Properties → Launch Options*:
+`ams2-dash-launch.sh` levanta `bridge.py` cuando arranca AMS2 y lo cierra al
+salir. En *AMS2 → Properties → Launch Options*:
 
 ```
 /home/USUARIO/sim/ams2-dash/ams2-dash-launch.sh gamescope -W 2560 -H 1440 -f -- mangohud %command%
@@ -90,16 +214,15 @@ Notas para adaptarlo:
 - El setup del autor además **encadena un overlay de pedales** antes de gamescope;
   si no lo tienes, omite esa parte.
 - Mata cualquier bridge zombi antes de arrancar (los puertos WS/HTTP no usan
-  `reuse_port`).
+  `reuse_port` en todas las plataformas).
 
 ## Notas
-- Usa `reuse_port` en :5606, así que puede convivir con otras apps que escuchen
-  el mismo broadcast UDP de AMS2.
-- Offsets basados en la spec UDP de Project CARS 2 (la que usa AMS2), verificados
-  en pista. El protocolo expone telemetría e intervención de asistentes, pero **no**
-  el nivel configurado de TC/ABS.
-- `connected` pasa a "SIN SEÑAL" si no llegan paquetes por 3 s: la telemetría solo
-  se emite en pista, no en menús.
+
+- `connected` pasa a "SIN SEÑAL" si no llegan paquetes/snapshots por 3 s: la
+  telemetría solo se emite en pista, no en menús.
+- Offsets basados en la spec UDP / Shared Memory de Project CARS 2 (la que usa
+  AMS2), verificados en pista. El protocolo expone telemetría e intervención de
+  asistentes, pero **no** el nivel configurado de TC/ABS.
 
 ## Página GOMAS (`ams2_tyres.py`)
 
@@ -130,4 +253,3 @@ documentación. Lo que salió de ahí:
   necesita un centro real. Las tres zonas se muestran igual, y el spread
   interior-exterior sí se usa (esa sí es distribución lateral medida) para opinar del
   camber. Caveat de referencia: SimHub #632.
-```

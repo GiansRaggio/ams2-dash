@@ -1,0 +1,5 @@
+# websockets 16.0 verificado en el .venv de desarrollo. El rango >=14,<17 evita que
+# un "pip install -r requirements.txt" a futuro traiga una mayor incompatible, y el
+# piso en 14 (en vez de 12) descarta las versiones donde bridge_shm dependeria de la
+# rama legacy de websockets.serve, que nadie probo aca.
+websockets>=14,<17
