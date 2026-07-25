@@ -270,6 +270,9 @@ def update_state(d):
             continue
         b = d.mFastestLapTimes[i]
         la = d.mLastLapTimes[i]
+        # Sectores POR PILOTO: el juego ya los publica (mFastestSectorNTimes[i]). Con esto la
+        # comparacion "donde le pierdo al mas rapido" sale EN VIVO, sin servidor ni subir nada.
+        s = [d.mFastestSector1Times[i], d.mFastestSector2Times[i], d.mFastestSector3Times[i]]
         lb.append({
             "pos": pi.mRacePosition,
             "name": pi.mName.decode("utf-8", "replace"),
@@ -277,6 +280,8 @@ def update_state(d):
             "last": round(la, 3) if la > 0 else None,
             "lap": pi.mCurrentLap,
             "me": i == v,
+            "sec": [round(x, 3) if x > 0 else None for x in s],
+            "inv": bool(d.mLapsInvalidated[i]),
         })
     lb.sort(key=lambda e: e["pos"])
     state["leaderboard"] = lb[:LEADERBOARD_MAX]

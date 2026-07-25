@@ -134,6 +134,8 @@ class TelemetryLogger:
         self._reset_session()
 
     def _reset_session(self):
+        self._rivals = {}         # {nombre: {best, sec[3], pos, laps, inv}} de la sesion en curso
+        self._rivals_dirty = False
         self._sig = None
         self._sess_dir = None
         self._sess_label = None
@@ -229,7 +231,9 @@ class TelemetryLogger:
 
             sig = (bytes(d.mTrackLocation), bytes(d.mCarName), int(d.mSessionState))
             if sig != self._sig:
+                self._write_rivals()      # cerrar el registro de la sesion que se va
                 self._rotate_session(d, sig)
+            self._track_rivals(d, v)      # acumula en memoria; se escribe al cerrar vuelta
 
             in_pit = d.mPitMode in _PIT_INSIDE
             if in_pit:
@@ -320,6 +324,10 @@ class TelemetryLogger:
 
     def _rotate_session(self, d, sig):
         # cambio de pista/auto/tipo-de-sesion -> nueva carpeta; la vuelta en curso se descarta
+        # Rivales: se vacian aca o el rivals.json de la carrera arrastraria a los que solo
+        # corrieron la qualy, con tiempos de la sesion (o la PISTA) anterior.
+        self._rivals = {}
+        self._rivals_dirty = False
         self._sig = sig
         self._last_lap = -1
         self._buf = []
@@ -353,6 +361,62 @@ class TelemetryLogger:
             self._sess_dir = None
 
     # ---------------- linea de tiempo (aditiva, no toca vueltas limpias) ----------------
+    def _track_rivals(self, d, v):
+        """Mejores tiempos de CADA piloto de la sesion (incluido tu).
+
+        Es lo unico que la shared memory publica de los demas autos: nombre, posicion,
+        vueltas, mejor vuelta y mejores sectores. NO hay acelerador/freno/volante ajenos
+        -- podras comparar TIEMPOS y sectores contra un piloto de referencia, no sus inputs.
+
+        Se guarda junto al resto de la sesion (telemetry/, gitignoreado): es tu registro
+        personal de con quien giraste y como te fue. No sale del PC.
+        """
+        # Los arrays por participante son opcionales a proposito: si una version del juego
+        # (o un mock) no los trae, el registro de rivales se salta -- pero la GRABACION
+        # sigue. Sin esto, un AttributeError aca lo traga el except del hilo y se deja de
+        # grabar en silencio, que es el peor modo de falla posible.
+        try:
+            best_all = d.mFastestLapTimes
+            s1, s2, s3 = d.mFastestSector1Times, d.mFastestSector2Times, d.mFastestSector3Times
+            inv_all = d.mLapsInvalidated
+        except AttributeError:
+            return
+        n = max(0, min(d.mNumParticipants, ams2_shm.STORED_PARTICIPANTS_MAX))
+        for i in range(n):
+            pi = d.mParticipantInfo[i]
+            if not pi.mIsActive:
+                continue
+            name = bytes(pi.mName).split(b"\x00")[0].decode("utf-8", "replace").strip()
+            if not name:
+                continue
+            best = best_all[i]
+            rec = {
+                "best": round(best, 3) if best > 0 else None,
+                "sec": [round(x, 3) if x > 0 else None for x in (s1[i], s2[i], s3[i])],
+                "pos": int(pi.mRacePosition),
+                "laps": int(pi.mLapsCompleted),
+                "inv": bool(inv_all[i]),
+                "me": i == v,
+            }
+            if self._rivals.get(name) != rec:
+                self._rivals[name] = rec
+                self._rivals_dirty = True
+
+    def _write_rivals(self):
+        """Vuelca el registro de rivales. Se llama al cerrar vuelta y al rotar sesion,
+        NO por frame: escribir a 50Hz stutearia el broadcast."""
+        if self._sess_dir is None or not self._rivals_dirty or not self._rivals:
+            return
+        try:
+            path = os.path.join(self._sess_dir, "rivals.json")
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self._rivals, f, ensure_ascii=False, indent=1, sort_keys=True)
+            os.replace(tmp, path)
+            self._rivals_dirty = False
+        except OSError:
+            pass
+
     def _write_timeline(self, rec):
         """Append de un registro a timeline.jsonl. Guarda ante OSError y sin carpeta de sesion."""
         if self._sess_dir is None:
@@ -377,6 +441,10 @@ class TelemetryLogger:
         """Cierra la vuelta. SIEMPRE (si es vuelta de pista, no out/in/pit) guarda un
         registro de sectores con validez por sector -> permite rescatar sectores limpios
         de vueltas invalidadas. La traza+resumen completos solo si la vuelta es 100% limpia."""
+        # Los mejores de cada piloto solo pueden haber mejorado al cruzar meta -> es el
+        # momento natural de volcarlos, y saca la escritura del camino de los 50Hz.
+        if self._mode != "off":
+            self._write_rivals()
         n_samples = self._agg["n"] if self._agg else 0
         flying = (self._lap_ok and self._mode != "off"
                   and not self._pit_this and not self._pit_prev

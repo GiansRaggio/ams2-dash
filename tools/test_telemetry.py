@@ -90,6 +90,13 @@ class Snap:
         self.mTyreRPS = q(120.0)
         self.mTerrain = [0, 0, 0, 0]
         self.mTyreCarcassTemp = q(360.0)    # ~87 C en Kelvin
+        # arrays por participante (los usa _track_rivals para el registro de rivales)
+        self.mFastestLapTimes = [95.5] * 64
+        self.mFastestSector1Times = [30.1] * 64
+        self.mFastestSector2Times = [35.2] * 64
+        self.mFastestSector3Times = [30.2] * 64
+        self.mLastLapTimes = [96.0] * 64
+        self.mLapsInvalidated = [False] * 64
         self._p = P(laps_completed, dist)
 
     @property

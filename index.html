@@ -196,6 +196,17 @@
                 border-right:1px solid var(--line);border-radius:0 5px 5px 0}
   #ttable tr.me td{border-color:var(--cyan);box-shadow:inset 0 0 16px rgba(39,224,255,.16)}
   #ttable tr.me td.tn{color:var(--cyan)}
+  /* sectores por piloto (el juego los publica): tu fila lleva el delta contra el mejor */
+  #ttable th.ts{text-align:right}
+  #ttable td.ts{text-align:right;width:1%;color:var(--dim);font-variant-numeric:tabular-nums;
+                white-space:nowrap;padding-left:1.6vw}
+  #ttable td.ts i{display:block;font-style:normal;font-size:.72em;letter-spacing:.04em}
+  #ttable td.ts.sbest{color:var(--purple)}   /* el mejor de ese sector en la sesión */
+  #ttable td.ts.sclose{color:var(--txt)}     /* a menos de 0.25s */
+  #ttable td.ts.sfar{color:var(--amber)}     /* ahí es donde hay tiempo que ganar */
+  #ttable td.tn b.tinv{color:var(--red);margin-left:.6vw;font-size:.85em}  /* vuelta invalidada */
+  #tdelta{margin-top:1.2vh;text-align:center;color:var(--dim);font-size:1.7vh;letter-spacing:.04em}
+  #tdelta b{color:var(--amber);font-variant-numeric:tabular-nums}
   #tempty{display:flex;align-items:center;justify-content:center;text-align:center;
           color:var(--dim);letter-spacing:.08em;font-size:2.2vh;padding:4vh 3vh}
 
@@ -1043,18 +1054,44 @@ function renderTiming(lb){
   lastLbSig = sig;
   if(!lb.length){ tboard.innerHTML=""; tempty.style.display="flex"; return; }
   tempty.style.display="none";
+  /* Sectores por piloto: el mejor de CADA sector en la sesión (puede ser de pilotos
+     distintos) es la referencia. Tu celda muestra el delta contra ese mejor -> se ve
+     de un vistazo EN QUÉ PARTE de la pista pierdes, que es el 80% del coaching. */
+  const bestSec = [0,1,2].map(i => {
+    const v = lb.map(e => e.sec && e.sec[i]).filter(x => x > 0);
+    return v.length ? Math.min(...v) : null;
+  });
+  const me = lb.find(e => e.me);
+  const secCell = (e, i) => {
+    const t = e.sec && e.sec[i];
+    if(!(t > 0)) return '<td class="ts">—</td>';
+    /* solo el piloto propio lleva delta: comparar a todos contra todos es ruido */
+    if(!e.me || bestSec[i] == null) return `<td class="ts">${t.toFixed(3)}</td>`;
+    const d = t - bestSec[i];
+    const cls = d <= 0.0005 ? "sbest" : d < 0.25 ? "sclose" : "sfar";
+    return `<td class="ts ${cls}">${t.toFixed(3)}`
+         + `<i>${d <= 0.0005 ? "mejor" : "+" + d.toFixed(3)}</i></td>`;
+  };
   let rows = "";
   for(const e of lb){
     rows += `<tr class="${e.me?"me":""}">`
           + `<td class="tp">${e.pos}</td>`
-          + `<td class="tn">${esc(e.name)}</td>`
+          + `<td class="tn">${esc(e.name)}${e.inv?'<b class="tinv">✗</b>':""}</td>`
+          + secCell(e,0) + secCell(e,1) + secCell(e,2)
           + `<td class="tl">${fmtLap(e.last)}</td>`
           + `<td class="tb">${fmtLap(e.best)}</td></tr>`;
   }
+  /* pie: cuánto regalas sumando los 3 sectores contra el mejor de cada uno */
+  let pie = "";
+  if(me && me.sec){
+    const d = [0,1,2].reduce((a,i) => (me.sec[i] > 0 && bestSec[i] != null) ? a + (me.sec[i]-bestSec[i]) : a, 0);
+    if(d > 0.001) pie = `<div id="tdelta">Sumando el mejor de cada sector regalas <b>${d.toFixed(3)}s</b></div>`;
+  }
   tboard.innerHTML =
     '<table id="ttable"><thead><tr><th class="tp">POS</th><th class="tn">PILOTO</th>'
+    + '<th class="ts">S1</th><th class="ts">S2</th><th class="ts">S3</th>'
     + '<th class="tl">ÚLTIMA</th><th class="tb">MEJOR</th></tr></thead><tbody>'
-    + rows + '</tbody></table>';
+    + rows + '</tbody></table>' + pie;
 }
 
 const DCORNER_IDS = ["dFL","dFR","dRL","dRR"];

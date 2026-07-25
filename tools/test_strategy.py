@@ -385,6 +385,8 @@ def test_player_index():
         def mParticipantInfo(self):
             return self._ps
 
+    # Nombres genericos a proposito: el repo es publico y estos eran pilotos reales.
+    # El test verifica el MATCHEO, no quienes son.
     d = _D(["Piloto Uno", "Piloto Dos", "YoMismo", "piloto_cuatro"], viewed=1)
     _ok("matchea por nombre (ignora el visto=1)", SHM.player_index(d, "yomismo") == 2, SHM.player_index(d, "yomismo"))
     _ok("sin nombre -> cae al visto", SHM.player_index(d, "") == 1, SHM.player_index(d, ""))
