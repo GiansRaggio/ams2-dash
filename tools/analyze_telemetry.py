@@ -753,9 +753,19 @@ def balance_struct(folder):
     d, s = _mono(rt["lap_dist"], rt["speed_kmh"])[:2]
     corners = []
     for c in _corners(d, s):
+        # La ventana ESCALA con el largo real de la curva, pero se queda en la parte
+        # central: el balance es una medicion de APEX (maxima carga lateral, que es
+        # donde el ratio es diagnostico). Tomar la curva entera --como si hace
+        # --saturacion-- mete la frenada (carga el tren delantero) y la salida (carga
+        # el trasero) en la misma mediana y LAVA la senal: probado, todos los ratios se
+        # corrian hacia 1.0 y T7 en Interlagos pasaba de sobreviraje a neutro.
+        # +-60 m fijos tampoco servia: trata igual a una horquilla y a una curva de alta.
+        w0, w1 = _corner_window(d, s, c["apex"], c["prom"])
+        media = (w1 - w0) * BAL_APEX_FRAC / 2.0
+        ini, fin = c["apex"] - media, c["apex"] + media
         fr, re = [], []
         for _, t in traces:
-            idx = [i for i, x in enumerate(t["lap_dist"]) if c["apex"] - 60 <= x <= c["apex"] + 60]
+            idx = [i for i, x in enumerate(t["lap_dist"]) if ini <= x <= fin]
             if idx:
                 fr.append(st.median([(t["tyre_slip_FL"][i] + t["tyre_slip_FR"][i]) / 2 for i in idx]))
                 re.append(st.median([(t["tyre_slip_RL"][i] + t["tyre_slip_RR"][i]) / 2 for i in idx]))
@@ -764,6 +774,7 @@ def balance_struct(folder):
         f, r = st.median(fr), st.median(re)
         ratio = round(r / f, 2) if f > 0.1 else 1.0
         corners.append({"n": c["n"], "apex": c["apex"], "vmin": round(c["vmin"]),
+                        "largo": round(fin - ini),
                         "front": round(f, 1), "rear": round(r, 1), "ratio": ratio,
                         "bal": "sobreviraje" if ratio >= 1.25 else "subviraje" if ratio <= 0.8 else "neutro"})
     # momento de inestabilidad POR SECTOR: el sector con mayor spike de slip trasero entre vueltas
@@ -1024,6 +1035,11 @@ def report_tyres(folder):
                   "es de la pista, no se corrige con presion; balancea cada goma a su ventana.")
 
 
+# El balance mide en el APEX, pero la ventana ESCALA con el largo real de la curva:
+# se toma esta fraccion central de la curva detectada. Da ~163 m en la S do Senna y
+# ~37 m en la horquilla de Interlagos, contra los 120 m fijos que habia para las dos.
+BAL_APEX_FRAC = 0.45
+
 SAT_ZERO = 0.005      # margen de agarre bajo esto = la goma esta EN EL LIMITE
 SAT_EJE = 8.0         # diferencia (puntos %) para atribuirle la limitacion a un eje
 
@@ -1114,10 +1130,10 @@ def report_balance(folder):
         print("  faltan >=3 vueltas limpias con canal de slip por rueda.")
         return
     print("  slip por rueda (trasero vs delantero) en el apex; R/F >1.25 = sobreviraje, <0.8 = subviraje.")
-    print(f"\n  {'curva':6} {'apex':>6} {'vmin':>5} {'slipF':>6} {'slipR':>6} {'R/F':>5}  balance")
+    print(f"\n  {'curva':6} {'apex':>6} {'vmin':>5} {'largo':>6} {'slipF':>6} {'slipR':>6} {'R/F':>5}  balance")
     for c in bal["corners"]:
-        print(f"  T{c['n']:<5} {c['apex']:>6} {c['vmin']:>5} {c['front']:>6.1f} {c['rear']:>6.1f} "
-              f"{c['ratio']:>5.2f}  {c['bal']}")
+        print(f"  T{c['n']:<5} {c['apex']:>6} {c['vmin']:>5} {c.get('largo', 120):>5}m "
+              f"{c['front']:>6.1f} {c['rear']:>6.1f} {c['ratio']:>5.2f}  {c['bal']}")
     m = bal["moment"]
     if m:
         print(f"\n  MOMENTO de inestabilidad: {m['sector']} — pico de slip trasero {m['peak']} vs {m['median']} "

@@ -218,6 +218,15 @@ class TyreAnalyzer:
             self._save_targets()
         return round(v, 2)
 
+    def surf_alive(self):
+        """El modelo termico de banda (bulk/layer/left/right) esta VIVO en ESTA sesion?
+
+        Publico: lo consume ams2_strategy a traves del bridge para el detector de
+        crossover, que lee mTyreTemp y no debe re-implementar esta deteccion (la
+        misma razon por la que aca no se recalcula el desgaste). Ver _surf_check.
+        """
+        return self._surf_alive
+
     def reset(self):
         """Olvida las lecturas suavizadas (no toca los objetivos guardados)."""
         for a in (self._press, self._t_in, self._t_out, self._t_surf, self._t_bulk,
@@ -255,15 +264,28 @@ class TyreAnalyzer:
         if self._live:
             self._runtime += dt
 
+        # Los canales se toman UNA vez y con tolerancia a que falten: si una version del
+        # juego (o un mock) no trae uno, ese canal queda en None y el resto sigue vivo.
+        # Sin esto un AttributeError aca lo traga el try/except del bridge y la pagina se
+        # queda CONGELADA en el frame anterior, sin avisar -- el peor modo de falla.
+        ch = {}
+        for k in ("mAirPressure", "mTyreLayerTemp", "mTyreTemp", "mTyreCarcassTemp",
+                  "mBrakeTempCelsius", "mTyreTempLeft", "mTyreTempRight"):
+            ch[k] = getattr(d, k, None)
+        if ch["mTyreCarcassTemp"] is None:      # sin carcasa no hay nada que decir
+            return
+        _nan = float("nan")
+        get = lambda k, c: (ch[k][c] if ch[k] is not None else _nan)   # noqa: E731
+
         for c in range(4):
             # Lecturas absolutas: validas tambien parado (reflejan enfriamiento). Cada
             # canal por separado: un NaN puntual en uno no descarta los otros.
-            self._ema(self._press, c, d.mAirPressure[c] / 100.0)
+            self._ema(self._press, c, get('mAirPressure', c) / 100.0)
             # Corte por profundidad. OJO unidades (nota 2): layer y carcass en KELVIN,
             # mTyreTemp ya en Celsius. mTyreTreadTemp no se lee (es el bulk en K).
-            self._ema(self._t_surf, c, d.mTyreLayerTemp[c] - KELVIN)
-            self._ema(self._t_bulk, c, d.mTyreTemp[c])
-            carc = d.mTyreCarcassTemp[c] - KELVIN
+            self._ema(self._t_surf, c, get('mTyreLayerTemp', c) - KELVIN)
+            self._ema(self._t_bulk, c, get('mTyreTemp', c))
+            carc = get('mTyreCarcassTemp', c) - KELVIN
             self._ema(self._carcass, c, carc)
             # EMA lenta: la "norma" de esta goma. Alfa por TIEMPO (dt/tau), no por
             # frame: asi el tau son segundos de verdad a cualquier Hz del bridge.
@@ -274,13 +296,13 @@ class TyreAnalyzer:
             elif math.isfinite(carc) and self._slow[c] is None:
                 self._slow[c] = carc
             # rango de bulk crudo en marcha -> deteccion de modelo de superficie muerto
-            if self._live and math.isfinite(d.mTyreTemp[c]):
+            if self._live and math.isfinite(get('mTyreTemp', c)):
                 b = self._bkt_cur[c]
-                v = d.mTyreTemp[c]
+                v = get('mTyreTemp', c)
                 b[0] = v if b[0] is None else min(b[0], v)
                 b[1] = v if b[1] is None else max(b[1], v)
-            self._ema(self._brake, c, d.mBrakeTempCelsius[c])
-            left, right = d.mTyreTempLeft[c], d.mTyreTempRight[c]
+            self._ema(self._brake, c, get('mBrakeTempCelsius', c))
+            left, right = get('mTyreTempLeft', c), get('mTyreTempRight', c)
             inner, outer = (right, left) if INNER_IS_RIGHT[c] else (left, right)
             self._ema(self._t_in, c, inner)
             self._ema(self._t_out, c, outer)
@@ -387,6 +409,17 @@ class TyreAnalyzer:
                 tsurf, tbulk = self._t_surf[c], self._t_bulk[c]
             else:
                 ti = to = tsurf = tbulk = None
+            # BORDES EN CERO EXACTO = centinela, no medicion. Un neumatico real nunca
+            # marca 0.0 C en el borde, ni siquiera frio (el ambiente anda en 15-30).
+            # Pasa con el auto FUERA DE PISTA (garage/menu): AMS2 deja de correr el
+            # modelo de banda y los pone en 0, mientras carcasa y piel siguen con
+            # valores plausibles -- por eso _surf_check no lo ve, y hace bien: el canal
+            # NO esta muerto, solo esta sin actualizar. Verificado en la traza del Uno
+            # Classic B: manejando esos mismos canales leen 59-72 C con rango real.
+            # Sin este corte, un spread de 0.0 se colaba a _camber_hint y la pagina
+            # dictaba "poco camber neg." a partir de nada.
+            if ti == 0.0 and to == 0.0:
+                ti = to = None
             spread = (ti - to) if (ti is not None and to is not None) else None
             corners.append({
                 "name": CORNERS[c],
