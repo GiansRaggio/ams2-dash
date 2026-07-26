@@ -10,9 +10,12 @@ vuelven a producir la clase de bug que costo dos redisenos:
   * los centinelas no generan veredicto
   * NaN/faltantes no envenenan el broadcast (un NaN en el JSON tumba el dash entero)
 """
+import json
 import math
 import os
+import shutil
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import ams2_tyres  # noqa: E402
@@ -28,19 +31,26 @@ def _ok(name, cond, extra=""):
 
 
 class Snap:
-    """Snapshot minimo con lo que lee TyreAnalyzer.update()."""
+    """Snapshot minimo con lo que lee TyreAnalyzer.update().
 
-    def __init__(self, edges=62.0, carc=(83, 103, 56, 70), bulk=80.0, press=200.0, speed=0.0):
+    `lat` = mLocalAcceleration[0]: >0 CARGA LAS DERECHAS (signo fijado por temperatura,
+    corr -0.895 con el calor izq-der; NO por susp_travel, que va al reves).
+    `tl`/`tr` = bordes por rueda en marco ABSOLUTO del auto (mTyreTempLeft/Right); por
+    default ambos en `edges`, o sea spread 0."""
+
+    def __init__(self, edges=62.0, carc=(83, 103, 56, 70), bulk=80.0, press=200.0,
+                 speed=0.0, lat=0.0, tl=None, tr=None):
         self.mCarName = b"Test Car"
         self.mTyreCompound = [b"Liso"] * 4
         self.mSpeed = speed
+        self.mLocalAcceleration = [lat, 0.0, 0.0]
         self.mAirPressure = [press] * 4
         self.mTyreCarcassTemp = [t + 273.15 for t in carc]     # KELVIN, como la SHM
         self.mTyreLayerTemp = [t + 273.15 for t in (49, 53, 43, 47)]
         self.mTyreTemp = [bulk] * 4                            # bulk ya viene en Celsius
         self.mBrakeTempCelsius = [189, 195, 77, 77]
-        self.mTyreTempLeft = [edges] * 4
-        self.mTyreTempRight = [edges] * 4
+        self.mTyreTempLeft = list(tl) if tl else [edges] * 4
+        self.mTyreTempRight = list(tr) if tr else [edges] * 4
 
 
 def _run(snap, n=40):
@@ -48,6 +58,26 @@ def _run(snap, n=40):
     for _ in range(n):
         a.update(snap)
     return a.payload()
+
+
+# Caso Goiania medido con el Audi R8 GT3: FL +2 / FR +9 / RL +1 / RR +8.
+# La pista CARGA LAS IZQUIERDAS (carcasa 106/114 C contra 87/96 en las derechas), asi que
+# las de veredicto son la FL y la RL -- las de spread BAJO. El rolido se come el camber
+# de la rueda de afuera y le calienta el hombro exterior; la de adentro conserva su
+# camber y muestra un spread alto que no mide nada. Ver nota 6b de ams2_tyres.
+# INNER_IS_RIGHT = (True, False, True, False) -> en FL/RL el interior es mTyreTempRight.
+GOIANIA_TL = [60.0, 69.0, 60.0, 68.0]    # mTyreTempLeft por rueda
+GOIANIA_TR = [62.0, 60.0, 61.0, 60.0]    # mTyreTempRight por rueda
+
+
+def _tanda(a=None, secs=300.0, t0=0.0, base_dir=NOWHERE, **kw):
+    """Rueda `secs` s a 50 km/h con reloj inyectado. Devuelve (analizador, reloj)."""
+    a = a or ams2_tyres.TyreAnalyzer(base_dir=base_dir)
+    t = t0
+    while t < t0 + secs:
+        t += 0.5
+        a.update(Snap(speed=50.0, **kw), now=t)
+    return a, t
 
 
 def test_centinela_de_bordes():
@@ -60,9 +90,15 @@ def test_centinela_de_bordes():
     _ok("bordes en 0 -> sin t_in/t_out", c["t_in"] is None and c["t_out"] is None)
     _ok("bordes en 0 -> sin spread", c["spread"] is None)
     _ok("bordes en 0 -> SIN veredicto de camber", c["camber"] is None, repr(c["camber"]))
-    # pero un spread de 0 con bordes REALES si es medicion: ahi si se opina
-    c2 = _run(Snap(edges=62.0))["corners"][0]
-    _ok("bordes reales -> si hay veredicto", c2["camber"] is not None, repr(c2["camber"]))
+    # pero con bordes REALES y una tanda rodada de verdad si se opina
+    a, _ = _tanda(lat=0.0, tl=GOIANIA_TL, tr=GOIANIA_TR, secs=300.0)
+    # sin G lateral no hay curva cargada acumulada -> tampoco hay derecho a opinar
+    p = a.payload()
+    _ok("rodando en recta -> sin veredicto (nunca cargo)",
+        all(c["camber"] is None for c in p["corners"]),
+        [c["camber"] for c in p["corners"]])
+    _ok("...pero el spread SI se muestra", p["corners"][1]["spread"] == 9.0,
+        repr(p["corners"][1]["spread"]))
 
 
 def test_rel_es_suma_cero():
@@ -165,6 +201,143 @@ def test_salto_de_sesion_no_alarma():
         [c["tdev"] for c in p2["corners"]])
 
 
+def test_camber_solo_en_la_rueda_cargada():
+    """LA regresion reportada: "siempre dice poco camber negativo, incluso con el maximo
+    camber negativo posible". Dos defectos encadenados, los dos medidos contra el corpus:
+
+    1. El veredicto se emitia en las CUATRO ruedas, pero solo la que la pista carga mide
+       camber (la asimetria izq-der del spread correlaciona 0.85 con la direccionalidad).
+    2. La ventana [3,12] estaba centrada en la distribucion de la rueda DESCARGADA
+       (mediana +8.2) y no en la CARGADA (+5.2), asi que acusaba al 27% de los ejes
+       cargados del corpus. Ahi salia el "poco camber" perpetuo.
+
+    Caso Goiania: cargan las izquierdas, FL +2 y RL +1. Esos numeros son NORMALES para
+    una rueda cargada; con la ventana vieja los dos gritaban."""
+    # accel_x < 0 => cargan las IZQUIERDAS (signo fijado por temperatura, no por
+    # suspension: mas susp_travel es rueda extendida = descargada)
+    a, _ = _tanda(lat=-8.0, tl=GOIANIA_TL, tr=GOIANIA_TR, secs=300.0)
+    p = a.payload()
+    cs = p["corners"]
+    _ok("pista direccional detectada (carga la izquierda)", p["dir"] == "I", repr(p["dir"]))
+    _ok("FR descargada -> sin veredicto de camber",
+        cs[1]["cstat"] == "idle" and cs[1]["camber"] == "sin carga",
+        f'{cs[1]["cstat"]} / {cs[1]["camber"]}')
+    _ok("RR descargada -> sin veredicto de camber",
+        cs[3]["cstat"] == "idle", repr(cs[3]["cstat"]))
+    _ok("FR descargada -> tampoco se pinta banda verde", cs[1]["cband"] is None)
+    # el numero se sigue mostrando: se deja de OPINAR, no de medir
+    _ok("FR igual muestra su spread", cs[1]["spread"] == 9.0, repr(cs[1]["spread"]))
+    _ok("FL cargada (+2) -> SI opina y esta ok",
+        cs[0]["cstat"] == "ok" and cs[0]["camber"] == "camber ok",
+        f'{cs[0]["cstat"]} / {cs[0]["camber"]}')
+    _ok("RL cargada (+1) -> SI opina y esta ok", cs[2]["cstat"] == "ok",
+        f'{cs[2]["cstat"]} / {cs[2]["camber"]}')
+    # el falso positivo historico: +2 y +1 caian bajo el LO=3 de la ventana vieja
+    _ok("ninguna rueda dice 'poco camber neg.'",
+        not any("poco" in (c["camber"] or "") for c in cs),
+        [c["camber"] for c in cs])
+
+
+def test_pista_neutra_opinan_las_cuatro():
+    """Sin lado dominante (Spa, Kansai, Hungaroring miden |indice| 0.00-0.14) las
+    cuatro ruedas trabajan parecido y las cuatro tienen derecho a veredicto."""
+    a = ams2_tyres.TyreAnalyzer(base_dir=NOWHERE)
+    t = 0.0
+    for i in range(600):            # alterna izquierda/derecha -> indice ~0
+        t += 0.5
+        a.update(Snap(speed=50.0, lat=8.0 if i % 2 else -8.0,
+                      tl=GOIANIA_TL, tr=GOIANIA_TR), now=t)
+    p = a.payload()
+    _ok("pista neutra", p["dir"] == "=", repr(p["dir"]))
+    _ok("las 4 opinan", all(c["cstat"] in ("ok", "warn") for c in p["corners"]),
+        [c["cstat"] for c in p["corners"]])
+    _ok("las 4 con banda", all(c["cband"] is not None for c in p["corners"]))
+
+
+def test_referencia_propia_gana_al_umbral_absoluto():
+    """El nucleo auto-referencial: cerrada una tanda, la siguiente se juzga contra ELLA
+    y no contra una ventana absoluta que el corpus no autoriza a afirmar. Ruido
+    inter-tanda medido del mismo auto: p90 3.6 C -> CAMBER_DELTA=4 separa el cambio de
+    setup del ruido de pista."""
+    tmp = tempfile.mkdtemp(prefix="ams2cam_")
+    try:
+        # --- tanda 1: pista que carga las IZQUIERDAS (lat > 0), spread +9 en la FL.
+        # INNER_IS_RIGHT[FL] = True -> el interior de la FL es mTyreTempRight.
+        tl = [60.0, 69.0, 60.0, 68.0]
+        tr = [69.0, 60.0, 68.0, 60.0]      # FL int 69 - ext 60 = +9 · RL = +8
+        a, t = _tanda(lat=-8.0, tl=tl, tr=tr, secs=300.0, base_dir=tmp)
+        _ok("tanda 1: carga la izquierda", a.dir_side() == "I", a.dir_side())
+        _ok("tanda 1: sin referencia usa la ventana de respaldo",
+            a.payload()["corners"][0]["cband"] == [0.0, 10.0],
+            repr(a.payload()["corners"][0]["cband"]))
+        # --- rotar de sesion: las 4 carcasas saltan juntas -> cierra la tanda
+        for _ in range(6):
+            t += 0.5
+            a.update(Snap(speed=50.0, lat=-8.0, tl=tl, tr=tr, carc=(30, 30, 30, 30)), now=t)
+        guardado = json.load(open(os.path.join(tmp, "tyre_targets.json"), encoding="utf-8"))
+        base = guardado.get("_camber", {}).get("Test Car", {})
+        _ok("la tanda quedo persistida", abs(base.get("F", 0) - 9.0) < 0.5, repr(base))
+        # --- tanda 2 en un bridge NUEVO (reinicio): el camber se movio a +14
+        tl2 = [60.0, 74.0, 60.0, 73.0]
+        tr2 = [74.0, 60.0, 73.0, 60.0]     # spread +14
+        b, _ = _tanda(lat=-8.0, tl=tl2, tr=tr2, secs=300.0, base_dir=tmp)
+        c = b.payload()["corners"][0]
+        _ok("tanda 2: juzga contra SU referencia, no contra la ventana",
+            c["cband"] == [5.0, 13.0], repr(c["cband"]))
+        _ok("tanda 2: reporta el cambio contra la previa",
+            c["camber"] == "+5.0° vs previa", repr(c["camber"]))
+        _ok("tanda 2: +5 supera el ruido (4) -> avisa", c["cstat"] == "warn",
+            repr(c["cstat"]))
+        # un cambio DENTRO del ruido no debe gritar
+        tl3 = [60.0, 71.0, 60.0, 70.0]
+        tr3 = [71.0, 60.0, 70.0, 60.0]     # spread +11 -> delta +2, ruido
+        d, _ = _tanda(lat=-8.0, tl=tl3, tr=tr3, secs=300.0, base_dir=tmp)
+        c3 = d.payload()["corners"][0]
+        _ok("un delta de +2 es ruido -> no avisa", c3["cstat"] == "ok",
+            f'{c3["cstat"]} / {c3["camber"]}')
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_no_guarda_sin_derecho_a_opinar():
+    """Una referencia envenenada es peor que ninguna: si la tanda no acumulo curva
+    cargada (out-lap, vuelta de formacion, entrada a boxes) no se guarda nada."""
+    tmp = tempfile.mkdtemp(prefix="ams2cam_")
+    try:
+        a, t = _tanda(lat=0.0, tl=GOIANIA_TL, tr=GOIANIA_TR, secs=300.0, base_dir=tmp)
+        for _ in range(6):                  # salto de sesion sin haber curveado nunca
+            t += 0.5
+            a.update(Snap(speed=50.0, tl=GOIANIA_TL, tr=GOIANIA_TR,
+                          carc=(30, 30, 30, 30)), now=t)
+        _ok("sin curva cargada no persiste referencia",
+            not os.path.exists(os.path.join(tmp, "tyre_targets.json")))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_referencia_corrupta_no_envenena():
+    """El archivo es editable a mano y sobrevive a versiones viejas: un valor basura
+    no debe mover la banda verde a un lugar absurdo ni meter NaN en el broadcast."""
+    import json as _json
+    tmp = tempfile.mkdtemp(prefix="ams2cam_")
+    try:
+        with open(os.path.join(tmp, "tyre_targets.json"), "w", encoding="utf-8") as f:
+            _json.dump({"Test Car": 1.8,
+                        "_camber": {"Test Car": {"F": "NaN", "R": 9999.0}}}, f)
+        tl = [60.0, 69.0, 60.0, 68.0]
+        tr = [69.0, 60.0, 68.0, 60.0]
+        a, _ = _tanda(lat=-8.0, tl=tl, tr=tr, secs=300.0, base_dir=tmp)
+        p = a.payload()
+        _ok("objetivo de presion intacto pese a la clave reservada", p["target"] == 1.8,
+            repr(p["target"]))
+        _ok("referencia corrupta ignorada -> cae a la ventana de respaldo",
+            p["corners"][0]["cband"] == [0.0, 10.0], repr(p["corners"][0]["cband"]))
+        _json.dumps(p, allow_nan=False)     # revienta si se colo un NaN
+        _ok("payload sigue siendo JSON estricto", True)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     print("== ams2_tyres.TyreAnalyzer ==")
     test_centinela_de_bordes()
@@ -173,5 +346,10 @@ if __name__ == "__main__":
     test_campo_faltante()
     test_no_opina_detenido()
     test_salto_de_sesion_no_alarma()
+    test_camber_solo_en_la_rueda_cargada()
+    test_pista_neutra_opinan_las_cuatro()
+    test_referencia_propia_gana_al_umbral_absoluto()
+    test_no_guarda_sin_derecho_a_opinar()
+    test_referencia_corrupta_no_envenena()
     print(f"\n{'todo verde' if not _fails else 'FALLAS: ' + ', '.join(_fails)}")
     sys.exit(1 if _fails else 0)

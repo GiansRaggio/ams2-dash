@@ -336,7 +336,10 @@
   .crel{font-size:clamp(10px,1.3vh,12px);color:rgba(238,243,250,.75);
         font-variant-numeric:tabular-nums;text-shadow:0 1px 2px rgba(0,0,0,.55)}
 
-  /* balanza de spread (t_in - t_out), escala fija -8...+20°, banda OK +3...+12 */
+  /* balanza de spread (t_in - t_out), escala fija -8...+20°. La banda verde YA NO es
+     fija: la posiciona el JS con lo que manda el bridge en cband, porque el criterio
+     cambia (referencia propia del auto vs ventana de respaldo) y una franja pintada
+     donde no está el criterio miente. Sin cband no se pinta nada. */
   .tedge{flex:1;min-height:0;display:flex;align-items:center;gap:.8vw}
   .mirror .tedge{flex-direction:row-reverse}
   .tedge .et{flex:none;text-align:center;font-size:clamp(12px,1.8vh,17px);
@@ -345,13 +348,15 @@
                letter-spacing:.15em;color:var(--dim)}
   .eaxis{flex:1;height:max(10px,1.6vh);position:relative;background:#ffffff0a;border-radius:2px}
   .mirror .eaxis{transform:scaleX(-1)}                    /* interior apunta al spine */
-  .eaxis .eband{position:absolute;top:0;bottom:0;left:39.3%;width:32.1%;
-                background:rgba(43,240,122,.18)}
+  .eaxis .eband{position:absolute;top:0;bottom:0;background:rgba(43,240,122,.18)}
   .eaxis .ezero{position:absolute;top:0;bottom:0;left:28.6%;border-left:1px solid #ffffff30}
   .eaxis .emark{position:absolute;top:50%;width:max(8px,1.4vh);height:max(8px,1.4vh);
                 transform:translate(-50%,-50%) rotate(45deg);background:var(--green);
                 }
   .eaxis .emark.warn{background:var(--amber)}
+  /* rueda del lado que la pista NO carga: el número es real pero no mide camber.
+     Rombo hueco y apagado -> se lee como "acá no hay veredicto", no como "está ok". */
+  .eaxis .emark.idle{background:transparent;border:1px solid rgba(238,243,250,.45)}
   .everdict{flex:none;text-align:center;font-size:clamp(10px,1.5vh,14px);color:var(--dim);
             font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .tband.carc .cpk{font-size:clamp(9px,1.2vh,12px);letter-spacing:.08em;
@@ -985,7 +990,11 @@ function showPage(n){
 const YC = ["FL","FR","RL","RR"];
 /* ---- GOMAS v3.1: las DOS únicas escalas del frontend ----
    Los umbrales (pstat/tdev/camber/warm) los resuelve el bridge; acá sólo se posiciona.
-   spread : -8...+20 °C, banda OK +3...+12 (el .eband del CSS: left 39.3%, width 32.1%).
+   spread : -8...+20 °C. La banda OK ya NO es fija: llega en cband y la posiciona
+            renderTyres. Con tanda previa del mismo auto es su referencia ±4 °C; sin
+            ella, la ventana de respaldo +2...+13; en la rueda del lado que la pista
+            NO carga no hay banda ni veredicto (su spread no mide camber — ver 6b en
+            ams2_tyres.py). El rombo hueco (.idle) es justo ese caso.
    presión: ±0.10 bar en el riel, banda ok ±0.03 (el .pband del CSS: top 35%, alto 30%).
    La escala ABSOLUTA de carcasa (40-115, ventana 70-100) MURIÓ: contra el corpus grabado
    reales salía saturada siempre (medianas de carcasa 52-143 según el auto — no hay
@@ -1113,15 +1122,25 @@ function renderTyres(y){
     const pkTxt = (c.peak != null && c.carcass != null && c.peak > c.carcass + 2)
                 ? `<span class="cpk">pico ${c.peak}°</span>` : "";
 
-    /* LA BALANZA: la señal es la diferencia int−ext, no los absolutos */
-    const camWarn = (c.camber && c.camber !== "ok") ? "warn" : "";
+    /* LA BALANZA: la señal es la diferencia int−ext, no los absolutos.
+       cstat lo decide el bridge: "warn" fuera de criterio · "ok" dentro · "idle" hay
+       número pero NO es medición de camber (la pista carga el otro lado, o la tanda
+       todavía no acumuló curva cargada). El texto ya viene listo desde el bridge. */
+    const camWarn = c.cstat === "warn" ? "warn" : "";
     const eMark = c.spread == null ? ""
-                : `<i class="emark ${camWarn}" style="left:${sprPos(c.spread).toFixed(1)}%"></i>`;
+                : `<i class="emark ${c.cstat === "idle" ? "idle" : camWarn}" `
+                + `style="left:${sprPos(c.spread).toFixed(1)}%"></i>`;
+    /* la banda verde se pinta SÓLO donde está el criterio de verdad; sin cband el
+       instrumento no está juzgando nada y no debe insinuar una zona buena */
+    const bLo = c.cband ? sprPos(c.cband[0]) : 0, bHi = c.cband ? sprPos(c.cband[1]) : 0;
+    const eBand = c.cband
+                ? `<i class="eband" style="left:${bLo.toFixed(1)}%;width:${(bHi-bLo).toFixed(1)}%"></i>`
+                : "";
     /* el veredicto absorbe el freno (murio .tfoot); se arma por partes para no dejar
        separadores colgando cuando falta alguna */
     const vBits = [];
     if(c.spread != null) vBits.push("Δ" + sgn(c.spread, 1) + "°");
-    if(c.camber) vBits.push(c.camber === "ok" ? "camber ok" : c.camber);
+    if(c.camber) vBits.push(c.camber);
     if(c.brake != null) vBits.push("freno " + c.brake + "°");
     /* fuera de pista los bordes se van a 0 y la lectura queda CONGELADA en lo último
        medido rodando. Se dice, para no presentarlo como medición de ahora. */
@@ -1156,7 +1175,7 @@ function renderTyres(y){
     +       `${relTxt}</div></div></div>`
     + `<div class="tedge">`
     +   `<span class="et"><i>EXT</i>${deg(c.t_out)}</span>`
-    +   `<div class="eaxis"><i class="eband"></i><i class="ezero"></i>${eMark}</div>`
+    +   `<div class="eaxis">${eBand}<i class="ezero"></i>${eMark}</div>`
     +   `<span class="et"><i>INT</i>${deg(c.t_in)}</span></div>`
     + `<div class="everdict ${camWarn}">${verdict}</div>`;
   }

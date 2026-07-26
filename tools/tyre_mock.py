@@ -106,6 +106,13 @@ _pin_t0 = 0.0
 #   warm       bool (default True; el bridge real lo decide contra el plateau propio)
 #   surf_alive bool (default True; False = modelo de banda muerto del juego ->
 #              payload() emite SUP/BULK/EXT/INT/camber en null)
+#   dir_izq /  segundos rodados cargando cada lado (default 120/120 = pista neutra con
+#   dir_der    curva de sobra -> las 4 ruedas opinan de camber). Descompensalos para
+#              simular un circuito direccional: el lado descargado pasa a "sin carga",
+#              rombo hueco y sin banda verde, porque su spread NO mide camber.
+#   cam_prev   {"F": C, "R": C} spread del eje cargado con que cerro la tanda ANTERIOR
+#              de este auto (default {}: sin referencia -> ventana de respaldo +2..+13).
+#              Con referencia el veredicto pasa a ser el delta contra ella.
 #
 # Ojo con la escala de los canales LATERALES (t_in / t_out): viven en la escala del
 # BULK, no en la de la carcasa, porque mTyreTempCenter es byte-identico a mTyreTemp.
@@ -186,6 +193,31 @@ def _desviado(t):
                 wear=[0.52, 0.31, 0.28, 0.27],
                 eol=[11.5, 19.0, 21.0, 22.0],
                 stint=14)
+
+
+def _direccional(t):
+    """Goiania: 100% curvas a izquierda, o sea CARGAN LAS DERECHAS. Reproduce los
+    numeros medidos con el Audi R8 GT3 (FL +2 / FR +9 / RL +1 / RR +8) que eran el
+    falso positivo: las izquierdas no trabajan, sus bordes se igualan, y el umbral
+    absoluto por rueda las acusaba de "poco camber neg." sin arreglo posible.
+    Lo que hay que ver en pantalla: FL/RL con rombo HUECO, sin banda verde y el texto
+    "sin carga"; FR/RR con rombo lleno, banda y veredicto. Ademas lleva cam_prev, asi
+    que las cargadas comparan contra su tanda anterior (+9 -> "0.0 vs previa")."""
+    carc = [99, 81, 108, 91]         # medido en la carrera de Goiania
+    bulk = _below(carc, 28)
+    return dict(car="Audi R8 LMS GT3", compound="Slick Medium", live=True,
+                press=[TARGET_BAR] * 4,
+                # marco ABSOLUTO ya resuelto a interior/exterior por el analizador:
+                # spread +2 / +9 / +1 / +8
+                t_in=[72, 71, 81, 70], t_out=[70, 62, 80, 62],
+                layer=_below(bulk, 3), bulk=bulk,
+                carcass=carc,
+                brake=[430, 425, 335, 330],
+                wear=[0.19, 0.22, 0.16, 0.18],
+                eol=[29.0, 26.0, 35.0, 33.0],
+                stint=4,
+                dir_izq=4.0, dir_der=210.0,      # indice -0.96 -> carga la derecha
+                cam_prev={"F": 9.0, "R": 8.0})
 
 
 def _evento_rl(t):
@@ -290,7 +322,9 @@ def _box_frio(t):
     no hay energia entrando. Las 3 bandas deben salir azules y practicamente iguales."""
     return dict(car="Porsche 911 GT3 R", compound="Slick Soft", live=False,
                 press=[TARGET_BAR - 0.22] * 4,
-                t_in=[26, 26, 25, 25], t_out=[24, 24, 23, 23],   # spread 2 -> poco camber
+                # spread 2, pero con runtime=0 no hay derecho a opinar de camber:
+                # el rombo sale hueco y sin banda. Correcto -- esta goma no ha girado.
+                t_in=[26, 26, 25, 25], t_out=[24, 24, 23, 23],
                 layer=[24, 24, 23, 23], bulk=[26, 26, 25, 25],
                 carcass=[28, 28, 27, 27],
                 brake=[40, 40, 38, 38],
@@ -348,6 +382,7 @@ SCENARIOS = [
     ("FRIO_OUTLAP", _frio_outlap),
     ("CALIENTE_OK", _caliente_ok),
     ("DESVIADO", _desviado),
+    ("DIRECCIONAL", _direccional),
     ("GRADIENTE_INVERTIDO", _gradiente_invertido),
     ("EVENTO_RL", _evento_rl),
     ("CANAL_MUERTO", _canal_muerto),
@@ -460,6 +495,13 @@ def tyres_payload(scn, t):
         _an._warm = bool(d.get("warm", True))
     if hasattr(_an, "_surf_alive"):
         _an._surf_alive = bool(d.get("surf_alive", True))
+    # Direccionalidad de la pista y referencia de camber: por default pista neutra con
+    # curva cargada de sobra, que es el caso donde las 4 ruedas tienen veredicto.
+    if hasattr(_an, "_t_izq"):
+        _an._t_izq = float(d.get("dir_izq", 120.0))
+        _an._t_der = float(d.get("dir_der", 120.0))
+    if hasattr(_an, "_cam_prev"):
+        _an._cam_prev = dict(d.get("cam_prev", {}))
 
     eol = d.get("eol", [None] * 4)
     stint = d.get("stint", 0)

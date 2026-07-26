@@ -62,7 +62,7 @@ class Shim:
     bar*100, layer/carcass en Kelvin) para pasar por el mismo decode del bridge."""
     __slots__ = ("mCarName", "mTyreCompound", "mSpeed", "mAirPressure", "mTyreTemp",
                  "mTyreLayerTemp", "mTyreCarcassTemp", "mBrakeTempCelsius",
-                 "mTyreTempLeft", "mTyreTempRight")
+                 "mTyreTempLeft", "mTyreTempRight", "mLocalAcceleration")
 
 
 def f(row, key):
@@ -86,6 +86,12 @@ def build_shim(row, car):
     # CRUDOS (marco absoluto del auto); el analizador aplica INNER_IS_RIGHT el solo.
     d.mTyreTempLeft = [f(row, f"tyre_t_in_{c}") for c in C]
     d.mTyreTempRight = [f(row, f"tyre_t_out_{c}") for c in C]
+    # G lateral: de aca sale que lado CARGA la pista, y de ahi que ruedas tienen derecho
+    # a un veredicto de camber. SIN ESTE CAMPO el replay corre con dir="=" y sin tiempo
+    # de curva acumulado, o sea NUNCA ejercita el camino nuevo y queda verde por vacio
+    # -- el mismo modo de falla que dejo pasar la v3 (un harness que no reproduce la
+    # realidad). Por eso VERIFICA de abajo exige que el camber haya opinado de verdad.
+    d.mLocalAcceleration = [f(row, "accel_x"), 0.0, 0.0]
     return d
 
 
@@ -107,6 +113,9 @@ def replay(sess_dir, name, events_out=None):
     dead_any = False
     dead_final = False
     ep = [None] * 4        # episodio tdev abierto por esquina
+    cam_s = 0.0            # s con AL MENOS una rueda opinando de camber
+    cam_idle = 0.0         # s con ruedas medidas pero ninguna con derecho a opinar
+    cam_dir = "="          # ultimo lado cargado detectado
 
     for lp in laps:
         with gzip.open(os.path.join(sess_dir, lp), "rt", newline="") as fh:
@@ -133,6 +142,16 @@ def replay(sess_dir, name, events_out=None):
                 if p["surf_dead"]:
                     dead_any = True
                 dead_final = p["surf_dead"]
+                # Cobertura del camino de camber. Sin esto el replay puede quedar verde
+                # sin haber ejercitado NADA (paso una vez: el shim no traia
+                # mLocalAcceleration, asi que no habia lado cargado y el veredicto se
+                # apagaba en las 58 sesiones, en silencio).
+                cam_dir = p.get("dir", "=")
+                st = [c.get("cstat") for c in p["corners"]]
+                if any(s in ("ok", "warn") for s in st):
+                    cam_s += 1.0
+                elif any(s == "idle" for s in st):
+                    cam_idle += 1.0
                 for i, cor in enumerate(p["corners"]):
                     if cor["rel"] is not None:
                         rel_min = min(rel_min, cor["rel"])
@@ -151,6 +170,7 @@ def replay(sess_dir, name, events_out=None):
         "name": name, "live_s": live_s, "warm_s": warm_s, "warm_at": warm_at,
         "fire": fire_s, "trend": trend_s, "rel": (rel_min, rel_max),
         "dead_any": dead_any, "dead_final": dead_final,
+        "cam_s": cam_s, "cam_idle": cam_idle, "cam_dir": cam_dir,
     }
 
 
@@ -172,15 +192,16 @@ def main():
         rows.append(r)
 
     print(f"{'sesion':56s} {'rodado':>7s} {'warm%':>6s} {'hot%/cold% por esquina':>30s}"
-          f" {'trend h/s/c%':>14s} {'rel rango':>10s} {'surf':>5s}")
+          f" {'trend h/s/c%':>14s} {'rel rango':>10s} {'surf':>5s} {'camber':>11s}")
     for r in rows:
         ls = r["live_s"]
         fire = " ".join(f"{100*f_['hot']/ls:.0f}/{100*f_['cold']/ls:.0f}" for f_ in r["fire"])
         tr = "/".join(f"{100*r['trend'].get(k,0)/ls:.0f}" for k in ("heat", "stable", "cool"))
         rel = f"{r['rel'][0]:+.0f}..{r['rel'][1]:+.0f}"
         surf = "DEAD" if r["dead_final"] else ("flip" if r["dead_any"] else "ok")
+        cam = f"{r['cam_dir']} {100*r['cam_s']/ls:3.0f}%"
         print(f"{r['name'][:56]:56s} {ls/60:6.1f}m {100*r['warm_s']/ls:5.0f}% {fire:>30s}"
-              f" {tr:>14s} {rel:>10s} {surf:>5s}")
+              f" {tr:>14s} {rel:>10s} {surf:>5s} {cam:>11s}")
 
         # ---- VERIFICA (duras: cualquiera en falso = exit 1) ----
         expect_dead = r["name"] in DEAD_SURF
@@ -199,7 +220,22 @@ def main():
         for e in events:
             print(f"  {e[0][:48]:48s} {e[1]} {e[2]:4s} t={e[3]:7.1f}s dur={e[4]:5.1f}s carc={e[5]}")
 
-    print(f"\n{len(rows)} sesiones reproducidas.")
+    # ---- COBERTURA (no por sesion sino del conjunto) ----
+    # El veredicto de camber se apaga a proposito en varios casos (superficie muerta,
+    # rueda descargada, tanda corta). Lo que NO puede pasar es que se apague en TODAS:
+    # eso significa que el camino esta roto o que el harness dejo de alimentarlo, y es
+    # el modo de falla que ya dejo pasar un rediseno entero sin que nadie lo notara.
+    vivas = [r for r in rows if not r["dead_final"]]
+    con_cam = [r for r in vivas if r["cam_s"] > 0]
+    if vivas and len(con_cam) < len(vivas) // 2:
+        fails.append(f"camber apagado en {len(vivas) - len(con_cam)}/{len(vivas)} sesiones "
+                     "vivas: el canal de G lateral no esta llegando o el gate esta roto")
+    direcc = [r for r in vivas if r["cam_dir"] != "="]
+    if vivas and not direcc:
+        fails.append("ninguna pista salio direccional: el indice de carga no se acumula")
+
+    print(f"\n{len(rows)} sesiones reproducidas · camber opinando en "
+          f"{len(con_cam)}/{len(vivas)} vivas · {len(direcc)} pistas direccionales.")
     if fails:
         print("FALLAS:")
         for x in fails:

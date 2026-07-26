@@ -84,6 +84,33 @@ CANALES: todo lo de aca se MIDIO en vivo, no se supuso. Dos sondas: tools/tyre_p
    cuadra si L/R son absolutos. De ahi el mapeo INNER_IS_RIGHT de abajo. El spread
    interior-exterior SI es medicion real de distribucion lateral -> camber.
 
+6b. ...pero SOLO en la rueda que la pista CARGA, y la cargada es la de spread BAJO.
+   Medido sobre las 69 sesiones con vueltas del corpus: la asimetria izquierda-derecha
+   del spread correlaciona 0.85 con la DIRECCIONALIDAD de la pista, no con el camber.
+   Atribuyendo la carga por TEMPERATURA (la goma que trabaja es la que se calienta:
+   corr -0.895 entre el indice de accel_x y el calor izq-der), la rueda cargada tiene
+   spread mediano +5.0 y la descargada +8.2 -- una diferencia de -3.0 C.
+   La fisica cierra: la goma de AFUERA es la cargada, el rolido de la carroceria se come
+   su camber negativo estatico y le calienta el hombro EXTERIOR, asi que su spread baja.
+   Esa es LA medicion de camber que sirve ("tengo suficiente camber estatico para
+   sobrevivir al rolido?"). La de adentro conserva su camber, muestra un spread alto y
+   no significa nada.
+   Goiania con el Audi R8 GT3 (cargan las izquierdas, 106/114 C contra 87/96): FL +2 /
+   FR +9 / RL +1 / RR +8. Las cargadas son las de +2 y +1. Una ventana absoluta centrada
+   en la distribucion de la DESCARGADA --como la [3,12] original-- acusa "poco camber
+   neg." en el 27% de los ejes cargados del corpus, para siempre y sin arreglo posible
+   por mas camber que le meta el piloto. Ese era el bug reportado.
+   Otras dos cosas medidas al mismo tiempo, que descartan alternativas plausibles:
+      -> normalizar el spread por el nivel termico del borde NO ayuda, ni entre autos
+         (CV 0.69 -> 0.67) ni dentro del mismo auto (desvio relativo p50 14.6% -> 16.8%,
+         PEOR). La dispersion es de construccion y direccionalidad, no de unidades.
+      -> segmentar por G lateral instantaneo tampoco: el modelo de bordes de AMS2 esta
+         tan filtrado que la mediana en curva cargada, en recta y descargada difiere
+         menos de 0.5 C. Lo que sirve es el indice ACUMULADO de la tanda, no el gate
+         instantaneo. Como efecto util, el valor congelado en boxes representa bien la
+         tanda entera.
+   Ver LAT_LOAD / DIR_NEUTRAL / CAMBER_* abajo.
+
 7. mTyreGrip NO se usa: se midio instantaneo (corr -0.725 con deslizamiento, -0.769 con
    G lateral; 0.457 en recta vs 0.104 en curva). Es margen sin usar EN ESTE INSTANTE,
    no estado de la goma -> parpadearia con la exigencia sin informar nada.
@@ -134,12 +161,38 @@ SURF_RANGE_MIN = 3.0     # C: rango minimo de bulk en la ventana para considerar
 SURF_OFFSET = 45.0       # C: carcasa-bulk mayor que esto + rango plano = muerto
 SURF_BUCKET_S = 60.0     # s por balde; la ventana efectiva de rango es 60-120 s
 
-CAMBER_OK_LO = 3.0       # spread interior-exterior (C) sano para lisos
-CAMBER_OK_HI = 12.0
+# --- camber: la senal SOLO existe en la rueda que la pista CARGA (ver nota 6b) ---
+# accel_x > 0 => cargan las DERECHAS. Signo fijado por temperatura (corr -0.895), NO
+# por suspension: mas mSuspensionTravel es rueda EXTENDIDA, o sea descargada.
+LAT_LOAD = 6.0            # m/s2 de G lateral para contar la curva como cargada
+DIR_NEUTRAL = 0.15        # |indice| bajo esto: la pista no carga un lado (Spa, Kansai,
+                          # Hungaroring miden 0.00-0.14; Goiania 1.00, Cascavel 0.65)
+CAMBER_MIN_LOAD_S = 20.0  # s acumulados de curva cargada antes de opinar (el p05 del
+                          # corpus por sesion es 55 s: una tanda normal lo cumple sola)
+# Referencia auto-referencial: el spread del eje cargado de la tanda ANTERIOR de ESTE
+# auto. Ruido inter-tanda medido (mismo auto, excluyendo las 4 sesiones con superficie
+# muerta): p50 1.0, p90 3.6, p95 4.5 C -> 4.0 separa cambio real de ruido.
+CAMBER_DELTA = 4.0
+# Ventana ABSOLUTA de respaldo, y solo mientras el auto no tenga tanda previa. Sale de
+# la distribucion del eje CARGADO en sesiones vivas: p05 -0.2, p10 +0.5, mediana +5.2,
+# p90 +9.5, p95 +10.0 (n=130 ejes). Con [0,10] acusa 6% por abajo y 4% por arriba.
+# LA VENTANA VIEJA ERA EL BUG: [3,12] acusa el 27% de los ejes CARGADOS del corpus de
+# "poco camber neg.", porque estaba centrada en la distribucion de la rueda DESCARGADA
+# (+8.2 de mediana) en vez de la cargada (+5.2). De ahi que el veredicto saliera igual
+# con el camber al maximo. Ademas ya no existe un veredicto de "poco": el corpus no
+# autoriza a decirle a este piloto que le falta camber. Solo se opina en los extremos --
+# spread negativo (el hombro exterior mas caliente que el interior) o sobre +10.
+# Igual la reemplaza la referencia propia apenas existe una.
+CAMBER_OK_LO = 0.0
+CAMBER_OK_HI = 10.0
 
 DEFAULT_TARGET_BAR = 1.75   # punto de partida GT3/GT4 lisos; el piloto lo ajusta
 PRESS_TOL = 0.03            # +-bar que se considera "en objetivo"
 TARGETS_FILE = "tyre_targets.json"
+# Clave RESERVADA dentro de tyre_targets.json para las referencias de camber. El resto
+# del archivo es {nombre de auto: bar}; ningun auto se llama asi, y target() sigue
+# leyendo su float sin enterarse. Evita un segundo archivo que mantener en sincronia.
+CAMBER_KEY = "_camber"
 
 
 def _s(buf):
@@ -177,6 +230,10 @@ class TyreAnalyzer:
         self._out_track = [None] * 4  # C, idem exterior
         self._jump = False            # las 4 carcasas saltaron juntas -> sesion/gomas nuevas
         self._prev_carc = [None] * 4  # lectura CRUDA anterior, para detectar ese salto
+        # --- direccionalidad de la pista (que lado carga) y referencia de camber ---
+        self._t_izq = 0.0             # s rodados cargando las ruedas IZQUIERDAS
+        self._t_der = 0.0             # s idem derechas
+        self._cam_prev = {}           # {"F": C, "R": C} del cierre de la tanda anterior
         self._runtime = 0.0           # s acumulados en marcha (>MIN_SPEED)
         self._last_now = None         # monotonic de la ultima ingesta (para dt)
         self._warm = False            # con histeresis (WARM_ENTER/WARM_EXIT)
@@ -231,6 +288,51 @@ class TyreAnalyzer:
             self._save_targets()
         return round(v, 2)
 
+    # ---------------- referencia de camber (persistida por auto) ----------------
+    def _load_camber(self):
+        """Spread de eje cargado con que cerro la tanda anterior de ESTE auto."""
+        base = self._targets.get(CAMBER_KEY)
+        if not isinstance(base, dict):
+            return {}
+        v = base.get(self._car)
+        if not isinstance(v, dict):
+            return {}
+        out = {}
+        for eje in ("F", "R"):
+            try:
+                x = float(v[eje])
+            except (KeyError, TypeError, ValueError):
+                continue
+            # Rango sano: un valor corrupto en el archivo no debe poder mover la banda
+            # verde a un lugar absurdo ni envenenar el payload con NaN.
+            if math.isfinite(x) and -30.0 <= x <= 60.0:
+                out[eje] = x
+        return out
+
+    def _save_camber(self):
+        """Cierra la tanda: el spread del eje cargado queda de referencia para la
+        proxima. Este es el nucleo auto-referencial. El veredicto util no es "tu camber
+        esta mal" --el corpus no autoriza esa afirmacion en la mayoria de los autos--
+        sino "lo moviste y esto cambio", que es justo el loop de setup del piloto.
+        Se llama al ROTAR de sesion/gomas (_jump) y al cambiar de auto."""
+        if not self._car:
+            return
+        ahora = self._camber_now()
+        if not ahora:
+            return                      # sin derecho a opinar no se guarda basura
+        base = self._targets.get(CAMBER_KEY)
+        if not isinstance(base, dict):
+            base = self._targets[CAMBER_KEY] = {}
+        prev = base.get(self._car)
+        if not isinstance(prev, dict):
+            prev = {}
+        # Solo se pisa el eje que SI se midio: si la pista cargo un lado y una rueda
+        # quedo sin bordes validos, el otro eje conserva su referencia vieja.
+        for eje, v in ahora.items():
+            prev[eje] = round(v, 1)
+        base[self._car] = prev
+        self._save_targets()
+
     def surf_alive(self):
         """El modelo termico de banda (bulk/layer/left/right) esta VIVO en ESTA sesion?
 
@@ -253,6 +355,9 @@ class TyreAnalyzer:
         self._bkt_t0 = 0.0
         self._bkt_cur = [[None, None] for _ in range(4)]
         self._bkt_prev = [[None, None] for _ in range(4)]
+        # La direccionalidad es de la PISTA: al cambiar de auto/sesion no aplica.
+        self._t_izq = self._t_der = 0.0
+        self._cam_prev = self._load_camber()
 
     # ---------------- ingesta ----------------
     def update(self, d, wear=None, now=None):
@@ -264,6 +369,7 @@ class TyreAnalyzer:
             return
         car = _s(d.mCarName)
         if car and car != self._car:        # cambio de auto -> las lecturas viejas no aplican
+            self._save_camber()             # cierra la tanda del auto que SALE (usa _car viejo)
             self._car = car
             self.reset()
         self._compound = _s(d.mTyreCompound[0])
@@ -301,12 +407,40 @@ class TyreAnalyzer:
         else:
             self._jump = False
         if self._jump:
+            # Rotar de sesion o calzar gomas cierra la tanda: lo medido hasta aca pasa a
+            # ser la referencia contra la que se compara la siguiente. Es lo que hace que
+            # el piloto vea "cambiaste el camber y el eje delantero se movio +2.8" al
+            # salir a la carrera despues de tocar el setup en la qualy.
+            self._save_camber()
+            self._cam_prev = self._load_camber()
+            self._t_izq = self._t_der = 0.0      # pista nueva -> direccionalidad nueva
             # re-sembrar: la norma vieja ya no describe nada. Sin esto la alarma
             # seguiria sonando los ~2.5 min que tarda la EMA lenta en alcanzar.
             self._slow = list(crudas)
             self._rel_slow = [None] * 4
             self._carcass = list(crudas)
         self._prev_carc = [v if math.isfinite(v) else None for v in crudas]
+
+        # Tiempo rodado cargando cada lado. accel_x > 0 => cargan las DERECHAS.
+        # El signo se fijo por TEMPERATURA, no por la suspension: corr(indice de accel_x,
+        # calor izquierdas-derechas) = -0.895 sobre 69 sesiones. La goma que trabaja es la
+        # que se calienta, y eso no depende de ninguna convencion que haya que adivinar.
+        # OJO -- aca hubo un error: la primera version dedujo el signo de mSuspensionTravel
+        # suponiendo "mas travel = mas comprimido = mas cargado", y es AL REVES
+        # (corr(calor izq-der, travel izq-der) = -0.872: mas travel = rueda EXTENDIDA, o
+        # sea descargada). Con esa suposicion el veredicto se apagaba justo en las ruedas
+        # que trabajan. Si algun dia hay que re-verificar esto, usa la temperatura.
+        lat = getattr(d, "mLocalAcceleration", None)
+        if self._live and lat is not None and dt > 0.0:
+            try:
+                ax = float(lat[0])
+            except (TypeError, ValueError, IndexError):
+                ax = _nan
+            if math.isfinite(ax):
+                if ax > LAT_LOAD:
+                    self._t_der += dt
+                elif ax < -LAT_LOAD:
+                    self._t_izq += dt
 
         for c in range(4):
             # Lecturas absolutas: validas tambien parado (reflejan enfriamiento). Cada
@@ -472,7 +606,8 @@ class TyreAnalyzer:
             # piloto viene a ver cuando por fin puede mirar el dash (en el box). Se
             # marca como congelado para que la UI no lo presente como lectura de ahora.
             frozen = self._edges_stale[c] and ti is not None
-            spread = (ti - to) if (ti is not None and to is not None) else None
+            spread = self._spread(c)
+            cam_txt, cam_st, cam_band = self._camber_hint(c, spread)
             corners.append({
                 "name": CORNERS[c],
                 "press": round(p, 2) if p is not None else None,
@@ -486,7 +621,14 @@ class TyreAnalyzer:
                 "t_surf": round(tsurf) if tsurf is not None else None,
                 "t_bulk": round(tbulk) if tbulk is not None else None,
                 "spread": round(spread, 1) if spread is not None else None,
-                "camber": self._camber_hint(spread),
+                # camber: texto para la linea de veredicto. cstat: como pintarlo
+                # (ok/warn/idle). cband: [lo,hi] contra lo que se esta juzgando -- con
+                # tanda previa es la referencia propia, sin ella la ventana de respaldo,
+                # y null cuando no hay derecho a opinar (no se pinta verde ninguno).
+                "camber": cam_txt,
+                "cstat": cam_st,
+                "cband": ([round(cam_band[0], 1), round(cam_band[1], 1)]
+                          if cam_band else None),
                 # de pista, no de ahora: la UI lo marca para no presentarlo como actual
                 "frozen": frozen,
                 # lo que la goma ALCANZO rodando (no decae al parar)
@@ -511,6 +653,9 @@ class TyreAnalyzer:
             "trend": self._trend(),
             "surf_dead": not self._surf_alive,
             "stint": self._int_or_none(stint),
+            # Que lado carga la pista ('I'/'D'/'='). Explica por que la mitad de los
+            # veredictos de camber se apagan en un circuito direccional.
+            "dir": self.dir_side(),
             "corners": corners,
             "axle": self._axle(),
         }
@@ -607,19 +752,87 @@ class TyreAnalyzer:
             return "ok"
         return "high" if d > 0 else "low"
 
-    @staticmethod
-    def _camber_hint(spread):
-        """Distribucion lateral interior-vs-exterior. Medicion real (a diferencia del
-        centro), asi que aca si se opina: mucho spread = exceso de camber negativo."""
-        if spread is None:
+    # ---------------- camber ----------------
+    def _spread(self, c):
+        """Distribucion lateral interior-vs-exterior (C). None si no hay medicion:
+        superficie muerta, o bordes en el centinela 0.0 de fuera de pista."""
+        if not self._surf_alive:
             return None
+        ti, to = self._t_in[c], self._t_out[c]
+        if ti is None or to is None or (ti == 0.0 and to == 0.0):
+            return None
+        return ti - to
+
+    def dir_side(self):
+        """Que lado CARGA esta pista: 'I' izquierdas, 'D' derechas, '=' sin dominante.
+
+        Publico porque es la razon por la que media parrilla de veredictos se apaga:
+        conviene poder inspeccionarlo desde afuera (tests y replay)."""
+        tot = self._t_izq + self._t_der
+        if tot <= 0.0:
+            return "="
+        idx = (self._t_izq - self._t_der) / tot
+        return "=" if abs(idx) < DIR_NEUTRAL else ("I" if idx > 0 else "D")
+
+    def _cargada(self, c):
+        """Trabaja esta esquina lo suficiente como para que su spread hable de camber?"""
+        lado = self.dir_side()
+        if lado == "=":
+            return True
+        return c in ((0, 2) if lado == "I" else (1, 3))
+
+    def _camber_ok(self):
+        """Hay derecho a opinar de camber en ESTA tanda? Sin superficie viva no hay
+        canal; sin tiempo rodado no hay goma en regimen; sin curva cargada acumulada
+        el indice direccional todavia no significa nada."""
+        return (self._surf_alive
+                and self._runtime >= MIN_NORM_S
+                and (self._t_izq + self._t_der) >= CAMBER_MIN_LOAD_S)
+
+    def _camber_now(self):
+        """Spread por eje medido en la rueda que la pista carga (media de ambas si la
+        pista no tiene lado dominante). {} si no hay derecho a opinar."""
+        if not self._camber_ok():
+            return {}
+        lado = self.dir_side()
+        out = {}
+        for eje, (izq, der) in (("F", (0, 1)), ("R", (2, 3))):
+            cs = (izq,) if lado == "I" else (der,) if lado == "D" else (izq, der)
+            vals = [s for s in (self._spread(c) for c in cs) if s is not None]
+            if vals:
+                out[eje] = sum(vals) / len(vals)
+        return out
+
+    def _camber_hint(self, c, spread):
+        """(texto, estado, banda) de la esquina c.
+
+        estado: None sin medicion · "idle" hay numero pero no es medicion de camber
+        (rueda descargada o tanda sin derecho a opinar) · "ok" · "warn".
+        banda: [lo, hi] en C contra lo que se esta juzgando, para que la UI pinte el
+        verde donde de verdad esta el criterio en vez de una franja fija que miente."""
+        if spread is None:
+            return None, None, None
+        if not self._cargada(c):
+            # La pista carga el otro lado. Esta goma no trabaja, sus bordes se igualan
+            # y su spread NO mide camber. Se muestra el numero, no se opina.
+            return "sin carga", "idle", None
+        if not self._camber_ok():
+            return None, "idle", None
+        prev = self._cam_prev.get("F" if c < 2 else "R")
+        if prev is not None:
+            # Auto-referencial: contra la propia tanda anterior de ESTE auto.
+            d = spread - prev
+            return (f"{'+' if d >= 0 else '-'}{abs(d):.1f}° vs previa",
+                    "warn" if abs(d) >= CAMBER_DELTA else "ok",
+                    [prev - CAMBER_DELTA, prev + CAMBER_DELTA])
+        # Ventana de respaldo. No existe veredicto de "poco camber": el corpus no
+        # autoriza esa afirmacion (ver CAMBER_OK_LO). Solo se opina en los extremos.
+        banda = [CAMBER_OK_LO, CAMBER_OK_HI]
         if spread > CAMBER_OK_HI:
-            return "mucho camber neg."
-        if spread < 0:
-            return "falta camber neg."
+            return "mucho camber neg.", "warn", banda
         if spread < CAMBER_OK_LO:
-            return "poco camber neg."
-        return "ok"
+            return "falta camber neg.", "warn", banda
+        return "camber ok", "ok", banda
 
     def _axle(self):
         """Sesgo termico delantero-vs-trasero en carcasa: dice que eje trabaja mas."""

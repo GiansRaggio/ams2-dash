@@ -265,3 +265,38 @@ Los canales se **midieron en pista** con `tools/tyre_probe.py` y después se
   necesita un centro real. Las tres zonas se muestran igual, y el spread
   interior-exterior sí se usa (esa sí es distribución lateral medida) para opinar del
   camber. Caveat de referencia: SimHub #632.
+- **El camber sólo se lee en la rueda que la pista CARGA, y ésa es la de spread BAJO.**
+  Sobre las 69 sesiones con vueltas del corpus, la asimetría izquierda-derecha del
+  spread correlaciona **0.85** con la direccionalidad del circuito, no con el camber.
+  Atribuyendo la carga por **temperatura** —la goma que trabaja es la que se calienta—
+  la rueda cargada tiene spread mediano **+5.0 °C** y la descargada **+8.2**.
+  La física cierra: la goma de afuera es la cargada, el rolido se come su camber
+  negativo estático y le calienta el hombro **exterior**, así que su spread baja. Ésa
+  es la medición de camber que sirve (*¿tengo suficiente camber estático para
+  sobrevivir al rolido?*). La de adentro conserva su camber, marca alto y no dice nada.
+  Goiania con el Audi R8 GT3 (cargan las izquierdas: carcasa 106/114 °C contra 87/96)
+  mide **FL +2 / FR +9 / RL +1 / RR +8** — las cargadas son las de +2 y +1.
+  **De ahí salía el bug reportado** (*"siempre dice poco camber negativo, incluso con
+  el máximo camber posible"*): la ventana absoluta original `[3,12]` estaba centrada en
+  la distribución de la rueda **descargada**, así que acusaba al **27 %** de los ejes
+  cargados del corpus, para siempre y sin arreglo posible por setup.
+  Ahora el dash acumula qué lado carga la pista con `mLocalAcceleration[0]` y la rueda
+  descargada muestra su número pero **no opina** (rombo hueco, sin banda verde).
+  ⚠️ El signo se fijó **por temperatura** (corr −0.895 entre el índice de `accel_x` y
+  el calor izq−der), **no** por `mSuspensionTravel`: más travel es rueda *extendida*, o
+  sea descargada (corr −0.872), y deducirlo al revés invierte el veredicto entero.
+  El veredicto de la rueda cargada es **auto-referencial igual que el térmico**: se
+  compara contra el spread con que cerró **la tanda anterior de ese mismo auto**
+  (persistido junto al objetivo de presión). Así el instrumento responde lo que el
+  piloto de verdad pregunta: *"moví el camber, ¿cambió algo?"*. Sin tanda previa cae a
+  una ventana de respaldo **+0…+10 °C**, sacada de la distribución del eje cargado
+  (p05 −0.2 · mediana +5.2 · p95 +10.0), que acusa 6 % por abajo y 4 % por arriba.
+  **Ya no existe un veredicto de "poco camber"**: el corpus no autoriza esa afirmación.
+  Sólo se opina en los extremos — spread negativo (hombro exterior más caliente que el
+  interior) o sobre +10.
+  Dos alternativas plausibles quedaron descartadas **con medición**: normalizar el
+  spread por el nivel térmico de la goma no ayuda ni entre autos (CV 0.69 → 0.67) ni
+  dentro del mismo auto (desvío relativo p50 14.6 % → 16.8 %, *peor*); y segmentar por
+  G lateral instantáneo tampoco, porque el modelo de bordes de AMS2 está tan filtrado
+  que la mediana en curva cargada, en recta y descargada difiere menos de 0.5 °C —
+  sirve el índice **acumulado** de la tanda, no un gate instantáneo.
