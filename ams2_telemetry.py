@@ -92,6 +92,18 @@ _CORNER = [
     ("tyre_rps",    lambda d, i: round(d.mTyreRPS[i], 2)),
     ("terrain",     lambda d, i: d.mTerrain[i]),                            # superficie bajo la rueda (codigo)
     ("carcass_t",   lambda d, i: round(d.mTyreCarcassTemp[i] - 273.15, 1)),  # Kelvin -> C (temp estructura, estable)
+    # MARGEN de agarre SIN USAR (0..1), no agarre disponible. Medido: corr -0.725 con
+    # deslizamiento y -0.769 con G lateral; 0.457 en recta contra 0.104 en curva -> BAJA
+    # cuando exiges la goma. Sirve para saber que rueda llega antes al limite en cada
+    # curva. OJO: el docstring de ams2_strategy dice que este canal "no se puebla" --
+    # eso es FALSO, se midio variando 0.0000-0.9967 con senal coherente.
+    # PENDIENTE de resolver: si el 0.0 exacto es saturacion real o centinela de
+    # "sin dato / rueda descargada". Hasta saberlo, no tratar 0 como limite alcanzado.
+    ("tyre_grip",   lambda d, i: round(d.mTyreGrip[i], 4)),
+    # Piel de la goma (Kelvin -> C). Canal PROPIO, no copia del bulk: se midio 2.8-5.2 C
+    # de diferencia. Con carcass_t y tyre_temp completa el corte de profundidad
+    # superficie -> masa -> carcasa, que es lo que AMS2 modela de verdad.
+    ("layer_t",     lambda d, i: round(d.mTyreLayerTemp[i] - 273.15, 1)),
 ]
 HEADER = [n for n, _ in _SCALAR] + [f"{n}_{c}" for n, _ in _CORNER for c in CORNERS]
 

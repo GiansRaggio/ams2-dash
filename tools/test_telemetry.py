@@ -90,6 +90,8 @@ class Snap:
         self.mTyreRPS = q(120.0)
         self.mTerrain = [0, 0, 0, 0]
         self.mTyreCarcassTemp = q(360.0)    # ~87 C en Kelvin
+        self.mTyreGrip = q(0.42)            # margen de agarre sin usar (0..1)
+        self.mTyreLayerTemp = q(351.0)      # ~78 C en Kelvin (piel, mas fria que la carcasa)
         # arrays por participante (los usa _track_rivals para el registro de rivales)
         self.mFastestLapTimes = [95.5] * 64
         self.mFastestSector1Times = [30.1] * 64
