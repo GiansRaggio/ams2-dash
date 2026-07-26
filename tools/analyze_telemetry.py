@@ -105,6 +105,30 @@ def _slope(ys):
     return num / den if den else 0.0
 
 
+def _split_anomalas(times, k=5.0):
+    """Separa el ritmo REAL de los incidentes, por MAD (mediana de desviaciones absolutas).
+
+    El sigma crudo lo secuestra un solo outlier: en Bathurst una vuelta con un incidente
+    (2:28 contra 2:15) daba sigma 5.49s -> "dispersa", cuando las otras tres estaban en
+    0.19s. El veredicto salia al reves de la realidad, y un consejo derivado de el te
+    mandaria a trabajar consistencia cuando el problema fue un toque puntual.
+
+    MAD y no desviacion estandar justamente porque el outlier no debe definir la escala
+    con la que se lo detecta. k=5 MAD es holgado: deja pasar trafico y deja fuera
+    incidentes (en Bathurst el outlier estaba a 15 MAD; en OultonPark a 15 tambien).
+    Devuelve (buenas, anomalas). Con <4 vueltas no filtra: no hay estadistica que valga.
+    """
+    if len(times) < 4:
+        return list(times), []
+    med = st.median(times)
+    mad = st.median([abs(x - med) for x in times])
+    if mad <= 1e-9:                      # todas practicamente iguales -> nada que filtrar
+        return list(times), []
+    buenas = [x for x in times if abs(x - med) / mad <= k]
+    anomalas = [x for x in times if abs(x - med) / mad > k]
+    return (buenas, anomalas) if len(buenas) >= 3 else (list(times), [])
+
+
 def _lap_sectors(l):
     """Sectores [S1,S2,S3] de una vuelta, recuperando el S1 si el logger lo guardo roto.
 
@@ -230,8 +254,32 @@ def _corners(dist, spd, min_prom=15.0, min_gap_m=80.0):
                 merged[-1] = (d, v, p)
         else:
             merged.append((d, v, p))
-    return [{"n": i + 1, "apex": round(d), "vmin": round(v, 1)}
+    # se expone la prominencia: la usa _corner_window para saber donde EMPIEZA y TERMINA
+    # la curva, en vez de asumir una ventana fija alrededor del apex.
+    return [{"n": i + 1, "apex": round(d), "vmin": round(v, 1), "prom": round(p, 1)}
             for i, (d, v, p) in enumerate(merged)]
+
+
+def _corner_window(dist, spd, apex_m, prom, recover=0.7, max_m=250.0):
+    """Entrada y salida REALES de una curva, caminando desde el apex hasta que la
+    velocidad se recupera.
+
+    Una ventana fija de +-60 m trata igual a una horquilla y a una curva de alta, y en
+    una curva larga se queda corta justo donde el neumatico esta mas cargado. Aca la
+    curva termina donde la velocidad ya recupero `recover` de lo que habia perdido
+    (prominencia), que es una definicion propia del trazado y no un numero magico.
+    """
+    s = _smooth(spd, 21)
+    n = len(s)
+    i0 = min(range(n), key=lambda i: abs(dist[i] - apex_m))
+    objetivo = s[i0] + recover * prom
+    a = i0
+    while a > 0 and s[a] < objetivo and abs(dist[i0] - dist[a]) < max_m:
+        a -= 1
+    b = i0
+    while b < n - 1 and s[b] < objetivo and abs(dist[b] - dist[i0]) < max_m:
+        b += 1
+    return dist[a], dist[b]
 
 
 def _coasting(dist, thr, brk, spd, min_m=8.0):
@@ -329,9 +377,17 @@ def report_session(folder):
         print(f"  vueltas validas : {len(laps)}")
         print(f"  mejor / mediana : {_fmt_t(best).strip()} / {_fmt_t(st.median(times)).strip()}")
         if len(times) >= 2:
-            sd = st.pstdev(times)
+            # El ritmo se juzga sobre las vueltas SIN incidente; las anomalas se reportan
+            # aparte en vez de contaminar el veredicto (ver _split_anomalas).
+            buenas, anomalas = _split_anomalas(times)
+            sd = st.pstdev(buenas)
             tag = "excelente" if sd < 0.5 else "buena" if sd < 1.0 else "regular" if sd < 2.0 else "dispersa"
-            print(f"  consistencia    : sigma {sd:.2f}s ({tag})  ·  tendencia {_slope(times):+.2f}s/vuelta")
+            extra = f"  ·  tendencia {_slope(buenas):+.2f}s/vuelta"
+            if anomalas:
+                extra += f"\n  incidentes      : {len(anomalas)} vuelta(s) fuera de ritmo (" \
+                         + ", ".join(_fmt_t(x).strip() for x in sorted(anomalas)) \
+                         + ") — excluidas del sigma"
+            print(f"  consistencia    : sigma {sd:.2f}s ({tag}) sobre {len(buenas)} vueltas{extra}")
     if fuels:
         print(f"  consumo medio   : {st.mean(fuels):.2f} L/vuelta  ·  tendencia {_slope(fuels):+.3f} L/vuelta")
     degs = [max(l["wear_delta"]) * 100 for l in laps if l.get("wear_delta")]
@@ -968,6 +1024,88 @@ def report_tyres(folder):
                   "es de la pista, no se corrige con presion; balancea cada goma a su ventana.")
 
 
+SAT_ZERO = 0.005      # margen de agarre bajo esto = la goma esta EN EL LIMITE
+SAT_EJE = 8.0         # diferencia (puntos %) para atribuirle la limitacion a un eje
+
+
+def saturation_struct(folder):
+    """Que rueda llega antes al limite en cada curva, y por lo tanto que limita el paso.
+
+    Usa tyre_grip, que NO es agarre disponible sino MARGEN sin usar (medido: corr -0.725
+    con deslizamiento, -0.769 con G lateral; 0.457 en recta contra 0.104 en curva). Que
+    el cero sea saturacion REAL y no un centinela tambien se midio: los ceros llegan con
+    G lateral alta en 66-91% de los casos y solo 4-7% con la rueda descargada.
+
+    La metrica es el % del tiempo EN EL LIMITE dentro de la curva, no el minimo: el
+    minimo toca cero en las 4 ruedas de todas las curvas (cualquier rueda roza el limite
+    en algun instante) y no distingue nada. Lo que informa es CUANTO aguanta ahi.
+
+    None si faltan las vueltas limpias o el canal (grabaciones anteriores a jul-2026).
+    """
+    cl = clean_laps(folder)
+    if cl["n_clean"] < 2:
+        return None
+    traces = [(rec, _lap_trace(folder, rec)) for rec in cl["clean"]]
+    traces = [(rec, t) for rec, t in traces if t and t.get("tyre_grip_FL") and t.get("lap_dist")]
+    if len(traces) < 2:
+        return None
+    rt = traces[0][1]
+    d, s = _mono(rt["lap_dist"], rt["speed_kmh"])[:2]
+    out = []
+    for c in _corners(d, s):
+        ini, fin = _corner_window(d, s, c["apex"], c["prom"])
+        por_rueda = {w: [] for w in ("FL", "FR", "RL", "RR")}
+        for _, t in traces:
+            idx = [i for i, x in enumerate(t["lap_dist"]) if ini <= x <= fin]
+            if len(idx) < 10:
+                continue
+            for w in por_rueda:
+                v = [t["tyre_grip_" + w][i] for i in idx]
+                por_rueda[w].append(100.0 * sum(1 for x in v if x <= SAT_ZERO) / len(v))
+        if any(len(v) < 2 for v in por_rueda.values()):
+            continue
+        m = {w: st.median(v) for w, v in por_rueda.items()}
+        peor = max(m, key=m.get)
+        fr, re = max(m["FL"], m["FR"]), max(m["RL"], m["RR"])
+        lim = ("delantero" if fr > re + SAT_EJE else
+               "trasero" if re > fr + SAT_EJE else "equilibrada")
+        out.append({"n": c["n"], "apex": c["apex"], "vmin": c["vmin"],
+                    "largo": round(fin - ini), "pct": {w: round(x, 1) for w, x in m.items()},
+                    "peor": peor, "peor_pct": round(m[peor], 1), "limita": lim})
+    return {"corners": out, "laps": len(traces)} if out else None
+
+
+def report_saturation(folder):
+    meta, _ = _load(folder)
+    sat = saturation_struct(folder)
+    print(f"\n=== Saturacion por curva · {meta.get('car', '?')} @ {meta.get('track', '?')} ===")
+    if not sat:
+        print("  faltan >=2 vueltas limpias con el canal tyre_grip.")
+        print("  (las grabaciones anteriores a jul-2026 no lo tienen; corre una tanda nueva)")
+        return
+    print("  % del tiempo con la goma EN EL LIMITE dentro de cada curva "
+          f"({sat['laps']} vueltas limpias).")
+    print("  La rueda con mas % es la que limita el paso: es la que se queda sin agarre primero.\n")
+    print(f"  {'curva':6} {'apex':>6} {'vmin':>5} {'largo':>6} | "
+          f"{'FL':>5} {'FR':>5} {'RL':>5} {'RR':>5} | limita")
+    for c in sat["corners"]:
+        p = c["pct"]
+        print(f"  T{c['n']:<5} {c['apex']:>6} {c['vmin']:>5} {c['largo']:>5}m | "
+              f"{p['FL']:>5.1f} {p['FR']:>5.1f} {p['RL']:>5.1f} {p['RR']:>5.1f} | "
+              f"{c['peor']} ({c['peor_pct']:.0f}%) · {c['limita']}")
+    peores = sorted(sat["corners"], key=lambda c: -c["peor_pct"])[:2]
+    print()
+    for c in peores:
+        if c["peor_pct"] < 60:
+            continue
+        print(f"  T{c['n']}: la {c['peor']} pasa el {c['peor_pct']:.0f}% de la curva sin margen"
+              + (f" — la limita el tren {c['limita']}." if c["limita"] != "equilibrada"
+                 else " — los dos ejes llegan juntos."))
+    if peores and peores[0]["peor_pct"] >= 90:
+        print("\n  OJO: sobre ~90% la rueda va saturada casi toda la curva. Ahi 'lleva mas")
+        print("  velocidad de paso' NO es el consejo: no queda agarre que gastar. Es setup.")
+
+
 def report_balance(folder):
     meta, _ = _load(folder)
     bal = balance_struct(folder)
@@ -1169,6 +1307,8 @@ def main():
                     help="gomas (beta): presion termica + camber por rueda sobre las vueltas limpias")
     ap.add_argument("--balance", action="store_true",
                     help="balance sobre/subviraje por curva + momento de inestabilidad (slip por rueda)")
+    ap.add_argument("--saturacion", action="store_true",
+                    help="que rueda llega antes al limite en cada curva (margen de agarre por rueda)")
     ap.add_argument("--timeline", nargs="?", const="", metavar="FILTRO", default=None,
                     help="linea de tiempo COMPLETA de la carrera: con que goma largaste, cada vuelta "
                          "cruzada (out/in/pit/invalida/corta) y los eventos de pit / cambio de goma. "
@@ -1246,6 +1386,8 @@ def main():
         report_tyres(folder)
     elif a.balance:
         report_balance(folder)
+    elif a.saturacion:
+        report_saturation(folder)
     else:
         report_session(folder)
 
