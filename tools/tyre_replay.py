@@ -29,7 +29,9 @@ import csv
 import gzip
 import math
 import os
+import shutil
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HERE)
@@ -62,7 +64,8 @@ class Shim:
     bar*100, layer/carcass en Kelvin) para pasar por el mismo decode del bridge."""
     __slots__ = ("mCarName", "mTyreCompound", "mSpeed", "mAirPressure", "mTyreTemp",
                  "mTyreLayerTemp", "mTyreCarcassTemp", "mBrakeTempCelsius",
-                 "mTyreTempLeft", "mTyreTempRight", "mLocalAcceleration")
+                 "mTyreTempLeft", "mTyreTempRight", "mLocalAcceleration",
+                 "mTrackLocation")
 
 
 def f(row, key):
@@ -72,9 +75,10 @@ def f(row, key):
         return float("nan")
 
 
-def build_shim(row, car):
+def build_shim(row, car, track=b"track"):
     d = Shim()
     d.mCarName = car
+    d.mTrackLocation = track
     d.mTyreCompound = [b"Slick"]
     d.mSpeed = f(row, "speed_kmh") / 3.6
     d.mAirPressure = [f(row, f"tyre_press_{c}") for c in C]          # ya viene bar*100
@@ -100,8 +104,13 @@ def replay(sess_dir, name, events_out=None):
                   if x.startswith("L") and x.endswith(".csv.gz"))
     if not laps:
         return None
-    an = ams2_tyres.TyreAnalyzer(base_dir=os.path.join(sess_dir, "_no_state"))
+    # base_dir REAL y descartable (no _no_state, que no existe y hacia que
+    # _save_targets fallara en silencio -> el camino de persistencia de la referencia
+    # de camber tenia cobertura CERO mientras el replay se reportaba verde).
+    state_dir = tempfile.mkdtemp(prefix="tyre_replay_")
+    an = ams2_tyres.TyreAnalyzer(base_dir=state_dir)
     car = name.split("__")[1].encode() if "__" in name else b"car"
+    track = name.split("__")[0].encode() if "__" in name else b"track"
 
     clock = 0.0            # reloj monotonico inyectado (sesion continua)
     live_s = 0.0
@@ -126,7 +135,7 @@ def replay(sess_dir, name, events_out=None):
                     else min(max(t - prev_t, 0.0), 0.5)
                 prev_t = t
                 clock += dt
-                an.update(build_shim(row, car), now=clock)
+                an.update(build_shim(row, car, track), now=clock)
                 # evaluar el payload ~1 vez por segundo de sesion (como lo veria el dash)
                 if int(clock) == int(clock - dt):
                     continue
@@ -166,11 +175,17 @@ def replay(sess_dir, name, events_out=None):
                             e = ep[i]
                             events_out.append((name, e[0], e[1], e[2], clock - e[2], e[3]))
                         ep[i] = None
+    # Cierre de tanda REAL (el mismo que corre el bridge al apagarse) y comprobacion de
+    # que la referencia llego al disco. Esto es lo que antes no se ejercitaba nunca.
+    an.close()
+    guardado = os.path.exists(os.path.join(state_dir, "tyre_targets.json"))
+    shutil.rmtree(state_dir, ignore_errors=True)
     return {
         "name": name, "live_s": live_s, "warm_s": warm_s, "warm_at": warm_at,
         "fire": fire_s, "trend": trend_s, "rel": (rel_min, rel_max),
         "dead_any": dead_any, "dead_final": dead_final,
         "cam_s": cam_s, "cam_idle": cam_idle, "cam_dir": cam_dir,
+        "cam_saved": guardado,
     }
 
 
@@ -233,9 +248,17 @@ def main():
     direcc = [r for r in vivas if r["cam_dir"] != "="]
     if vivas and not direcc:
         fails.append("ninguna pista salio direccional: el indice de carga no se acumula")
+    # El cierre de tanda tiene que llegar al disco. Estuvo roto y en silencio: el
+    # base_dir del replay apuntaba a un directorio inexistente y _save_targets se
+    # tragaba el OSError, asi que la persistencia de la referencia nunca se probo.
+    guardadas = [r for r in vivas if r["cam_saved"]]
+    if vivas and len(guardadas) < len(vivas) // 2:
+        fails.append(f"la referencia de camber solo se persistio en {len(guardadas)}/"
+                     f"{len(vivas)} sesiones vivas: el cierre de tanda no llega al disco")
 
     print(f"\n{len(rows)} sesiones reproducidas · camber opinando en "
-          f"{len(con_cam)}/{len(vivas)} vivas · {len(direcc)} pistas direccionales.")
+          f"{len(con_cam)}/{len(vivas)} vivas · {len(direcc)} pistas direccionales · "
+          f"referencia persistida en {len(guardadas)}/{len(vivas)}.")
     if fails:
         print("FALLAS:")
         for x in fails:

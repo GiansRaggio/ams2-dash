@@ -165,14 +165,26 @@ SURF_BUCKET_S = 60.0     # s por balde; la ventana efectiva de rango es 60-120 s
 # accel_x > 0 => cargan las DERECHAS. Signo fijado por temperatura (corr -0.895), NO
 # por suspension: mas mSuspensionTravel es rueda EXTENDIDA, o sea descargada.
 LAT_LOAD = 6.0            # m/s2 de G lateral para contar la curva como cargada
-DIR_NEUTRAL = 0.15        # |indice| bajo esto: la pista no carga un lado (Spa, Kansai,
+DIR_NEUTRAL = 0.15        # |indice| para DECLARAR un lado dominante (Spa, Kansai,
                           # Hungaroring miden 0.00-0.14; Goiania 1.00, Cascavel 0.65)
-CAMBER_MIN_LOAD_S = 20.0  # s acumulados de curva cargada antes de opinar (el p05 del
-                          # corpus por sesion es 55 s: una tanda normal lo cumple sola)
-# Referencia auto-referencial: el spread del eje cargado de la tanda ANTERIOR de ESTE
-# auto. Ruido inter-tanda medido (mismo auto, excluyendo las 4 sesiones con superficie
-# muerta): p50 1.0, p90 3.6, p95 4.5 C -> 4.0 separa cambio real de ruido.
-CAMBER_DELTA = 4.0
+DIR_EXIT = 0.10           # ...y para SOLTARLO. La histeresis no es opcional: con un
+                          # umbral solo, las pistas que viven cerca de 0.15 hacian
+                          # parpadear el veredicto de dos ruedas decenas de veces por
+                          # tanda (33 y 37 cambios en 11 min en Termas; 21/58 sesiones)
+CAMBER_MIN_LOAD_S = 60.0  # s acumulados de curva cargada antes de decidir el lado Y de
+                          # opinar. NO es arbitrario: medido contra el corpus, el lado
+                          # que declara el indice a los 20 s coincide con el de la tanda
+                          # completa solo el 55% de las veces (una moneda al aire), y con
+                          # histeresis ese enganche temprano se congelaba el resto de la
+                          # tanda. A los 60 s sube a 81% y todavia alcanza en 64 de 69
+                          # sesiones; a 90 s daria 90% pero 14 sesiones se quedarian sin
+                          # veredicto. Las que quedan fuera son qualys de 1-2 vueltas.
+# Referencia auto-referencial: el spread del eje cargado de la tanda ANTERIOR del mismo
+# auto EN LA MISMA PISTA. La pista es parte de la llave y no un detalle: el ruido
+# inter-tanda medido del mismo auto es p90 2.1 C dentro de la misma pista contra 4.3
+# mezclando circuitos, o sea que sin cualificar por pista el instrumento reporta el
+# cambio de trazado como si fuera un cambio de setup.
+CAMBER_DELTA = 3.0        # entre el p90 (2.1) y el p95 (4.4) de la misma pista
 # Ventana ABSOLUTA de respaldo, y solo mientras el auto no tenga tanda previa. Sale de
 # la distribucion del eje CARGADO en sesiones vivas: p05 -0.2, p10 +0.5, mediana +5.2,
 # p90 +9.5, p95 +10.0 (n=130 ejes). Con [0,10] acusa 6% por abajo y 4% por arriba.
@@ -206,6 +218,7 @@ class TyreAnalyzer:
         self._dir = base_dir or os.path.dirname(os.path.abspath(__file__))
         self._targets = self._load_targets()
         self._car = ""
+        self._track = ""              # mTrackLocation: parte de la llave de camber
         self._compound = ""
         self._live = False
         self._press = [None] * 4      # bar (EMA)
@@ -233,6 +246,10 @@ class TyreAnalyzer:
         # --- direccionalidad de la pista (que lado carga) y referencia de camber ---
         self._t_izq = 0.0             # s rodados cargando las ruedas IZQUIERDAS
         self._t_der = 0.0             # s idem derechas
+        # OJO: se llama _lado y no _dir porque self._dir ES EL DIRECTORIO BASE. Pisarlo
+        # mandaba tyre_targets.json a un directorio llamado "=" y _save_targets se comia
+        # el OSError en silencio: la referencia no se persistia nunca.
+        self._lado = "="              # lado cargado vigente (con histeresis, ver dir_side)
         self._cam_prev = {}           # {"F": C, "R": C} del cierre de la tanda anterior
         self._runtime = 0.0           # s acumulados en marcha (>MIN_SPEED)
         self._last_now = None         # monotonic de la ultima ingesta (para dt)
@@ -288,13 +305,19 @@ class TyreAnalyzer:
             self._save_targets()
         return round(v, 2)
 
-    # ---------------- referencia de camber (persistida por auto) ----------------
+    # ------------- referencia de camber (persistida por pista + auto) -------------
+    def _cam_key(self):
+        """Llave de la referencia. La PISTA va en la llave porque el spread del eje
+        cargado del mismo auto cambia mas entre circuitos (ruido p90 4.3 C) que dentro
+        de uno (2.1 C): sin ella, cambiar de trazado se reporta como cambio de setup."""
+        return f"{self._track}|{self._car}" if self._track else self._car
+
     def _load_camber(self):
-        """Spread de eje cargado con que cerro la tanda anterior de ESTE auto."""
+        """Spread de eje cargado con que cerro la tanda anterior en esta pista y auto."""
         base = self._targets.get(CAMBER_KEY)
         if not isinstance(base, dict):
             return {}
-        v = base.get(self._car)
+        v = base.get(self._cam_key())
         if not isinstance(v, dict):
             return {}
         out = {}
@@ -314,7 +337,9 @@ class TyreAnalyzer:
         proxima. Este es el nucleo auto-referencial. El veredicto util no es "tu camber
         esta mal" --el corpus no autoriza esa afirmacion en la mayoria de los autos--
         sino "lo moviste y esto cambio", que es justo el loop de setup del piloto.
-        Se llama al ROTAR de sesion/gomas (_jump) y al cambiar de auto."""
+        Se llama al ROTAR de sesion/gomas (_jump), al cambiar de auto o de pista, y al
+        cerrar el bridge (close()) -- sin esto ultimo, matar el dash o cerrar AMS2
+        pierde la tanda entera, que es justo cuando mas duele."""
         if not self._car:
             return
         ahora = self._camber_now()
@@ -323,15 +348,21 @@ class TyreAnalyzer:
         base = self._targets.get(CAMBER_KEY)
         if not isinstance(base, dict):
             base = self._targets[CAMBER_KEY] = {}
-        prev = base.get(self._car)
+        k = self._cam_key()
+        prev = base.get(k)
         if not isinstance(prev, dict):
             prev = {}
         # Solo se pisa el eje que SI se midio: si la pista cargo un lado y una rueda
         # quedo sin bordes validos, el otro eje conserva su referencia vieja.
         for eje, v in ahora.items():
             prev[eje] = round(v, 1)
-        base[self._car] = prev
+        base[k] = prev
         self._save_targets()
+
+    def close(self):
+        """Cierre ordenado del bridge: persiste la tanda en curso. Publico para que
+        bridge_shm lo llame al apagar."""
+        self._save_camber()
 
     def surf_alive(self):
         """El modelo termico de banda (bulk/layer/left/right) esta VIVO en ESTA sesion?
@@ -357,6 +388,9 @@ class TyreAnalyzer:
         self._bkt_prev = [[None, None] for _ in range(4)]
         # La direccionalidad es de la PISTA: al cambiar de auto/sesion no aplica.
         self._t_izq = self._t_der = 0.0
+        self._lado = "="
+        self._peak_carc = [None] * 4     # el pico es DE LA TANDA (el comentario de
+                                         # update() ya lo afirmaba, pero no ocurria)
         self._cam_prev = self._load_camber()
 
     # ---------------- ingesta ----------------
@@ -367,10 +401,17 @@ class TyreAnalyzer:
         if d is None:
             self._live = False
             return
+        # Cambio de auto O DE PISTA: las lecturas viejas no aplican. La pista importa
+        # tanto como el auto -- la direccionalidad es una propiedad del trazado, y la
+        # referencia de camber se guarda por (pista, auto). Mismo patron que
+        # ams2_strategy.py:215, que ya usa sig = (mTrackLocation, mCarName).
         car = _s(d.mCarName)
-        if car and car != self._car:        # cambio de auto -> las lecturas viejas no aplican
-            self._save_camber()             # cierra la tanda del auto que SALE (usa _car viejo)
-            self._car = car
+        track = _s(getattr(d, "mTrackLocation", b"")) or self._track
+        if (car and car != self._car) or track != self._track:
+            self._save_camber()             # cierra la tanda que SALE (con la llave vieja)
+            if car:
+                self._car = car
+            self._track = track
             self.reset()
         self._compound = _s(d.mTyreCompound[0])
         self._live = (d.mSpeed * 3.6) >= MIN_SPEED
@@ -413,7 +454,12 @@ class TyreAnalyzer:
             # salir a la carrera despues de tocar el setup en la qualy.
             self._save_camber()
             self._cam_prev = self._load_camber()
-            self._t_izq = self._t_der = 0.0      # pista nueva -> direccionalidad nueva
+            self._t_izq = self._t_der = 0.0      # sesion nueva -> direccionalidad nueva
+            self._lado = "="
+            # El gate de "goma en regimen" tiene que volver a cumplirse: sin esto, tras
+            # los primeros 120 s de vida del bridge la condicion queda satisfecha PARA
+            # SIEMPRE y un out-lap de 20 s alcanza para pisar la referencia buena.
+            self._runtime = 0.0
             # re-sembrar: la norma vieja ya no describe nada. Sin esto la alarma
             # seguiria sonando los ~2.5 min que tarda la EMA lenta en alcanzar.
             self._slow = list(crudas)
@@ -766,13 +812,30 @@ class TyreAnalyzer:
     def dir_side(self):
         """Que lado CARGA esta pista: 'I' izquierdas, 'D' derechas, '=' sin dominante.
 
+        CON HISTERESIS. El indice acumulado de una pista intermedia se pasea alrededor
+        de DIR_NEUTRAL toda la tanda, y con un solo umbral el veredicto de dos ruedas
+        prendia y apagaba a cada cruce: medido, 33 y 37 cambios en una carrera de 11 min
+        en Termas, y 21 de 58 sesiones del corpus parpadeaban. Entrar cuesta mas que
+        salir, asi que una vez decidido el lado hace falta que el indice caiga bien
+        adentro de la zona neutra para soltarlo.
+
         Publico porque es la razon por la que media parrilla de veredictos se apaga:
         conviene poder inspeccionarlo desde afuera (tests y replay)."""
         tot = self._t_izq + self._t_der
-        if tot <= 0.0:
-            return "="
+        # MINIMO DE MUESTRA antes de enganchar un lado. Con las primeras curvas el
+        # indice acumulado satura en +-1.00 con nada de evidencia, y la histeresis lo
+        # dejaria enganchado el resto de la tanda: medido, Spa y Termas (indice final
+        # 0.12, o sea neutras) quedaban declaradas direccionales por sus primeras
+        # curvas. El mismo umbral que habilita el veredicto habilita la decision.
+        if tot < CAMBER_MIN_LOAD_S:
+            return self._lado
         idx = (self._t_izq - self._t_der) / tot
-        return "=" if abs(idx) < DIR_NEUTRAL else ("I" if idx > 0 else "D")
+        umbral = DIR_EXIT if self._lado != "=" else DIR_NEUTRAL
+        if abs(idx) >= umbral:
+            self._lado = "I" if idx > 0 else "D"
+        elif self._lado != "=" and abs(idx) < DIR_EXIT:
+            self._lado = "="
+        return self._lado
 
     def _cargada(self, c):
         """Trabaja esta esquina lo suficiente como para que su spread hable de camber?"""
@@ -812,12 +875,19 @@ class TyreAnalyzer:
         verde donde de verdad esta el criterio en vez de una franja fija que miente."""
         if spread is None:
             return None, None, None
-        if not self._cargada(c):
-            # La pista carga el otro lado. Esta goma no trabaja, sus bordes se igualan
-            # y su spread NO mide camber. Se muestra el numero, no se opina.
-            return "sin carga", "idle", None
+        # ORDEN: primero el derecho a opinar de la TANDA, despues el de la rueda. Al
+        # reves, "sin carga" se publicaba a partir de un indice calculado sobre unos
+        # pocos segundos -- basta una curva para saturarlo en +-1.00 -- y aparecia y
+        # desaparecia antes de que el instrumento estuviera armado siquiera.
         if not self._camber_ok():
-            return None, "idle", None
+            # Se dice POR QUE no hay veredicto. Un rombo hueco mudo no se distingue de
+            # una falla, y el piloto no tiene como saber si esperar o si algo se rompio.
+            return ("calentando" if self._runtime < MIN_NORM_S else "sin curvas aun",
+                    "idle", None)
+        if not self._cargada(c):
+            # La pista carga el otro lado. Esta goma no trabaja, el rolido no le come el
+            # camber y su spread NO mide camber. Se muestra el numero, no se opina.
+            return "sin carga", "idle", None
         prev = self._cam_prev.get("F" if c < 2 else "R")
         if prev is not None:
             # Auto-referencial: contra la propia tanda anterior de ESTE auto.

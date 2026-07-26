@@ -39,8 +39,9 @@ class Snap:
     default ambos en `edges`, o sea spread 0."""
 
     def __init__(self, edges=62.0, carc=(83, 103, 56, 70), bulk=80.0, press=200.0,
-                 speed=0.0, lat=0.0, tl=None, tr=None):
+                 speed=0.0, lat=0.0, tl=None, tr=None, track=b""):
         self.mCarName = b"Test Car"
+        self.mTrackLocation = track
         self.mTyreCompound = [b"Liso"] * 4
         self.mSpeed = speed
         self.mLocalAcceleration = [lat, 0.0, 0.0]
@@ -95,9 +96,13 @@ def test_centinela_de_bordes():
     # sin G lateral no hay curva cargada acumulada -> tampoco hay derecho a opinar
     p = a.payload()
     _ok("rodando en recta -> sin veredicto (nunca cargo)",
-        all(c["camber"] is None for c in p["corners"]),
+        all(c["cstat"] == "idle" and c["cband"] is None for c in p["corners"]),
+        [c["cstat"] for c in p["corners"]])
+    # ...pero DICIENDO por que: un rombo hueco mudo no se distingue de una falla
+    _ok("el idle explica el motivo",
+        all(c["camber"] == "sin curvas aun" for c in p["corners"]),
         [c["camber"] for c in p["corners"]])
-    _ok("...pero el spread SI se muestra", p["corners"][1]["spread"] == 9.0,
+    _ok("...y el spread SI se muestra", p["corners"][1]["spread"] == 9.0,
         repr(p["corners"][1]["spread"]))
 
 
@@ -283,17 +288,17 @@ def test_referencia_propia_gana_al_umbral_absoluto():
         b, _ = _tanda(lat=-8.0, tl=tl2, tr=tr2, secs=300.0, base_dir=tmp)
         c = b.payload()["corners"][0]
         _ok("tanda 2: juzga contra SU referencia, no contra la ventana",
-            c["cband"] == [5.0, 13.0], repr(c["cband"]))
+            c["cband"] == [6.0, 12.0], repr(c["cband"]))
         _ok("tanda 2: reporta el cambio contra la previa",
             c["camber"] == "+5.0° vs previa", repr(c["camber"]))
-        _ok("tanda 2: +5 supera el ruido (4) -> avisa", c["cstat"] == "warn",
+        _ok("tanda 2: +5 supera el ruido (3) -> avisa", c["cstat"] == "warn",
             repr(c["cstat"]))
         # un cambio DENTRO del ruido no debe gritar
         tl3 = [60.0, 71.0, 60.0, 70.0]
         tr3 = [71.0, 60.0, 70.0, 60.0]     # spread +11 -> delta +2, ruido
         d, _ = _tanda(lat=-8.0, tl=tl3, tr=tr3, secs=300.0, base_dir=tmp)
         c3 = d.payload()["corners"][0]
-        _ok("un delta de +2 es ruido -> no avisa", c3["cstat"] == "ok",
+        _ok("un delta de +2 sigue bajo el umbral -> no avisa", c3["cstat"] == "ok",
             f'{c3["cstat"]} / {c3["camber"]}')
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -313,6 +318,87 @@ def test_no_guarda_sin_derecho_a_opinar():
             not os.path.exists(os.path.join(tmp, "tyre_targets.json")))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_referencia_por_pista_y_auto():
+    """La PISTA es parte de la llave. El spread del eje cargado del mismo auto cambia
+    mas entre circuitos (ruido p90 4.3 C) que dentro de uno (2.1 C), asi que con la
+    llave solo por auto, cambiar de trazado se reporta como si hubieras movido el setup
+    -- y este piloto cambia de pista cada sesion."""
+    tmp = tempfile.mkdtemp(prefix="ams2cam_")
+    try:
+        tl = [60.0, 69.0, 60.0, 68.0]
+        tr = [69.0, 60.0, 68.0, 60.0]        # spread +9 en la FL cargada
+        a, t = _tanda(lat=-8.0, tl=tl, tr=tr, secs=300.0, base_dir=tmp,
+                      track=b"Interlagos")
+        a.close()                            # cierra la tanda de Interlagos
+        base = json.load(open(os.path.join(tmp, "tyre_targets.json"),
+                              encoding="utf-8"))["_camber"]
+        _ok("la llave lleva pista y auto", "Interlagos|Test Car" in base, list(base))
+        # misma pista -> compara contra la referencia
+        b, _ = _tanda(lat=-8.0, tl=tl, tr=tr, secs=300.0, base_dir=tmp,
+                      track=b"Interlagos")
+        _ok("misma pista -> hay referencia",
+            b.payload()["corners"][0]["camber"] == "+0.0° vs previa",
+            repr(b.payload()["corners"][0]["camber"]))
+        # OTRA pista, mismo auto, sin tocar el setup -> NO debe inventar un cambio
+        tl2 = [60.0, 74.0, 60.0, 73.0]
+        tr2 = [74.0, 60.0, 73.0, 60.0]       # spread +14: tipico de otro trazado
+        c, _ = _tanda(lat=-8.0, tl=tl2, tr=tr2, secs=300.0, base_dir=tmp,
+                      track=b"Hungaroring")
+        cor = c.payload()["corners"][0]
+        _ok("pista nueva -> cae a la ventana, no a un delta falso",
+            cor["cband"] == [0.0, 10.0] and "previa" not in (cor["camber"] or ""),
+            f'{cor["cband"]} / {cor["camber"]}')
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_histeresis_del_lado_cargado():
+    """Sin histeresis el veredicto de dos ruedas parpadeaba decenas de veces por tanda
+    en las pistas que viven cerca de DIR_NEUTRAL (33 y 37 cambios en 11 min en Termas;
+    21 de 58 sesiones del corpus). Una vez declarado el lado, soltarlo cuesta mas."""
+    a = ams2_tyres.TyreAnalyzer(base_dir=NOWHERE)
+    t = 0.0
+    # se establece un lado con holgura (indice ~ -1)
+    for _ in range(200):
+        t += 0.5
+        a.update(Snap(speed=50.0, lat=-8.0, tl=GOIANIA_TL, tr=GOIANIA_TR), now=t)
+    _ok("lado declarado", a.dir_side() == "I", a.dir_side())
+    # ahora se lo lleva justo bajo DIR_NEUTRAL pero sobre DIR_EXIT: NO debe soltarlo
+    cambios = 0
+    prev = a.dir_side()
+    objetivo = (1.0 - 0.12) / 2.0 * (a._t_izq + a._t_der)   # indice ~0.12
+    while a._t_der < objetivo:
+        t += 0.5
+        a.update(Snap(speed=50.0, lat=8.0, tl=GOIANIA_TL, tr=GOIANIA_TR), now=t)
+        s = a.dir_side()
+        if s != prev:
+            cambios += 1
+            prev = s
+    idx = (a._t_izq - a._t_der) / (a._t_izq + a._t_der)
+    _ok("en la zona gris NO suelta el lado", a.dir_side() == "I",
+        f"idx={idx:+.3f} lado={a.dir_side()}")
+    _ok("y no parpadeo ni una vez", cambios == 0, f"cambios={cambios}")
+    # empujando bien adentro de la zona neutra si lo suelta
+    while abs((a._t_izq - a._t_der) / (a._t_izq + a._t_der)) > 0.05:
+        t += 0.5
+        a.update(Snap(speed=50.0, lat=8.0, tl=GOIANIA_TL, tr=GOIANIA_TR), now=t)
+    _ok("bien adentro de la zona neutra si suelta", a.dir_side() == "=", a.dir_side())
+
+
+def test_runtime_vuelve_a_cero_al_rotar_sesion():
+    """_runtime solo se limpiaba en reset() (cambio de auto), asi que pasados los
+    primeros 120 s de vida del bridge el gate quedaba satisfecho PARA SIEMPRE y un
+    out-lap de 20 s alcanzaba para pisar la referencia buena."""
+    a, t = _tanda(lat=-8.0, tl=GOIANIA_TL, tr=GOIANIA_TR, secs=300.0)
+    _ok("tanda armada", a._camber_ok())
+    for _ in range(6):                       # rotacion de sesion
+        t += 0.5
+        a.update(Snap(speed=50.0, lat=-8.0, tl=GOIANIA_TL, tr=GOIANIA_TR,
+                      carc=(30, 30, 30, 30)), now=t)
+    _ok("tras rotar, el gate vuelve a exigir goma en regimen", not a._camber_ok(),
+        f"runtime={a._runtime:.0f} carga={a._t_izq + a._t_der:.0f}")
 
 
 def test_referencia_corrupta_no_envenena():
@@ -350,6 +436,9 @@ if __name__ == "__main__":
     test_pista_neutra_opinan_las_cuatro()
     test_referencia_propia_gana_al_umbral_absoluto()
     test_no_guarda_sin_derecho_a_opinar()
+    test_referencia_por_pista_y_auto()
+    test_histeresis_del_lado_cargado()
+    test_runtime_vuelve_a_cero_al_rotar_sesion()
     test_referencia_corrupta_no_envenena()
     print(f"\n{'todo verde' if not _fails else 'FALLAS: ' + ', '.join(_fails)}")
     sys.exit(1 if _fails else 0)

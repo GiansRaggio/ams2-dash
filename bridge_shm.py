@@ -470,3 +470,8 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\n[bridge-shm] detenido")
+    finally:
+        # Cierra la tanda de gomas en curso. Sin esto la referencia de camber solo se
+        # persistia si el bridge alcanzaba a ver una rotacion de sesion, asi que cerrar
+        # el dash o AMS2 perdia la tanda entera -- justo la que el piloto acaba de girar.
+        tyres.close()

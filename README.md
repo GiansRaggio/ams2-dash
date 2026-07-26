@@ -286,9 +286,16 @@ Los canales se **midieron en pista** con `tools/tyre_probe.py` y después se
   el calor izq−der), **no** por `mSuspensionTravel`: más travel es rueda *extendida*, o
   sea descargada (corr −0.872), y deducirlo al revés invierte el veredicto entero.
   El veredicto de la rueda cargada es **auto-referencial igual que el térmico**: se
-  compara contra el spread con que cerró **la tanda anterior de ese mismo auto**
-  (persistido junto al objetivo de presión). Así el instrumento responde lo que el
-  piloto de verdad pregunta: *"moví el camber, ¿cambió algo?"*. Sin tanda previa cae a
+  compara (±3 °C) contra el spread con que cerró **la tanda anterior de ese mismo auto
+  en esa misma pista** — persistido junto al objetivo de presión. La pista va en la
+  llave y no es un detalle: el ruido inter-tanda del mismo auto es **p90 2.1 °C dentro
+  de un circuito contra 4.3 mezclándolos**, así que sin cualificar por pista el
+  instrumento reporta el cambio de trazado como si fuera un cambio de setup.
+  Así responde lo que el piloto de verdad pregunta: *"moví el camber, ¿cambió algo?"*.
+  Qué lado carga la pista se decide recién con **60 s acumulados de curva** y con
+  histéresis: a los 20 s el lado que declara el índice coincide con el de la tanda
+  completa sólo el 55 % de las veces (una moneda al aire) y sin histéresis el veredicto
+  de dos ruedas parpadeaba decenas de veces por tanda. Sin tanda previa cae a
   una ventana de respaldo **+0…+10 °C**, sacada de la distribución del eje cargado
   (p05 −0.2 · mediana +5.2 · p95 +10.0), que acusa 6 % por abajo y 4 % por arriba.
   **Ya no existe un veredicto de "poco camber"**: el corpus no autoriza esa afirmación.

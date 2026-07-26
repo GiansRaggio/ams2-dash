@@ -196,13 +196,17 @@ def _desviado(t):
 
 
 def _direccional(t):
-    """Goiania: 100% curvas a izquierda, o sea CARGAN LAS DERECHAS. Reproduce los
-    numeros medidos con el Audi R8 GT3 (FL +2 / FR +9 / RL +1 / RR +8) que eran el
-    falso positivo: las izquierdas no trabajan, sus bordes se igualan, y el umbral
-    absoluto por rueda las acusaba de "poco camber neg." sin arreglo posible.
-    Lo que hay que ver en pantalla: FL/RL con rombo HUECO, sin banda verde y el texto
-    "sin carga"; FR/RR con rombo lleno, banda y veredicto. Ademas lleva cam_prev, asi
-    que las cargadas comparan contra su tanda anterior (+9 -> "0.0 vs previa")."""
+    """Goiania con el Audi R8 GT3, tal cual se midio: la pista CARGA LAS IZQUIERDAS
+    (carcasa 99/108 contra 81/91 en las derechas) y los spreads son +2/+9/+1/+8.
+
+    Este escenario ES el bug reportado. Las cargadas son la FL y la RL, con spread BAJO
+    (+2 y +1) porque el rolido se come su camber y les calienta el hombro exterior. La
+    ventana absoluta original [3,12], centrada en la distribucion de la rueda DESCARGADA,
+    las acusaba a las dos de "poco camber neg." pasara lo que pasara con el setup.
+
+    Lo que hay que ver en pantalla: FR/RR con rombo HUECO, sin banda verde y el texto
+    "sin carga" (su +9 y +8 no miden camber); FL/RL con rombo lleno, banda y veredicto.
+    Ademas lleva cam_prev, asi que las cargadas comparan contra su tanda anterior."""
     carc = [99, 81, 108, 91]         # medido en la carrera de Goiania
     bulk = _below(carc, 28)
     return dict(car="Audi R8 LMS GT3", compound="Slick Medium", live=True,
@@ -216,8 +220,8 @@ def _direccional(t):
                 wear=[0.19, 0.22, 0.16, 0.18],
                 eol=[29.0, 26.0, 35.0, 33.0],
                 stint=4,
-                dir_izq=4.0, dir_der=210.0,      # indice -0.96 -> carga la derecha
-                cam_prev={"F": 9.0, "R": 8.0})
+                dir_izq=210.0, dir_der=4.0,      # indice +0.96 -> cargan las izquierdas
+                cam_prev={"F": 2.0, "R": 1.0})
 
 
 def _evento_rl(t):
