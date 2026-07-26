@@ -119,6 +119,9 @@ DEV_REL = 7.0            # C que la estructura (rel) debe separarse de su norma 
                          # opinar. Ruido de plateau medido: +-1..3; evento real (RL
                          # cocinada en Buenos Aires): +13. El warm-up direccional mas
                          # violento del archivo (MINI en Interlagos) llega a ~5.
+JUMP_C = 20.0            # C de salto SIMULTANEO en las 4 carcasas entre frames =
+                         # cambio de sesion o de gomas, no un evento de la goma.
+                         # Medido en vivo: 125->58 C en un frame al rotar sesion.
 MIN_NORM_S = 120.0       # s rodados antes de que exista "norma" de la cual desviarse
 TREND_EPS = 4.0          # C de desviacion media para decir calentando/enfriando
 WARM_TIME = 180.0        # s rodados minimos antes de declarar warm
@@ -164,6 +167,16 @@ class TyreAnalyzer:
         # --- estado del veredicto auto-referencial (v3.1) ---
         self._slow = [None] * 4       # C, EMA lenta de carcasa (tau ~150 s): la norma
         self._rel_slow = [None] * 4   # C, EMA lenta de rel (estructura): norma de tdev
+        # Lo que la goma HIZO en pista, para leerlo despues en boxes. Sin esto el
+        # piloto vuelve al box, mira el dash y ya se enfrio/reseteo todo -- que es
+        # justo cuando puede mirarlo. Los bordes ademas se ponen en 0 fuera de pista,
+        # asi que el veredicto de camber salia siempre "poco camber neg." (0 < umbral).
+        self._edges_stale = [False] * 4  # el borde mostrado es de pista, no de ahora
+        self._peak_carc = [None] * 4  # C, maxima carcasa alcanzada rodando
+        self._in_track = [None] * 4   # C, ultimo borde interior valido EN PISTA
+        self._out_track = [None] * 4  # C, idem exterior
+        self._jump = False            # las 4 carcasas saltaron juntas -> sesion/gomas nuevas
+        self._prev_carc = [None] * 4  # lectura CRUDA anterior, para detectar ese salto
         self._runtime = 0.0           # s acumulados en marcha (>MIN_SPEED)
         self._last_now = None         # monotonic de la ultima ingesta (para dt)
         self._warm = False            # con histeresis (WARM_ENTER/WARM_EXIT)
@@ -277,6 +290,24 @@ class TyreAnalyzer:
         _nan = float("nan")
         get = lambda k, c: (ch[k][c] if ch[k] is not None else _nan)   # noqa: E731
 
+        # Salto SIMULTANEO en las 4 carcasas = la sesion roto o cambiaron las gomas.
+        # No es un evento de la goma y la norma lenta queda colgada en los valores
+        # viejos, asi que sin esto la alarma dispara en las 4 esquinas a la vez.
+        crudas = [get('mTyreCarcassTemp', c) - KELVIN for c in range(4)]
+        prev = self._prev_carc
+        if all(p is not None for p in prev) and all(math.isfinite(v) for v in crudas):
+            saltos = [abs(v - p) for v, p in zip(crudas, prev)]
+            self._jump = min(saltos) >= JUMP_C      # las CUATRO, no una sola
+        else:
+            self._jump = False
+        if self._jump:
+            # re-sembrar: la norma vieja ya no describe nada. Sin esto la alarma
+            # seguiria sonando los ~2.5 min que tarda la EMA lenta en alcanzar.
+            self._slow = list(crudas)
+            self._rel_slow = [None] * 4
+            self._carcass = list(crudas)
+        self._prev_carc = [v if math.isfinite(v) else None for v in crudas]
+
         for c in range(4):
             # Lecturas absolutas: validas tambien parado (reflejan enfriamiento). Cada
             # canal por separado: un NaN puntual en uno no descarta los otros.
@@ -304,8 +335,25 @@ class TyreAnalyzer:
             self._ema(self._brake, c, get('mBrakeTempCelsius', c))
             left, right = get('mTyreTempLeft', c), get('mTyreTempRight', c)
             inner, outer = (right, left) if INNER_IS_RIGHT[c] else (left, right)
-            self._ema(self._t_in, c, inner)
-            self._ema(self._t_out, c, outer)
+            # Los bordes se van a 0.0 EXACTO fuera de pista (garage/menu). Ese centinela
+            # NO se le da de comer a la EMA: si entrara, la lectura decaeria suave hacia
+            # cero y el veredicto de camber que el piloto ve AL VOLVER AL BOX --que es
+            # cuando por fin puede mirar el dash-- saldria de un spread de 0, o sea
+            # "poco camber neg." siempre, sin importar el camber real del auto.
+            # No alimentandola, la EMA queda congelada en lo ultimo medido rodando.
+            bordes_ok = (inner != 0.0 and outer != 0.0
+                         and math.isfinite(inner) and math.isfinite(outer))
+            if bordes_ok:
+                self._ema(self._t_in, c, inner)
+                self._ema(self._t_out, c, outer)
+                self._edges_stale[c] = False
+            elif self._t_in[c] is not None:
+                self._edges_stale[c] = True     # lo que se muestra es DE PISTA, no de ahora
+            # Pico de carcasa de la tanda: lo que la goma ALCANZO, no lo que le queda
+            # cuando por fin la miras. Se resetea con el auto (reset()) y al saltar.
+            if self._live and math.isfinite(carc):
+                self._peak_carc[c] = (carc if self._peak_carc[c] is None
+                                      else max(self._peak_carc[c], carc))
             if wear is not None:
                 try:
                     w = float(wear[c])
@@ -420,6 +468,10 @@ class TyreAnalyzer:
             # dictaba "poco camber neg." a partir de nada.
             if ti == 0.0 and to == 0.0:
                 ti = to = None
+            # Fuera de pista se cae de vuelta a lo ULTIMO medido rodando: es lo que el
+            # piloto viene a ver cuando por fin puede mirar el dash (en el box). Se
+            # marca como congelado para que la UI no lo presente como lectura de ahora.
+            frozen = self._edges_stale[c] and ti is not None
             spread = (ti - to) if (ti is not None and to is not None) else None
             corners.append({
                 "name": CORNERS[c],
@@ -435,6 +487,10 @@ class TyreAnalyzer:
                 "t_bulk": round(tbulk) if tbulk is not None else None,
                 "spread": round(spread, 1) if spread is not None else None,
                 "camber": self._camber_hint(spread),
+                # de pista, no de ahora: la UI lo marca para no presentarlo como actual
+                "frozen": frozen,
+                # lo que la goma ALCANZO rodando (no decae al parar)
+                "peak": (round(self._peak_carc[c]) if self._peak_carc[c] is not None else None),
                 "carcass": round(car) if car is not None else None,
                 # rel: estructura (esta esquina vs la media de las 4, C). tdev: la
                 # esquina se salio de SU norma y de lo que hacen las otras tres.
@@ -476,6 +532,17 @@ class TyreAnalyzer:
         propia norma lenta. El drift comun (warm-up, cool-down, vuelta de traffic) se
         cancela solo al restar la media; lo que dispara es la esquina que se fue del
         resto mas rapido de lo que la norma la sigue."""
+        # Con el auto DETENIDO no se opina: el patron termico deja de venir de la
+        # conduccion y se aplana solo, asi que el rel se desploma contra su norma y
+        # dispara. Medido en vivo: 8 de 19 alarmas de una sesion de 40 min salieron
+        # bajo 15 km/h (boxes y grilla). El replay no podia verlo porque concatena
+        # SOLO trazas de vueltas limpias: nunca ve un pit ni una salida de garage.
+        if not self._live:
+            return [None] * 4
+        # Salto discontinuo = cambio de sesion / de gomas, no un evento de la goma.
+        # (las 4 carcasas pasaron de ~125 C a ~50 C en un frame al cambiar de sesion)
+        if self._jump:
+            return [None] * 4
         if self._runtime < MIN_NORM_S:
             return [None] * 4
         avail = [t for t in self._carcass if t is not None]

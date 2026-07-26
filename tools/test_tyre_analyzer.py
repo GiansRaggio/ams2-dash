@@ -108,11 +108,70 @@ def test_campo_faltante():
         _ok("canal faltante no revienta", False, "AttributeError")
 
 
+
+
+
+def test_no_opina_detenido():
+    """Con el auto parado el patron termico deja de venir de la conduccion: se aplana
+    solo y el rel se desploma contra su norma. Medido en vivo: 8 de 19 alarmas de una
+    sesion de 40 min salieron bajo 15 km/h (boxes y grilla)."""
+    # OJO con la semantica: tdev dispara con un CAMBIO contra la norma propia, no con
+    # una asimetria estable (una constante la absorbe la EMA lenta y deja de ser noticia).
+    # Asi que primero se establece la norma parejo, y RECIEN AHI se cocina una esquina.
+    a = ams2_tyres.TyreAnalyzer(base_dir=NOWHERE)
+    t = 0.0
+    for _ in range(400):                       # norma: las 4 parejas
+        t += 0.5
+        a.update(Snap(carc=(120, 120, 120, 120), speed=50.0), now=t)
+    for _ in range(60):                        # rodando, la FR se cocina
+        t += 0.5
+        a.update(Snap(carc=(120, 150, 118, 119), speed=50.0), now=t)
+    parado = a.payload()
+    for _ in range(60):                        # mismo desbalance, pero DETENIDO
+        t += 0.5
+        a.update(Snap(carc=(120, 150, 118, 119), speed=0.0), now=t)
+    p = a.payload()
+    _ok("detenido -> sin alarma", all(c["tdev"] is None for c in p["corners"]),
+        [c["tdev"] for c in p["corners"]])
+    _ok("pero rodando si opinaba", any(c["tdev"] for c in parado["corners"]),
+        [c["tdev"] for c in parado["corners"]])
+
+
+def test_salto_de_sesion_no_alarma():
+    """Las 4 carcasas saltando juntas = cambio de sesion o de gomas. Medido en vivo:
+    125 -> 58 C en un frame al rotar de sesion, y la alarma sonaba en las 4 esquinas."""
+    a = ams2_tyres.TyreAnalyzer(base_dir=NOWHERE)
+    t = 0.0
+    for _ in range(400):
+        t += 0.5
+        a.update(Snap(carc=(125, 129, 105, 106), speed=50.0), now=t)
+    for _ in range(10):                        # gomas nuevas: las 4 se desploman juntas
+        t += 0.5
+        a.update(Snap(carc=(58, 51, 46, 53), speed=50.0), now=t)
+    p = a.payload()
+    _ok("salto simultaneo -> sin alarma", all(c["tdev"] is None for c in p["corners"]),
+        [c["tdev"] for c in p["corners"]])
+    # pero UNA sola esquina moviendose sigue siendo un evento de verdad
+    b = ams2_tyres.TyreAnalyzer(base_dir=NOWHERE)
+    t = 0.0
+    for _ in range(400):
+        t += 0.5
+        b.update(Snap(carc=(120, 120, 120, 120), speed=50.0), now=t)
+    for _ in range(60):
+        t += 0.5
+        b.update(Snap(carc=(120, 120, 145, 120), speed=50.0), now=t)
+    p2 = b.payload()
+    _ok("una sola esquina -> SI alarma", p2["corners"][2]["tdev"] == "hot",
+        [c["tdev"] for c in p2["corners"]])
+
+
 if __name__ == "__main__":
     print("== ams2_tyres.TyreAnalyzer ==")
     test_centinela_de_bordes()
     test_rel_es_suma_cero()
     test_nan_no_envenena()
     test_campo_faltante()
+    test_no_opina_detenido()
+    test_salto_de_sesion_no_alarma()
     print(f"\n{'todo verde' if not _fails else 'FALLAS: ' + ', '.join(_fails)}")
     sys.exit(1 if _fails else 0)

@@ -354,6 +354,8 @@
   .eaxis .emark.warn{background:var(--amber)}
   .everdict{flex:none;text-align:center;font-size:clamp(10px,1.5vh,14px);color:var(--dim);
             font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .tband.carc .cpk{font-size:clamp(9px,1.2vh,12px);letter-spacing:.08em;
+                   color:rgba(238,243,250,.72);font-variant-numeric:tabular-nums}
   .everdict.warn{color:var(--amber)}
 
   /* spine */
@@ -1105,6 +1107,12 @@ function renderTyres(y){
        este número lo cuantifica. Con bridge viejo (sin rel) queda vacío, no "±0". */
     const relTxt = c.rel == null ? "" : `<span class="crel">${sgn(c.rel, 1)}° vs media</span>`;
 
+    /* PICO de carcasa de la tanda. El piloto casi nunca puede mirar el dash EN pista;
+       cuando llega al box la goma ya se enfrió, así que el número de "ahora" no cuenta
+       lo que pasó. Se muestra sólo si está por encima de la lectura actual. */
+    const pkTxt = (c.peak != null && c.carcass != null && c.peak > c.carcass + 2)
+                ? `<span class="cpk">pico ${c.peak}°</span>` : "";
+
     /* LA BALANZA: la señal es la diferencia int−ext, no los absolutos */
     const camWarn = (c.camber && c.camber !== "ok") ? "warn" : "";
     const eMark = c.spread == null ? ""
@@ -1115,6 +1123,9 @@ function renderTyres(y){
     if(c.spread != null) vBits.push("Δ" + sgn(c.spread, 1) + "°");
     if(c.camber) vBits.push(c.camber === "ok" ? "camber ok" : c.camber);
     if(c.brake != null) vBits.push("freno " + c.brake + "°");
+    /* fuera de pista los bordes se van a 0 y la lectura queda CONGELADA en lo último
+       medido rodando. Se dice, para no presentarlo como medición de ahora. */
+    if(c.frozen) vBits.push("de pista");
     const verdict = vBits.length ? vBits.join(" · ") : "—";
 
     const wCls = c.wear == null ? "" : c.wear >= 80 ? "red" : c.wear >= 50 ? "amber" : "";
@@ -1141,6 +1152,7 @@ function renderTyres(y){
     +     `<div class="tband bulk"><i>BULK</i><b>${deg(tBulk)}</b></div>`
     +     `<div class="tband carc" style="background:${heatRel(c.rel)}">`
     +       `<div class="crow"><i>CARC</i><b>${deg(c.carcass)}</b></div>`
+    +       `${pkTxt}`
     +       `${relTxt}</div></div></div>`
     + `<div class="tedge">`
     +   `<span class="et"><i>EXT</i>${deg(c.t_out)}</span>`
@@ -1361,7 +1373,12 @@ function renderCrossover(s){
   const el = $("scross"), cx = s.crossover;
   if(!cx){ el.classList.add("hidden"); return; }
   el.classList.remove("hidden");
-  const cond = `lluvia ${cx.rain} · pista ${cx.track_t}° · wets ${cx.wet_temp}°`;
+  /* wet_temp llega en null cuando AMS2 no corre el modelo térmico de banda (pasa en la
+     mayoría de las sesiones de lluvia). Ahí NO hay temperatura que mostrar: el bulk
+     marca ~32° con la carcasa a 130 y pintarlo sería decir "gomas heladas" con el dato
+     del bug. El semáforo sigue vivo con las otras señales, con una señal menos. */
+  const wt = cx.wet_temp!=null ? `${cx.wet_temp}°` : (cx.wet_dead ? "sin señal" : "—");
+  const cond = `lluvia ${cx.rain} · pista ${cx.track_t}° · wets ${wt}`;
   const sig = (cx.signals && cx.signals.length) ? cx.signals.join(" · ") : cond;
   if(cx.state==="calibrando"){
     el.className = "cx-calib";
