@@ -381,7 +381,17 @@ def report_session(folder):
             # aparte en vez de contaminar el veredicto (ver _split_anomalas).
             buenas, anomalas = _split_anomalas(times)
             sd = st.pstdev(buenas)
-            tag = "excelente" if sd < 0.5 else "buena" if sd < 1.0 else "regular" if sd < 2.0 else "dispersa"
+            # No se califica cuando el filtro de anomalas NO PUDO correr (menos de 4
+            # vueltas de entrada: MAD sobre 3 puntos no distingue nada), porque ahi un
+            # solo incidente define el sigma -- Le Mans daba "dispersa" sobre 3 vueltas
+            # donde una era un toque de 13 s. El gate va sobre `times`, NO sobre
+            # `buenas`: en Bathurst el filtro SI corrio (4 de entrada) y saco el
+            # incidente, y esas 3 vueltas limpias a 0.19 s si merecen su veredicto.
+            if len(times) < 4:
+                tag = "n bajo, sin veredicto"
+            else:
+                tag = ("excelente" if sd < 0.5 else "buena" if sd < 1.0
+                       else "regular" if sd < 2.0 else "dispersa")
             extra = f"  ·  tendencia {_slope(buenas):+.2f}s/vuelta"
             if anomalas:
                 extra += f"\n  incidentes      : {len(anomalas)} vuelta(s) fuera de ritmo (" \
