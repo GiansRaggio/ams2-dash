@@ -12,8 +12,13 @@ estan baked-in aca (cada una corrige una trampa real):
   * UNIDADES: el header documenta mEventTimeRemaining en MILISEGUNDOS y
     mSessionDuration en MINUTOS (no segundos). Se normaliza TODO a segundos con
     un TIME_SCALE detectado empiricamente al inicio (ver _detect_time_scale).
-  * mTyreGrip NO se usa: el header lo marca 'OBSOLETE' y en AMS2 no se puebla.
-    El desgaste sale de mTyreWear (delta real por vuelta) + mTyreTemp + deriva
+  * mTyreGrip no se usa ACA, pero OJO: este docstring decia "en AMS2 no se puebla" y
+    eso es FALSO. Se midio (5.747 muestras) variando 0.0000-0.9967 con senal coherente:
+    corr -0.725 con deslizamiento, -0.769 con G lateral, 0.457 en recta vs 0.104 en
+    curva. O sea es MARGEN de agarre sin usar, instantaneo -- no sirve para desgaste
+    (que es lo que hace este modulo), pero si para saber que rueda llega antes al
+    limite en cada curva. Se graba en ams2_telemetry como tyre_grip_*.
+    El desgaste sale de mTyreWear (delta real por vuelta) + carcasa + deriva
     del lap-time. La direccion de mTyreWear se autodetecta por el signo del delta.
   * mFuelCapacity tiene un comentario auto-contradictorio: se usa solo si > 1.0
     (litros plausibles); si no, cae a una capacidad por defecto.
@@ -66,8 +71,6 @@ TYRE_WARMUP_LAPS = 3         # no juzgar desgaste en las primeras vueltas del st
 WEAR_THRESHOLD = 0.80        # umbral operativo: planear cambio cuando el peor neumatico llega aca
 WEAR_AMBER = 0.50            # neumatico en amarillo
 WEAR_FLAT_LAPS = 4           # si el desgaste no se mueve en N vueltas verdes => dato plano
-TEMP_COLD = 70.0             # ventana termica GT3 generica (C)
-TEMP_HOT = 100.0
 PIT_WINDOW = 3               # +/- vueltas alrededor del objetivo de parada
 
 # --- detector de crossover lluvia->lisos (pista que seca) ---
@@ -250,6 +253,36 @@ class StrategyEngine:
         que no debe re-implementar la deteccion de direccion de mTyreWear."""
         return self._wear_vec(d)
 
+    def eol_vec(self, d):
+        """Vueltas que le quedan a CADA rueda hasta WEAR_THRESHOLD ("end of life").
+
+        Publico: lo consume ams2_tyres para el marcador EOL de la pagina de gomas.
+        Reusa _wear_vec (direccion de mTyreWear ya resuelta) y el mismo EMA _wear_rate
+        que alimenta el horizonte de estrategia -- una sola verdad para las dos vistas.
+        Diferencia con tyre_horizon: eso es la PEOR rueda; esto es rueda por rueda.
+
+        None donde no hay derecho a opinar: dato plano (WEAR_FLAT_LAPS vueltas verdes
+        sin movimiento, tipico de sesiones con desgaste apagado) o rate <= EPS (todavia
+        sin muestras, o dentro de TYRE_WARMUP_LAPS). Nunca se devuelve inf/NaN: ese
+        vector termina en un json.dumps y un NaN tumba el broadcast entero.
+        """
+        if self._wear_flat >= WEAR_FLAT_LAPS:
+            return [None] * 4
+        wear = self._wear_vec(d)
+        out = []
+        for i in range(4):
+            rate = self._wear_rate[i]
+            if rate <= EPS:
+                out.append(None)
+                continue
+            laps = (WEAR_THRESHOLD - wear[i]) / rate
+            out.append(max(0.0, laps) if math.isfinite(laps) else None)
+        return out
+
+    def stint_laps(self):
+        """Vueltas cruzadas dentro del stint actual (se reinicia al parar en boxes)."""
+        return self._stint_lap
+
     def _wear_vec(self, d):
         """Desgaste efectivo por rueda (0=nuevo .. 1=gastado), con direccion resuelta."""
         raw = [d.mTyreWear[i] for i in range(4)]
@@ -331,15 +364,19 @@ class StrategyEngine:
         rate_max = max(self._wear_rate)
         flat = self._wear_flat >= WEAR_FLAT_LAPS or rate_max <= EPS
         horizon = INF if flat else max(0.0, (WEAR_THRESHOLD - wear_max) / rate_max)
-        temps = [d.mTyreTemp[i] for i in range(4)]
+        # Temp mostrada: CARCASA, no mTyreTemp (bulk). El bulk viene MUERTO (pegado al
+        # ambiente) en ~10% de las sesiones -- bug del juego, por sesion -- y la carcasa
+        # esta viva en el 100% (barrido de 58+ sesiones grabadas; correr tools/tyre_replay.py para el numero de hoy). El
+        # veredicto hot/cold por ventana fija 70-100 murio con ese mismo barrido: las
+        # medianas reales van de 52 a 143 segun el auto, no hay tabla que generalice.
+        # El veredicto termico honesto (tdev, auto-referencial) vive en la pagina GOMAS.
+        temps = [d.mTyreCarcassTemp[i] - 273.15 for i in range(4)]
         tyres = []
         for i in range(4):
             w = wear_eff[i]
             st = "red" if w >= WEAR_THRESHOLD else "amber" if w >= WEAR_AMBER else "green"
-            t = temps[i]
-            tstat = "hot" if t >= TEMP_HOT else "cold" if (0 < t < TEMP_COLD) else "ok"
-            tyres.append({"w": round(w * 100), "t": round(t), "st": st,
-                          "tstat": tstat, "warm": self._stint_lap <= TYRE_WARMUP_LAPS})
+            tyres.append({"w": round(w * 100), "t": round(temps[i]), "st": st,
+                          "warm": self._stint_lap <= TYRE_WARMUP_LAPS})
         return {"tyres": tyres, "worst": worst, "horizon": horizon, "flat": flat}
 
     # ---------------- detector de crossover lluvia -> lisos ----------------

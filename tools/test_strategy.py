@@ -5,6 +5,7 @@ Valida la matematica verificada por el workflow: laps_to_go (timed/laps), fuel
 projection, semaforo, fuel-to-save, stops, deteccion de unidades ms/min, guard
 de capacidad. Correr: python tools/test_strategy.py
 """
+import math
 import os
 import sys
 
@@ -44,6 +45,10 @@ class Snap:
         self.mBestLapTime = 89.0
         self.mTyreWear = [0.0, 0.0, 0.0, 0.0]
         self.mTyreTemp = [85.0, 85.0, 85.0, 85.0]
+        # _tyres() paso a leer la CARCASA (el bulk se muere en algunas sesiones). En KELVIN,
+        # como la entrega la shared memory. Sin esto el archivo entero revienta en la primera
+        # funcion con AttributeError: 0 PASS, 0 FAIL, ni un test llega a correr.
+        self.mTyreCarcassTemp = [t + 273.15 for t in self.mTyreTemp]
         self.mTyreCompound = [b"Medium", b"Medium", b"Medium", b"Medium"]
         self.mRainDensity = 0.0                    # seco por defecto
         self.mTrackTemperature = 25.0
@@ -186,6 +191,49 @@ def test_tyre_wear():
     _ok("tyre_horizon presente", o.get("tyre_horizon") is not None, o.get("tyre_horizon"))
     _ok("4 ruedas en payload", len(o.get("tyres", [])) == 4)
     print(f"    -> wear peor={o['tyres'][o['worst']]['w']}% horizonte={o.get('tyre_horizon')}v limiter={o.get('limiter')}")
+
+    st0 = e.stint_laps()
+    s2 = Snap(mLapsInEvent=30, mLapsCompleted=13, mFuelLevel=0.7,
+              mLastLapTime=90.0, mCurrentTime=5.0, mTyreWear=[0.99] * 4)
+    s2._p = P(laps_completed=13, current_lap=14)
+    e.update(s2)
+    _ok("stint_laps suma una vuelta por cruce", e.stint_laps() == st0 + 1,
+        (st0, e.stint_laps()))
+
+
+def test_eol_por_rueda():
+    print("test_eol_por_rueda (vueltas que le quedan a CADA goma -> pagina de gomas):")
+    e = S.StrategyEngine()
+    # 10 vueltas al 5%/v: wear 0.50, rate ~0.05 -> (0.80-0.50)/0.05 = ~6 vueltas.
+    feed_laps(e, Snap, 10, 90.0, 1.0, wear_per_lap=0.05)
+    s = Snap(mLapsInEvent=30, mTyreWear=[0.50, 0.50, 0.50, 0.50])
+    s._p = P(laps_completed=10, current_lap=11)
+    e.update(s)
+    eol = e.eol_vec(s)
+    _ok("eol_vec 4 valores", len(eol) == 4, eol)
+    _ok("todos finitos (ni None ni inf)",
+        all(isinstance(v, float) and math.isfinite(v) for v in eol), eol)
+    _ok("eol ~6 vueltas", all(4.5 < v < 8.0 for v in eol), [round(v, 2) for v in eol])
+    _ok("eol == horizonte con 4 ruedas parejas",
+        abs(eol[0] - e.payload()["tyre_horizon"]) < 0.6,
+        (round(eol[0], 2), e.payload()["tyre_horizon"]))
+    # Rueda pasada de umbral: se satura en 0, nunca negativo.
+    s2 = Snap(mLapsInEvent=30, mTyreWear=[0.95, 0.50, 0.50, 0.50])
+    s2._p = P(laps_completed=10, current_lap=11)
+    _ok("rueda pasada de umbral -> 0.0, no negativo", e.eol_vec(s2)[0] == 0.0, e.eol_vec(s2))
+
+
+def test_eol_sin_datos():
+    print("test_eol_sin_datos (desgaste plano / sin muestras -> None, nunca inf):")
+    e = S.StrategyEngine()
+    s = Snap()
+    s._p = P()
+    e.update(s)
+    _ok("recien arrancado -> 4 None", e.eol_vec(s) == [None] * 4, e.eol_vec(s))
+    _ok("stint 0 al arrancar", e.stint_laps() == 0, e.stint_laps())
+    # Sesion con desgaste apagado: vueltas verdes sin que se mueva mTyreWear -> plano.
+    feed_laps(e, Snap, 10, 90.0, 1.0, wear_per_lap=0.0)
+    _ok("desgaste plano -> 4 None (no inf)", e.eol_vec(s) == [None] * 4, e.eol_vec(s))
 
 
 def test_planning_practice():
@@ -420,6 +468,7 @@ def test_speech_server():
 if __name__ == "__main__":
     for t in (test_lap_race, test_timed_race_seconds, test_timed_race_millis,
               test_fuel_deficit, test_capacity_guard, test_tyre_wear,
+              test_eol_por_rueda, test_eol_sin_datos,
               test_planning_practice, test_live_overrides_plan,
               test_all_laps_toggle, test_no_false_fumes, test_calibrating,
               test_crossover_dry_none, test_crossover_green_raining,

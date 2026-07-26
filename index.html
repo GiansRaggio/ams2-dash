@@ -132,7 +132,7 @@
   /* Baja de 7vh a 17vh para librar la fila de botones (#ctrlbar): a 390px de alto el
      banner caia en y=27-49 y #ctrlbar vive en 34-58, o sea justo encima de btnstop y
      btnfs. Y pointer-events:none porque un aviso de ESTADO no debe comerse un toque
-     nunca -- antes tenia 'auto' y se tragaba el click aunque vieras el boton debajo. */
+     nunca -- antes tenia 'auto' y se tragaba el click aunque lo vieras. */
   #pitlimit{position:fixed;top:17vh;left:50%;transform:translateX(-50%);z-index:40;
             pointer-events:none;
             display:none;padding:.9vh 3.5vw;font-size:3.2vh;font-weight:800;
@@ -144,10 +144,9 @@
   /* aviso: la pantalla puede apagarse (Wake Lock no disponible / se soltó).
      Anclado ARRIBA (no abajo) para no tapar la lectura de combustible/#conn de la banda inferior. */
   /* pointer-events:none por lo mismo que #pitlimit: es un AVISO, no un control. Tenia
-     'auto' y tapaba botones del header (ej. el boton de config de estrategia en modo
-     vertical). El reintento no cuelga de este nodo -- el texto dice "toca la PANTALLA"
-     y el listener vive a nivel de documento, asi que dejar pasar el toque es lo que se
-     quiere. */
+     'auto' y tapaba botones del header (ej. el ⚙ de estrategia en vertical). El
+     reintento no cuelga de este nodo -- el texto dice "toca la PANTALLA" y el listener
+     vive a nivel de documento, asi que dejar pasar el toque es justo lo que se quiere. */
   #nolock{position:fixed;top:calc(1vh + env(safe-area-inset-top));left:50%;
     transform:translateX(-50%);z-index:45;pointer-events:none;
     display:none;flex-direction:column;align-items:center;gap:.2vh;
@@ -249,7 +248,9 @@
   .dbars i.bump{background:var(--amber)}
   .dbars i.hi{opacity:.4}
   #drecs{flex:none;display:flex;flex-direction:column;gap:.5vh;max-height:36vh;overflow-y:auto}
-  /* ---- GOMAS v2: reja 2x2 + spine central (el auto visto desde arriba) ----
+  /* ---- GOMAS v3: reja 2x2 + spine central (el auto visto desde arriba) ----
+     Cada celda es un neumático-contenedor: el cuerpo se llena por PROFUNDIDAD
+     (SUP/BULK/CARC), con la presión como riel al costado exterior.
      Las celdas FR/RR llevan .mirror ESTATICA en el HTML: el espejado lo hace el CSS,
      el JS nunca decide lado. Asi "interior" siempre apunta al spine en las 4 esquinas. */
   #ygrid{flex:1;min-height:0;display:grid;gap:1vh;
@@ -258,45 +259,82 @@
   #yspine{grid-area:1/2/3/3;display:flex;flex-direction:column;gap:1vh}
 
   /* min-width:0 es OBLIGATORIO: los items de grid son min-width:auto, y el min-content
-     de .tfoot/.everdict (nowrap) inflaba la columna a ~211px -> en un iPhone de 375px la
+     de .everdict/.dabs (nowrap) inflaba la columna a ~211px -> en un iPhone de 375px la
      columna derecha (FR/RR) se salia de pantalla y body{overflow:hidden} la recortaba mudo. */
   .tcell{min-height:0;min-width:0;display:flex;flex-direction:column;gap:.5vh;padding:.7vh 1vw;
          background:linear-gradient(180deg,var(--panel2),var(--panel));
          border:1px solid var(--line);clip-path:var(--chamfer);position:relative}
   .tcell::after{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;
-                background:var(--edge,transparent)}     /* acento = tstat fuera de ventana */
+                background:var(--edge,transparent)}     /* acento = tdev: fuera de SU norma */
   .tcell.hot{--edge:var(--red)} .tcell.coldc{--edge:var(--cyan)}
 
   .thead{flex:none;display:flex;justify-content:space-between;align-items:baseline}
   .tname{font-weight:800;font-size:clamp(14px,2.1vh,22px);letter-spacing:.1em}
   .twear{font-size:clamp(10px,1.5vh,14px);color:var(--dim);font-variant-numeric:tabular-nums}
   .twear.amber{color:var(--amber)} .twear.red{color:var(--red)}
+  /* EOL = vueltas al umbral de desgaste. Va SIEMPRE en dim aunque el wear este en ambar/rojo:
+     es una estimacion (EMA del rate), no una medicion -> no grita como el % */
+  .teol{color:var(--dim);font-weight:400}
 
-  /* fila principal: delta (afuera) | carcasa (adentro); .mirror la invierte */
-  .tmain{flex:none;display:flex;gap:1.2vw}
-  .mirror .tmain{flex-direction:row-reverse}
-  .tdelta{flex:1.15;display:flex;flex-direction:column;justify-content:center}
+  /* fila principal: presion (afuera) | riel | cuerpo del neumatico (adentro).
+     .mirror la invierte -> la presion queda SIEMPRE al costado exterior del auto.
+     flex:2 y no 1: el sobrante de la celda se reparte con .tedge, y la balanza solo
+     necesita el alto del eje (~30px) mientras el cuerpo ES el instrumento. Medido a
+     844x390: con 1:1 el cuerpo quedaba en 71px (bandas de 18px) y sobraba aire bajo el eje. */
+  .tmain2{flex:2;min-height:0;display:flex;gap:1vw;align-items:stretch}
+  .mirror .tmain2{flex-direction:row-reverse}
+  /* min-width:0: los absolutos (.dabs) van nowrap y sin esto inflarian la columna */
+  .tdelta{flex:1.15;min-width:0;display:flex;flex-direction:column;justify-content:center}
   .tdelta .dv{font-size:clamp(22px,4.6vh,48px);font-weight:800;line-height:1;
               font-variant-numeric:tabular-nums}
   .tdelta .dverb{font-size:clamp(10px,1.4vh,13px);letter-spacing:.18em;color:var(--dim);
                  text-transform:uppercase;font-weight:600;margin-top:.3vh}
+  .tdelta .dabs{font-size:clamp(10px,1.4vh,13px);color:var(--dim);line-height:1.35;
+                font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;
+                text-overflow:ellipsis}
+  /* + y no :first-of-type: .dv y .dverb también son <span>, así que el "primero de su
+     tipo" nunca sería un .dabs y la regla no aplicaría nunca (código muerto) */
+  .tdelta .dverb + .dabs{margin-top:.5vh}
   .tdelta.low .dv,.tdelta.low .dverb{color:var(--cyan)}     /* agregar */
   .tdelta.high .dv,.tdelta.high .dverb{color:var(--amber)}  /* sacar  */
   .tdelta.ok .dv,.tdelta.ok .dverb{color:var(--green)}
   .tdelta.wait .dv{color:var(--dim)}
-  .tcarc{flex:1;display:flex;flex-direction:column;justify-content:center;gap:.5vh}
-  .tcarc .cv{font-size:clamp(18px,3.4vh,36px);font-weight:800;line-height:1;
-             font-variant-numeric:tabular-nums}
-  .tcarc .cv small{font-size:clamp(10px,1.4vh,13px);color:var(--dim);font-weight:600;letter-spacing:.14em}
-  .tcarc.cold{color:var(--cyan)} .tcarc.ok{color:var(--green)} .tcarc.hot{color:var(--red)}
-  .tcarc.cold .cv,.tcarc.ok .cv,.tcarc.hot .cv{color:inherit}
-  .cgauge{height:max(6px,1vh);background:#10151d;border:1px solid var(--line);
-          border-radius:3px;position:relative;overflow:hidden}
-  .cgauge .cwin{position:absolute;top:0;bottom:0;left:40%;width:40%;
-                background:rgba(43,240,122,.22)}          /* 70-100° en escala 40-115° */
-  .cgauge .cmark{position:absolute;top:-1px;bottom:-1px;width:3px;background:currentColor;
-                 box-shadow:0 0 6px currentColor}   /* sin transition: renderTyres recrea el <i> por payload
-                 y un nodo recien insertado no tiene valor previo del cual interpolar */
+
+  /* riel de presion: vertical, arriba = mas presion. .mirror NO lo toca (no tiene lado). */
+  .prail{flex:none;width:max(10px,1.6vh);position:relative;background:#ffffff0a;border-radius:2px}
+  .prail .pband{position:absolute;left:0;right:0;top:35%;height:30%;background:rgba(43,240,122,.18)}
+  .prail .ptgt{position:absolute;left:-2px;right:-2px;top:50%;border-top:1px dashed #ffffff59}
+  .prail .pmark{position:absolute;left:50%;width:max(8px,1.4vh);height:max(8px,1.4vh);
+                transform:translate(-50%,-50%) rotate(45deg)}
+  .pmark.low{background:var(--cyan)} .pmark.high{background:var(--amber)}
+  .pmark.ok{background:var(--green)}
+  .pmark.wait{background:transparent;border:1px solid var(--dim)}   /* frio: sin autoridad */
+
+  /* EL CUERPO: el neumatico es el instrumento. Tres bandas por PROFUNDIDAD (SUP/BULK/CARC).
+     v3.1: murio la escala absoluta 40-115 con ventana 70-100 -- medida contra el corpus grabado (58 sesiones a jul-2026)
+     reales salia saturada SIEMPRE (la carcasa corre +12..+87 C sobre la superficie en todo
+     auto, y 8 de 10 autos median >100 en conduccion normal). Ahora el color es
+     AUTO-REFERENCIAL y va SOLO en la banda CARC: heatRel(rel) pinta cuanto trabaja esa
+     esquina contra la MEDIA de las 4 (suma cero: no puede salir todo rojo). SUP y BULK
+     quedan en numeros sobre fondo neutro -- son canales que AMS2 a veces ni puebla
+     (surf_dead) y no tienen escala honesta que los pinte. El acento .tcell.hot/.coldc ya
+     no es una ventana fija: es tdev, "esta esquina se salio de SU norma" (bridge). */
+  .tbody2{flex:none;width:clamp(64px,10vw,110px);display:flex;flex-direction:column;
+          border:1px solid var(--line);border-radius:9px;overflow:hidden}
+  .tband{position:relative;flex:27;display:flex;align-items:center;justify-content:space-between;
+         padding:0 .6vw;font-variant-numeric:tabular-nums;background:#10151d;
+         border-top:1px solid rgba(255,255,255,.08)}
+  .tband.surf{border-top:none}
+  .tband.carc{flex:46;flex-direction:column;align-items:stretch;justify-content:center;gap:.4vh}
+  .tband.carc .crow{display:flex;justify-content:space-between;align-items:baseline}
+  .tband>i,.tband .crow>i{font-style:normal;font-size:clamp(10px,1.2vh,11px);letter-spacing:.16em;
+           color:rgba(238,243,250,.65);font-weight:600}
+  .tband b{font-size:clamp(12px,2vh,17px);font-weight:800;color:var(--txt);
+           text-shadow:0 1px 2px rgba(0,0,0,.55)}   /* legible sobre cualquier punto de la rampa */
+  .tband.carc b{font-size:clamp(17px,3.2vh,32px)}
+  /* rel en numero bajo la carcasa: el fill dice "cual", esto dice "cuanto" */
+  .crel{font-size:clamp(10px,1.3vh,12px);color:rgba(238,243,250,.75);
+        font-variant-numeric:tabular-nums;text-shadow:0 1px 2px rgba(0,0,0,.55)}
 
   /* balanza de spread (t_in - t_out), escala fija -8...+20°, banda OK +3...+12 */
   .tedge{flex:1;min-height:0;display:flex;align-items:center;gap:.8vw}
@@ -314,15 +352,9 @@
                 transform:translate(-50%,-50%) rotate(45deg);background:var(--green);
                 }
   .eaxis .emark.warn{background:var(--amber)}
-  .ebulk{flex:none;font-size:clamp(10px,1.5vh,14px);color:var(--dim);padding:.2vh .6vw;
-         border:1px solid var(--line);border-radius:3px;font-variant-numeric:tabular-nums;
-         background:repeating-linear-gradient(45deg,#ffffff14 0 2px,transparent 2px 5px)}
   .everdict{flex:none;text-align:center;font-size:clamp(10px,1.5vh,14px);color:var(--dim);
             font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .everdict.warn{color:var(--amber)}
-  .tfoot{flex:none;display:flex;justify-content:space-between;gap:1vw;color:var(--dim);
-         font-size:clamp(10px,1.5vh,14px);font-variant-numeric:tabular-nums;
-         white-space:nowrap;overflow:hidden}
 
   /* spine */
   .ybox{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
@@ -335,6 +367,10 @@
   #ymid{flex:1.4;cursor:pointer}                          /* tap -> modal 🎯 */
   #ymid .ystate{font-size:clamp(10px,1.5vh,14px);letter-spacing:.12em;font-weight:700}
   #ymid .ystate.warm{color:var(--green)} #ymid .ystate.coldw{color:var(--cyan)}
+  /* CALENTANDO va en ambar y ENFRIANDO en cyan: antes CALENTANDO reusaba .coldw, o sea
+     se pintaba del MISMO cyan que "FRÍA" -- el color que en toda la pagina significa
+     frio, sobre la palabra que dice lo contrario. Y ENFRIANDO no tenia color ninguno. */
+  #ymid .ystate.heat{color:var(--amber)} #ymid .ystate.cool{color:var(--cyan)}
 
   /* banner de estado (idioma visual de #scross.cx-calib) */
   #ystatus{flex:none;text-align:center;padding:.6vh 1vw;border-radius:.8vh;
@@ -428,8 +464,6 @@
   .swheel.w-amber .sw{color:var(--amber)}
   .swheel.w-red .sw{color:var(--red)}
   .swheel.worst{border-color:var(--red);box-shadow:inset 0 0 18px rgba(255,46,77,.3)}
-  .swheel.hot .stmp{color:var(--red);font-weight:800}
-  .swheel.cold .stmp{color:var(--blue);font-weight:800}
 
   /* limitante del stint */
   #slimrow{flex:none;text-align:center}
@@ -526,10 +560,19 @@
     #yRL{grid-area:3/1}#yRR{grid-area:3/2}
     .tcell{min-height:24vh}
     #tyreview{overflow-y:auto}
+    /* en portrait manda el ANCHO: los vh de landscape colapsan al piso y todo queda igual
+       de chico. Se reescalan por vw las tres tipografias del cuerpo + los absolutos. */
     .tdelta .dv{font-size:clamp(20px,6.5vw,32px)}
-    .tcarc .cv{font-size:clamp(16px,5vw,26px)}
+    .tdelta .dabs{font-size:clamp(10px,2.8vw,13px)}
+    .tband b{font-size:clamp(12px,3.6vw,18px)}
+    .tband.carc b{font-size:clamp(16px,5vw,26px)}
+    .tband>i,.tband .crow>i{font-size:clamp(10px,2.4vw,12px)}
+    .tbody2{width:clamp(64px,22vw,110px)}
+    /* el veredicto ahora carga también el freno: en una celda de 182px no cabe en una
+       línea (297px con "mucho camber neg."). En portrait sobra alto -> se deja envolver
+       en vez de elipsizar, que es lo único que borraría información. */
+    .everdict{white-space:normal;line-height:1.25}
     .ybox b{font-size:clamp(14px,4.5vw,22px)}
-    .ebulk{font-size:clamp(9px,2.6vw,12px);padding:.2vh .4vw}
     .tedge .et{font-size:clamp(11px,3vw,14px)}
     #sgrid{grid-template-columns:1fr}
     #sfuel .sbignum{font-size:clamp(38px,16vw,96px)}
@@ -933,20 +976,42 @@ function showPage(n){
   lock();
 }
 
-/* ---- GOMAS: temps por zona (interior/medio/exterior), presión y desgaste ----
+/* ---- GOMAS: corte térmico por profundidad, presión y desgaste ----
    La presión objetivo la fija el piloto (🎯) y el bridge la persiste por auto; el
    delta es lo que hay que AGREGAR (+) o SACAR (−) para llegar. Se aplica en frío:
    el cambio se traslada ~1:1 a la presión en caliente. */
 const YC = ["FL","FR","RL","RR"];
-/* ---- GOMAS v2: las DOS unicas escalas del frontend ----
-   Los umbrales (pstat/tstat/camber/warm) los resuelve el bridge; acá sólo se posiciona.
-   carcasa: 40-115 °C, banda verde 70-100 (el .cwin del CSS: left 40%, width 40%).
+/* ---- GOMAS v3.1: las DOS únicas escalas del frontend ----
+   Los umbrales (pstat/tdev/camber/warm) los resuelve el bridge; acá sólo se posiciona.
    spread : -8...+20 °C, banda OK +3...+12 (el .eband del CSS: left 39.3%, width 32.1%).
+   presión: ±0.10 bar en el riel, banda ok ±0.03 (el .pband del CSS: top 35%, alto 30%).
+   La escala ABSOLUTA de carcasa (40-115, ventana 70-100) MURIÓ: contra el corpus grabado
+   reales salía saturada siempre (medianas de carcasa 52-143 según el auto — no hay
+   tabla que generalice). El color térmico ahora es rel (bridge): esta esquina vs la
+   media de las 4, ±15 °C en heatRel(). Auto-referencial, suma cero, sin tabla.
    El espejado de FR/RR lo hace el CSS (.mirror .eaxis{scaleX(-1)}): cero matemática de lado acá. */
-const CLO = 40, CHI = 115, SLO = -8, SHI = 20;
+const SLO = -8, SHI = 20, RELHALF = 15;
 const clampPct = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-const carcPos = t => clampPct((t - CLO) / (CHI - CLO) * 100, 2, 98);
 const sprPos  = s => clampPct((s - SLO) / (SHI - SLO) * 100, 3, 97);
+
+/* Relleno de la banda CARC: rampa coolwarm sobre rel ±15 °C, neutro en 0 (la esquina
+   trabaja como la media). Es un hecho, no un juicio: azul = corre más fría que el
+   resto del auto, rojo = es la que carga el trabajo. En pista direccional una esquina
+   VIVE roja — eso es información (Interlagos carga la derecha), no alarma; la alarma
+   es tdev. Sin verde/cyan/púrpura: esos hues son de ESTADO (y del best lap).
+   Sin transition: renderTyres recrea los nodos, no hay valor previo del cual interpolar. */
+function heatRel(r){
+  if(r == null || !isFinite(r)) return "#10151d";
+  const x = clampPct((r + RELHALF) / (2 * RELHALF) * 100, 0, 100) / 100;
+  if(x < 0.5){ const k = x / 0.5;                       /* -15..0: azul acero -> gris */
+    return `hsl(215 ${Math.round(55-45*k)}% ${Math.round(18+18*k)}%)`; }
+  const k = (x - 0.5) / 0.5;                            /* 0..+15: gris -> rojo */
+  return `hsl(${Math.round(20-20*k)} ${Math.round(10+70*k)}% ${Math.round(36+8*k)}%)`;
+}
+/* Riel de presion: vertical, ARRIBA = mas presion. +-0.10 bar visibles; la banda verde del CSS
+   (top 35%, alto 30%) son los +-0.03 bar de PRESS_TOL, o sea el mismo umbral que decide pstat. */
+const RAIL_HALF = 0.10;
+const railTop = (p, tgt) => clampPct(50 - (p - tgt) / RAIL_HALF * 50, 6, 94);
 /* signo + decimales FIJOS: el delta siempre con 2 (+0.10, no +0.1) y el spread con 1 (+7.2°).
    null -> em-dash, NO "±0": el Δ de ejes es el número del spine que menos quieres inventado. */
 const sgn = (v, d = 0) => v == null || !isFinite(v) ? "—"
@@ -976,8 +1041,17 @@ function renderTyres(y){
      taparíamos el único mensaje que explica por qué los 4 deltas están en "—". */
   const st = $("ystatus");
   if(vacio || (y.live && y.warm)){
-    st.className = "hidden";
-    st.textContent = "";
+    /* sin frío ni detenido que avisar, el banner queda para la única otra verdad
+       incómoda: AMS2 no está corriendo el modelo térmico de banda en esta sesión
+       (pasa en ~10% de las sesiones, por sesión y no por auto). Sin este aviso, los
+       em-dash de SUP/BULK/EXT-INT parecerían un bug del dash. */
+    if(y.surf_dead && !vacio){
+      st.className = "stop";
+      st.textContent = "SIN TÉRMICOS DE BANDA — el juego no los emite en esta sesión (SUP/BULK/bordes sin datos)";
+    }else{
+      st.className = "hidden";
+      st.textContent = "";
+    }
   }else if(!y.warm){
     st.className = "cold";
     st.textContent = "GOMA FRÍA — el delta aparece con la carcasa en temperatura";
@@ -990,12 +1064,14 @@ function renderTyres(y){
   for(let i = 0; i < 4; i++){
     const cell = $("y" + YC[i]), c = cs[i];
     if(!cell) continue;
-    /* acento de 3px en el borde: sólo si la carcasa está fuera de ventana.
+    /* acento de 3px en el borde: tdev = esta esquina se salió de SU norma (la EMA
+       lenta de rel que lleva el bridge). Raro por construcción — la gran mayoría de las sesiones reproducidas
+       reproducidas dan 0% — así que cuando enciende, es un evento de verdad.
        toggle() y NO className=: reescribir la lista entera re-derivaría .mirror del
        índice del loop (el espejado es del CSS, ver el markup) y además dejaría el
        acento pegado en la rama de esquina nula, que no reconstruye clases. */
-    cell.classList.toggle("hot", !!c && c.tstat === "hot");
-    cell.classList.toggle("coldc", !!c && c.tstat === "cold");
+    cell.classList.toggle("hot", !!c && c.tdev === "hot");
+    cell.classList.toggle("coldc", !!c && c.tdev === "cold");
     if(!c){ cell.innerHTML = `<div class="thead"><span class="tname">${YC[i]}</span></div>`; continue; }
 
     /* EL DELTA (instrucción). delta = objetivo − actual: +0.06 = AGREGAR, −0.06 = SACAR.
@@ -1008,38 +1084,69 @@ function renderTyres(y){
                 : c.pstat === "high" ? "SACAR"
                 : c.pstat === "ok" ? "EN OBJETIVO" : "";
 
-    /* LA CARCASA (estado) + gauge con la ventana marcada: resuelve el warm-up */
-    const cMark = c.carcass == null ? ""
-                : `<i class="cmark" style="left:${carcPos(c.carcass).toFixed(1)}%"></i>`;
+    /* EL RIEL: la presion como posicion, al lado del cuerpo. Sin objetivo no hay riel
+       que valga (el rombo se posiciona CONTRA el objetivo), asi que no se dibuja rombo. */
+    const pCls = frio || !c.pstat ? "wait" : c.pstat;
+    const pMark = (c.press == null || y.target == null) ? ""
+                : `<i class="pmark ${pCls}" style="top:${railTop(c.press, y.target).toFixed(1)}%"></i>`;
+
+    /* EL CUERPO: corte por profundidad SUP -> BULK -> CARC. Los números son hechos;
+       el ÚNICO color es el de la carcasa (heatRel sobre c.rel). SUP/BULK sin fondo:
+       no hay escala honesta que los pinte, y en ~10% de las sesiones vienen muertos
+       del juego (el bridge los manda null y acá caen al em-dash).
+       NULL-SAFE con bridge viejo: sin t_surf/t_bulk las bandas van en em-dash con fondo
+       neutro y la pagina no revienta. t_mid del payload viejo ERA el bulk (mTyreTempCenter
+       es byte-identico a mTyreTemp), asi que sirve de fallback directo, no de invento. */
+    const tSurf = c.t_surf ?? null;
+    const tBulk = c.t_bulk ?? c.t_mid ?? null;
+    const deg = v => v == null ? "—" : v + "°";
+
+    /* rel: cuánto sobre/bajo la media de las 4 corre esta carcasa. El fill lo pinta,
+       este número lo cuantifica. Con bridge viejo (sin rel) queda vacío, no "±0". */
+    const relTxt = c.rel == null ? "" : `<span class="crel">${sgn(c.rel, 1)}° vs media</span>`;
 
     /* LA BALANZA: la señal es la diferencia int−ext, no los absolutos */
     const camWarn = (c.camber && c.camber !== "ok") ? "warn" : "";
     const eMark = c.spread == null ? ""
                 : `<i class="emark ${camWarn}" style="left:${sprPos(c.spread).toFixed(1)}%"></i>`;
-    const verdict = c.spread == null && !c.camber ? "—"
-                  : `${c.spread == null ? "" : "Δ" + sgn(c.spread, 1) + "° · "}`
-                    + (c.camber === "ok" ? "camber ok" : (c.camber || ""));
+    /* el veredicto absorbe el freno (murio .tfoot); se arma por partes para no dejar
+       separadores colgando cuando falta alguna */
+    const vBits = [];
+    if(c.spread != null) vBits.push("Δ" + sgn(c.spread, 1) + "°");
+    if(c.camber) vBits.push(c.camber === "ok" ? "camber ok" : c.camber);
+    if(c.brake != null) vBits.push("freno " + c.brake + "°");
+    const verdict = vBits.length ? vBits.join(" · ") : "—";
 
     const wCls = c.wear == null ? "" : c.wear >= 80 ? "red" : c.wear >= 50 ? "amber" : "";
+    /* EOL: el wear% se mueve lento, el numero util es "~23 v". Oculto si no hay rate
+       (null) o si el horizonte es tan largo que no es informacion (>99). */
+    const eol = c.eol;
+    const eolTxt = (eol == null || !isFinite(eol) || eol > 99) ? ""
+                 : `<span class="teol"> · ~${Math.round(eol)} v</span>`;
 
     cell.innerHTML =
       `<div class="thead"><span class="tname">${YC[i]}</span>`
-    + `<span class="twear ${wCls}">${c.wear == null ? "—" : c.wear.toFixed(1) + "%"}</span></div>`
-    + `<div class="tmain">`
+    + `<span class="twear ${wCls}">${c.wear == null ? "—" : c.wear.toFixed(1) + "%"}${eolTxt}</span></div>`
+    + `<div class="tmain2">`
     +   `<div class="tdelta ${dCls}"><span class="dv">${dTxt}</span>`
-    +     `<span class="dverb">${dVerb}</span></div>`
-    +   `<div class="tcarc ${c.tstat || ""}">`
-    +     `<span class="cv">${c.carcass == null ? "—" : c.carcass + "°"}<small> CARC</small></span>`
-    +     `<div class="cgauge"><i class="cwin"></i>${cMark}</div></div></div>`
+    +     `<span class="dverb">${dVerb}</span>`
+    /* absolutos en TRES líneas y no en una: medido a 390px de ancho la columna del
+       delta queda en 75px y "1.69 bar · 24.5 psi" pide 122px -> elipsis comiéndose el psi */
+    +     `<span class="dabs">${c.press == null ? "—" : c.press.toFixed(2) + " bar"}</span>`
+    +     `<span class="dabs">${c.psi == null ? "" : c.psi.toFixed(1) + " psi"}</span>`
+    +     `<span class="dabs">${y.target == null ? "" : "obj " + y.target.toFixed(2)}</span></div>`
+    +   `<div class="prail"><i class="pband"></i><i class="ptgt"></i>${pMark}</div>`
+    +   `<div class="tbody2">`
+    +     `<div class="tband surf"><i>SUP</i><b>${deg(tSurf)}</b></div>`
+    +     `<div class="tband bulk"><i>BULK</i><b>${deg(tBulk)}</b></div>`
+    +     `<div class="tband carc" style="background:${heatRel(c.rel)}">`
+    +       `<div class="crow"><i>CARC</i><b>${deg(c.carcass)}</b></div>`
+    +       `${relTxt}</div></div></div>`
     + `<div class="tedge">`
-    +   `<span class="et"><i>EXT</i>${c.t_out == null ? "—" : c.t_out + "°"}</span>`
+    +   `<span class="et"><i>EXT</i>${deg(c.t_out)}</span>`
     +   `<div class="eaxis"><i class="eband"></i><i class="ezero"></i>${eMark}</div>`
-    +   `<span class="et"><i>INT</i>${c.t_in == null ? "—" : c.t_in + "°"}</span>`
-    +   `<span class="ebulk">bulk ${c.t_mid == null ? "—" : c.t_mid + "°"}</span></div>`
-    + `<div class="everdict ${camWarn}">${verdict}</div>`
-    + `<div class="tfoot"><span>${c.press == null ? "—" : c.press.toFixed(2) + " bar"}`
-    +   `${c.psi == null ? "" : " · " + c.psi.toFixed(1) + " psi"}</span>`
-    +   `<span>${c.brake == null ? "" : "freno " + c.brake + "°"}</span></div>`;
+    +   `<span class="et"><i>INT</i>${deg(c.t_in)}</span></div>`
+    + `<div class="everdict ${camWarn}">${verdict}</div>`;
   }
 
   /* SPINE: el chasis. El eje que trabaja más se enciende en ámbar (|Δ| >= 8). */
@@ -1049,12 +1156,20 @@ function renderTyres(y){
   const rWarn = hayAx && ax.diff >= 8 ? " class=\"warn\"" : "";
   $("yaxf").innerHTML = `<span class="axl">DEL</span><b${fWarn}>${hayAx ? ax.front + "°" : "—"}</b>`;
   $("yaxr").innerHTML = `<span class="axl">TRAS</span><b${rWarn}>${hayAx ? ax.rear + "°" : "—"}</b>`;
-  const stCls = !y.live ? "" : y.warm ? "warm" : "coldw";
-  const stTxt = !y.live ? "DETENIDO" : y.warm ? "EN TEMP" : "FRÍA";
+  /* estado térmico global: warm ya no es un umbral fijo (60°) sino "cerca de SU
+     plateau" (bridge). Con warm, el trend afina: CALENTANDO/ENFRIANDO = la media de
+     las 4 carcasas se está moviendo contra su norma lenta (±4°). */
+  const stCls = !y.live ? "" : !y.warm ? "coldw"
+              : y.trend === "heat" ? "heat" : y.trend === "cool" ? "cool" : "warm";
+  const stTxt = !y.live ? "DETENIDO" : !y.warm ? "FRÍA"
+              : y.trend === "heat" ? "CALENTANDO" : y.trend === "cool" ? "ENFRIANDO" : "EN TEMP";
   $("ymid").innerHTML =
       `<span class="axl">Δ EJES</span><b>${hayAx ? sgn(ax.diff) + "°" : "—"}</b>`
     + `<span class="axl">OBJ BAR</span><b>${y.target == null ? "—" : y.target.toFixed(2)}</b>`
     + `${y.compound ? `<span class="axl">${esc(y.compound)}</span>` : ""}`
+    /* compuesto y vueltas del stint son dato de las CUATRO gomas, no de una esquina:
+       por eso viven en el spine y no repetidos 4 veces en las celdas */
+    + `${y.stint == null ? "" : `<span class="axl">STINT ${y.stint} v</span>`}`
     + `<span class="ystate ${stCls}">${stTxt}</span>`;
 }
 
@@ -1227,11 +1342,13 @@ function renderStrategy(s){
   } else sa.classList.add("hidden");
 }
 
+/* La temp del chip es CARCASA (el único canal térmico vivo en el 100% de las
+   sesiones). Sin clase hot/cold: la ventana fija 70-100 murió — medianas reales
+   52-143 según el auto — y el veredicto honesto (tdev) vive en la página GOMAS. */
 function renderWheels(s){
   (s.tyres||[]).forEach((t,i)=>{
     const el = $(SW_IDS[i]); if(!el) return;
-    el.className = "swheel w-"+t.st + (i===s.worst?" worst":"")
-                 + (t.tstat==="hot"?" hot":t.tstat==="cold"?" cold":"");
+    el.className = "swheel w-"+t.st + (i===s.worst?" worst":"");
     el.querySelector(".sw").textContent = t.w+"%";
     el.querySelector(".stmp").textContent = t.t+"°";
   });

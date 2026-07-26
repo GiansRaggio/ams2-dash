@@ -226,9 +226,10 @@ Notas para adaptarlo:
 
 ## Página GOMAS (`ams2_tyres.py`)
 
-Por esquina: temperatura de las tres zonas (**interior/medio/exterior**), presión en
-caliente con el **delta contra el objetivo** (cuánto agregar o sacar), desgaste,
-temperatura de carcasa y de freno. Abajo, el sesgo térmico entre ejes.
+Por esquina: el **corte térmico por profundidad** (SUP/BULK/CARC — piel, masa,
+carcasa), los bordes **interior/exterior** (spread → camber), presión en caliente
+con el **delta contra el objetivo** (cuánto agregar o sacar), desgaste y freno.
+En el spine, el sesgo térmico entre ejes.
 
 El objetivo de presión se fija con el botón 🎯 y el bridge lo **persiste por auto**
 en `tyre_targets.json`. El delta se aplica **en frío** en el garaje: el cambio se
@@ -236,13 +237,24 @@ traslada casi 1:1 a la presión en caliente. Sólo aparece con la goma en temper
 (en frío la lectura no decide nada, y el dash lo dice en vez de mostrar un número
 que engaña).
 
-Los canales se **midieron en pista** con `tools/tyre_probe.py`, no se sacaron de la
-documentación. Lo que salió de ahí:
+Los canales se **midieron en pista** con `tools/tyre_probe.py` y después se
+**contrastaron contra el corpus grabado** (58 sesiones / 22 autos / 22 pistas al escribir esto; crece con cada tanda) con
+`tools/tyre_replay.py`, no se sacaron de la documentación. Lo que salió de ahí:
 
 - `mAirPressure` viene en **Bar×100**; `mTyreCarcassTemp` en **Kelvin**.
-- **La carcasa es el canal térmico bueno.** Leyó 75-109 °C, dentro de la ventana
-  operativa 70-100. `mTyreTemp` (bulk) leía 39-70 °C al mismo tiempo — contra esa
-  ventana daría "frío" siempre. Por eso el veredicto térmico usa carcasa.
+- **La carcasa es el ÚNICO canal térmico confiable** (vivo en el 100% de las
+  sesiones). El modelo de superficie (bulk/layer/bordes) viene **muerto en ~10% de
+  las sesiones** — pegado al ambiente con la carcasa a 75-130 °C, por sesión y no
+  por auto — así que el bridge lo detecta en vivo (`surf_dead`) y emite esos canales
+  en null en vez de mostrar basura.
+- **No existe ventana térmica absoluta que generalice.** Las medianas de carcasa van
+  de 52 °C (Formula Vee) a 143 °C (protos): cualquier umbral fijo dispara "hot" o
+  "cold" en conducción normal según el auto. Por eso el color y el veredicto son
+  **auto-referenciales**: `rel` (esta esquina vs la media de las 4, pinta la banda
+  CARC), `tdev` (la estructura se movió contra su propia norma lenta → acento de
+  borde; en la gran mayoría de las sesiones reproducidas está apagado el 100% del tiempo),
+  `trend` (calentando/estable/enfriando) y `warm` (cerca del plateau propio, no de
+  un 60 fijo).
 - `mTyreTempLeft/Right` están en marco **absoluto del auto** (izquierda/derecha de la
   pista), no relativo a la rueda: hay que mapear interior/exterior por lado. Se dedujo
   del dato, porque el borde interior salió más caliente en las cuatro esquinas de forma

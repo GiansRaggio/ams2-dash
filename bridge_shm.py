@@ -298,11 +298,13 @@ def update_state(d):
     except Exception:
         pass
 
-    # Gomas: mismo snapshot. El desgaste llega ya resuelto por strategy (que detecta
-    # la direccion de mTyreWear) para no tener dos lecturas distintas del mismo dato.
+    # Gomas: mismo snapshot. El desgaste, las vueltas que le quedan a cada goma (EOL) y
+    # las del stint llegan ya resueltos por strategy (que detecta la direccion de
+    # mTyreWear y lleva el EMA de ritmo) para no tener dos lecturas del mismo dato.
     try:
         tyres.update(d, wear=strategy.wear_vec(d))
-        state["tyres"] = tyres.payload()
+        state["tyres"] = tyres.payload(eol=strategy.eol_vec(d),
+                                       stint=strategy.stint_laps())
     except Exception:
         pass   # nunca tumbar el broadcast por un error del analizador de gomas
     if telemetry is not None:
