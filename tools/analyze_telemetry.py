@@ -1052,6 +1052,9 @@ BAL_APEX_FRAC = 0.45
 
 SAT_ZERO = 0.005      # margen de agarre bajo esto = la goma esta EN EL LIMITE
 SAT_EJE = 8.0         # diferencia (puntos %) para atribuirle la limitacion a un eje
+SAT_LAT_MIN = 3.0     # m/s2 de G lateral MEDIANA en la ventana para que la curva tenga
+                      # un lado cargado. Bajo esto es una curva demasiado suave (o una
+                      # chicana que carga los dos lados) y no se opina sobre que limita.
 
 
 def saturation_struct(folder):
@@ -1066,6 +1069,17 @@ def saturation_struct(folder):
     minimo toca cero en las 4 ruedas de todas las curvas (cualquier rueda roza el limite
     en algun instante) y no distingue nada. Lo que informa es CUANTO aguanta ahi.
 
+    SOLO SE JUZGAN LAS RUEDAS QUE LA CURVA CARGA. Esto no es un detalle: medido sobre 67
+    curvas del corpus, la rueda descargada satura una MEDIANA DE 81.5% del tiempo contra
+    26.1% la cargada, y con el criterio viejo --el maximo de las cuatro-- el veredicto
+    caia en una rueda DESCARGADA en 66 de 67 curvas (98%). Es fisicamente obvio en
+    retrospectiva: tyre_grip es margen SIN USAR, y una goma sin carga casi no tiene
+    margen que dar, asi que "satura" sin que eso signifique nada. Testigo: Goiania con el
+    Audi R8 GT3, las cargadas marcan 3% y las ociosas 91%.
+    El lado cargado sale de accel_x dentro de la ventana de la curva: >0 carga las
+    DERECHAS. El signo se fijo por TEMPERATURA (corr -0.895 entre el indice de accel_x y
+    el calor izquierda-derecha), no por la suspension, que va al reves.
+
     None si faltan las vueltas limpias o el canal (grabaciones anteriores a jul-2026).
     """
     cl = clean_laps(folder)
@@ -1077,28 +1091,43 @@ def saturation_struct(folder):
         return None
     rt = traces[0][1]
     d, s = _mono(rt["lap_dist"], rt["speed_kmh"])[:2]
+    hay_lat = bool(rt.get("accel_x"))
     out = []
     for c in _corners(d, s):
         ini, fin = _corner_window(d, s, c["apex"], c["prom"])
         por_rueda = {w: [] for w in ("FL", "FR", "RL", "RR")}
+        lats = []
         for _, t in traces:
             idx = [i for i, x in enumerate(t["lap_dist"]) if ini <= x <= fin]
             if len(idx) < 10:
                 continue
+            if hay_lat:
+                lats.append(st.median([t["accel_x"][i] for i in idx]))
             for w in por_rueda:
                 v = [t["tyre_grip_" + w][i] for i in idx]
                 por_rueda[w].append(100.0 * sum(1 for x in v if x <= SAT_ZERO) / len(v))
         if any(len(v) < 2 for v in por_rueda.values()):
             continue
         m = {w: st.median(v) for w, v in por_rueda.items()}
-        peor = max(m, key=m.get)
-        fr, re = max(m["FL"], m["FR"]), max(m["RL"], m["RR"])
+        # Que lado carga ESTA curva. Sin canal lateral (grabaciones viejas) o con una
+        # curva demasiado suave para tener lado, no se opina sobre cual limita.
+        ax = st.median(lats) if lats else 0.0
+        lado = "=" if abs(ax) < SAT_LAT_MIN else ("D" if ax > 0 else "I")
+        carg = (("FR", "RR") if lado == "D" else ("FL", "RL") if lado == "I" else None)
+        if carg:
+            peor = max(carg, key=lambda w: m[w])
+            fr, re = m[carg[0]], m[carg[1]]
+        else:
+            peor = None                       # sin lado claro no hay a quien acusar
+            fr, re = max(m["FL"], m["FR"]), max(m["RL"], m["RR"])
         lim = ("delantero" if fr > re + SAT_EJE else
                "trasero" if re > fr + SAT_EJE else "equilibrada")
         out.append({"n": c["n"], "apex": c["apex"], "vmin": c["vmin"],
                     "largo": round(fin - ini), "pct": {w: round(x, 1) for w, x in m.items()},
-                    "peor": peor, "peor_pct": round(m[peor], 1), "limita": lim})
-    return {"corners": out, "laps": len(traces)} if out else None
+                    "lado": lado, "cargadas": list(carg) if carg else [],
+                    "peor": peor, "peor_pct": round(m[peor], 1) if peor else None,
+                    "limita": lim})
+    return {"corners": out, "laps": len(traces), "lat": hay_lat} if out else None
 
 
 def report_saturation(folder):
@@ -1111,20 +1140,29 @@ def report_saturation(folder):
         return
     print("  % del tiempo con la goma EN EL LIMITE dentro de cada curva "
           f"({sat['laps']} vueltas limpias).")
-    print("  La rueda con mas % es la que limita el paso: es la que se queda sin agarre primero.\n")
+    print("  SOLO cuentan las ruedas que la curva CARGA (marcadas con *): la goma descargada")
+    print("  satura sin significar nada -- casi no tiene margen que dar. Medido sobre el corpus,")
+    print("  la descargada satura 81% del tiempo contra 26% la cargada.")
+    if not sat.get("lat"):
+        print("  OJO: esta grabacion no tiene canal de G lateral -> sin lado cargado, sin veredicto.")
+    print()
     print(f"  {'curva':6} {'apex':>6} {'vmin':>5} {'largo':>6} | "
-          f"{'FL':>5} {'FR':>5} {'RL':>5} {'RR':>5} | limita")
+          f"{'FL':>6} {'FR':>6} {'RL':>6} {'RR':>6} | limita")
     for c in sat["corners"]:
-        p = c["pct"]
-        print(f"  T{c['n']:<5} {c['apex']:>6} {c['vmin']:>5} {c['largo']:>5}m | "
-              f"{p['FL']:>5.1f} {p['FR']:>5.1f} {p['RL']:>5.1f} {p['RR']:>5.1f} | "
-              f"{c['peor']} ({c['peor_pct']:.0f}%) · {c['limita']}")
-    peores = sorted(sat["corners"], key=lambda c: -c["peor_pct"])[:2]
+        p, cg = c["pct"], set(c["cargadas"])
+        cel = " ".join(f"{p[w]:>5.1f}" + ("*" if w in cg else " ")
+                       for w in ("FL", "FR", "RL", "RR"))
+        ver = (f"{c['peor']} ({c['peor_pct']:.0f}%) · {c['limita']}" if c["peor"]
+               else "sin lado dominante")
+        print(f"  T{c['n']:<5} {c['apex']:>6} {c['vmin']:>5} {c['largo']:>5}m | {cel} | {ver}")
+    converedicto = [c for c in sat["corners"] if c["peor"]]
+    peores = sorted(converedicto, key=lambda c: -c["peor_pct"])[:2]
     print()
     for c in peores:
         if c["peor_pct"] < 60:
             continue
-        print(f"  T{c['n']}: la {c['peor']} pasa el {c['peor_pct']:.0f}% de la curva sin margen"
+        print(f"  T{c['n']}: la {c['peor']} (cargada) pasa el {c['peor_pct']:.0f}% de la curva "
+              "sin margen"
               + (f" — la limita el tren {c['limita']}." if c["limita"] != "equilibrada"
                  else " — los dos ejes llegan juntos."))
     if peores and peores[0]["peor_pct"] >= 90:

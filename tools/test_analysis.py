@@ -93,6 +93,109 @@ def write_session(base):
     return d
 
 
+def write_sat_session(base, ax_signo=-1.0):
+    """Sesion sintetica para el reporte de SATURACION, armada con el patron REAL medido:
+    en una curva la rueda DESCARGADA satura casi todo el tiempo (mediana 81% en el
+    corpus) y la CARGADA mucho menos (26%). Con accel_x negativo cargan las IZQUIERDAS,
+    asi que FL/RL son las que miden y FR/RR las que no significan nada.
+
+    Si el veredicto sale FR o RR, el analizador esta acusando a la rueda ociosa -- que es
+    justo el bug que esto cubre (pasaba en 66 de 67 curvas del corpus)."""
+    d = os.path.join(base, "SatTest__Car__practice__x")
+    os.makedirs(d)
+    json.dump({"track": "SatTest", "car": "Car", "channels": T.HEADER},
+              open(os.path.join(d, "session.json"), "w"))
+    idx = {h: i for i, h in enumerate(T.HEADER)}
+    laps = []
+    for lap in (1, 2, 3):
+        dist, spd, thr, brk, tt, ltime = make_arrays()
+        rows = []
+        for k in range(len(dist)):
+            r = [0.0] * len(T.HEADER)
+            r[idx["t"]] = round(tt[k], 3)
+            r[idx["lap_dist"]] = round(dist[k], 2)
+            r[idx["speed_kmh"]] = round(spd[k], 2)
+            r[idx["throttle"]] = thr[k]
+            r[idx["brake"]] = brk[k]
+            # dentro de la curva: G lateral fuerte y saturacion invertida a proposito
+            en_curva = any(abs(dist[k] - cd) < 180 for cd in CORNER_DS)
+            r[idx["accel_x"]] = (12.0 * ax_signo) if en_curva else 0.0
+            # margen de agarre: 0 = saturada. descargadas SIEMPRE en cero dentro de la
+            # curva; cargadas solo en un tercio (k % 3 == 0)
+            desc_sat, carg_sat = 0.0, (0.0 if k % 3 == 0 else 0.9)
+            cargadas = ("FL", "RL") if ax_signo < 0 else ("FR", "RR")
+            for w in ("FL", "FR", "RL", "RR"):
+                dentro = carg_sat if w in cargadas else desc_sat
+                r[idx["tyre_grip_" + w]] = dentro if en_curva else 0.9
+            rows.append(",".join(map(str, r)))
+        tname = f"L{lap:03d}_{ltime:.3f}s.csv.gz"
+        with gzip.open(os.path.join(d, tname), "wt", encoding="utf-8") as f:
+            f.write(",".join(T.HEADER) + "\n")
+            f.write("\n".join(rows) + "\n")
+        laps.append({"lap": lap, "lap_time": round(ltime, 3), "valid": True,
+                     "samples": len(dist), "fuel_used": 2.5, "compound": "Soft",
+                     "sectors": [round(ltime / 3, 3)] * 3, "trace": tname})
+    open(os.path.join(d, "summary.jsonl"), "w").write(
+        "\n".join(json.dumps(l) for l in laps))
+    return d
+
+
+def test_saturacion_solo_rueda_cargada():
+    """El veredicto de saturacion tiene que salir de la rueda que la curva CARGA.
+
+    Medido sobre 67 curvas del corpus: la descargada satura una mediana de 81.5% del
+    tiempo contra 26.1% la cargada, porque tyre_grip es margen SIN USAR y una goma sin
+    carga casi no tiene margen que dar. Con el criterio viejo (maximo de las cuatro) el
+    veredicto caia en una rueda descargada en 66 de 67 curvas."""
+    ok = True
+    for signo, cargadas, descargadas in ((-1.0, ("FL", "RL"), ("FR", "RR")),
+                                         (+1.0, ("FR", "RR"), ("FL", "RL"))):
+        base = tempfile.mkdtemp(prefix="sattest_")
+        try:
+            sat = A.saturation_struct(write_sat_session(base, signo))
+            lado = "izquierdas" if signo < 0 else "derechas"
+            if not sat or not sat["corners"]:
+                ok = _ok(f"cargan las {lado}: hay reporte", False) and ok
+                continue
+            c = sat["corners"][0]
+            ok = _ok(f"cargan las {lado}: el veredicto es de una rueda CARGADA",
+                     c["peor"] in cargadas, f"peor={c['peor']} pct={c['peor_pct']}") and ok
+            ok = _ok(f"cargan las {lado}: NO acusa a la ociosa (que satura 100%)",
+                     c["peor"] not in descargadas,
+                     {w: c["pct"][w] for w in ("FL", "FR", "RL", "RR")}) and ok
+            ok = _ok(f"cargan las {lado}: marca cuales cargan",
+                     set(c["cargadas"]) == set(cargadas), c["cargadas"]) and ok
+        finally:
+            shutil.rmtree(base, ignore_errors=True)
+    # sin canal de G lateral (grabaciones viejas) no se opina, en vez de adivinar
+    base = tempfile.mkdtemp(prefix="sattest_")
+    try:
+        folder = write_sat_session(base, -1.0)
+        for lp in [f for f in os.listdir(folder) if f.endswith(".csv.gz")]:
+            p = os.path.join(folder, lp)
+            with gzip.open(p, "rt") as f:
+                head = f.readline().strip().split(",")
+                cuerpo = f.read()
+            i = head.index("accel_x")
+            head.pop(i)
+            filas = []
+            for ln in cuerpo.splitlines():
+                r = ln.split(",")
+                r.pop(i)
+                filas.append(",".join(r))
+            with gzip.open(p, "wt", encoding="utf-8") as f:
+                f.write(",".join(head) + "\n")
+                f.write("\n".join(filas) + "\n")
+        sat = A.saturation_struct(folder)
+        c = sat["corners"][0] if sat and sat["corners"] else None
+        ok = _ok("sin canal lateral -> sin veredicto (no adivina)",
+                 c is not None and c["peor"] is None and c["lado"] == "=",
+                 None if c is None else f"peor={c['peor']} lado={c['lado']}") and ok
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+    return ok
+
+
 def write_min_session(telem, track, car, ftype, ts, laps):
     """Sesion minima (session.json + summary.jsonl, sin trazas) para tests del modo combo.
     laps = lista de (lap_time, fuel_used)."""
@@ -189,6 +292,9 @@ def main():
     finally:
         A.TELEM, A.REFDIR = old_telem, old_ref
         shutil.rmtree(base, ignore_errors=True)
+
+    print("\ntest saturacion (solo la rueda que la curva CARGA):")
+    test_saturacion_solo_rueda_cargada()
     print("\ndone.")
 
 
