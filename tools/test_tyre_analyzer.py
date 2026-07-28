@@ -401,6 +401,35 @@ def test_runtime_vuelve_a_cero_al_rotar_sesion():
         f"runtime={a._runtime:.0f} carga={a._t_izq + a._t_der:.0f}")
 
 
+def test_warm_no_sobrevive_al_cierre_de_tanda():
+    """El delta de presion SOLO se muestra con la goma en su temperatura de trabajo
+    (el frontend hace `frio = !y.warm`). warm se reseteaba en reset() --cambio de auto o
+    de pista-- pero NO al cerrar la tanda, y en ese camino las dos EMAs de carcasa se
+    re-siembran juntas al valor frio: gap = 0, que nunca cae bajo WARM_EXIT, asi que
+    warm quedaba pegado en True de la tanda anterior.
+
+    Reportado en vivo: el dash mandaba a AGREGAR presion leyendo la presion FRIA cuando
+    en caliente ya estaba SOBRE el objetivo. El piloto subio presiones y el auto empeoro.
+    El replay no puede cazar esto: solo ve vueltas limpias concatenadas, nunca el garaje
+    ni el out-lap."""
+    a = ams2_tyres.TyreAnalyzer(base_dir=NOWHERE)
+    t = 0.0
+    for _ in range(700):                      # tanda caliente y estable -> warm
+        t += 0.5
+        a.update(Snap(speed=50.0, carc=(115, 115, 115, 115), press=200.0), now=t)
+    _ok("tanda caliente -> warm", a.payload()["warm"])
+    for _ in range(10):                       # gomas nuevas: las 4 carcasas se desploman
+        t += 0.5
+        a.update(Snap(speed=50.0, carc=(40, 40, 40, 40), press=165.0), now=t)
+    p = a.payload()
+    _ok("cierre de tanda con goma fria -> se PIERDE warm", not p["warm"],
+        f'warm={p["warm"]} carcasa={p["corners"][0]["carcass"]}')
+    # y lo que de verdad importa: sin warm el frontend no muestra el delta de presion
+    _ok("...que es lo que apaga el consejo de presion en frio",
+        not p["warm"] and p["corners"][0]["press"] is not None,
+        f'press={p["corners"][0]["press"]}')
+
+
 def test_referencia_corrupta_no_envenena():
     """El archivo es editable a mano y sobrevive a versiones viejas: un valor basura
     no debe mover la banda verde a un lugar absurdo ni meter NaN en el broadcast."""
@@ -439,6 +468,7 @@ if __name__ == "__main__":
     test_referencia_por_pista_y_auto()
     test_histeresis_del_lado_cargado()
     test_runtime_vuelve_a_cero_al_rotar_sesion()
+    test_warm_no_sobrevive_al_cierre_de_tanda()
     test_referencia_corrupta_no_envenena()
     print(f"\n{'todo verde' if not _fails else 'FALLAS: ' + ', '.join(_fails)}")
     sys.exit(1 if _fails else 0)

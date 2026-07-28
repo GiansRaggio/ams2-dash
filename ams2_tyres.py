@@ -460,6 +460,18 @@ class TyreAnalyzer:
             # los primeros 120 s de vida del bridge la condicion queda satisfecha PARA
             # SIEMPRE y un out-lap de 20 s alcanza para pisar la referencia buena.
             self._runtime = 0.0
+            # Y warm TAMBIEN, que es el que desbloquea el delta de presion. Sin esto el
+            # estado sobrevive el cierre de tanda: abajo se re-siembran las DOS EMAs de
+            # carcasa al mismo valor frio, o sea gap = 0, que nunca cae bajo WARM_EXIT,
+            # asi que _warm se quedaba en True con la goma helada. Medido en vivo:
+            # carcasa 38-52 C y warm=True en un GT4 cuyo plateau es ~115. Consecuencia
+            # real: el dash mostraba el delta de presion sobre la presion FRIA y mandaba
+            # a AGREGAR cuando en caliente ya estaba sobre el objetivo -- el piloto
+            # subio presiones siguiendolo y el auto empeoro.
+            # (El enfriamiento normal SI lo caza WARM_EXIT: ahi la EMA rapida baja mas
+            # rapido que la lenta y el gap se hace negativo. El agujero era solo el
+            # cierre de tanda, donde ambas saltan juntas.)
+            self._warm = False
             # re-sembrar: la norma vieja ya no describe nada. Sin esto la alarma
             # seguiria sonando los ~2.5 min que tarda la EMA lenta en alcanzar.
             self._slow = list(crudas)
