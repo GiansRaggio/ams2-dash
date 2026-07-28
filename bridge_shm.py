@@ -16,11 +16,13 @@ Requisitos en AMS2 (Options -> System):
 (Es independiente del UDP: no hace falta activar el UDP.)
 """
 import asyncio
+import faulthandler
 import http.server
 import json
 import os
 import socket
 import subprocess
+import sys
 import threading
 import time
 
@@ -34,6 +36,78 @@ import ams2_tyres
 
 WS_PORT = 8765
 HTTP_PORT = 8080
+
+# ---------------- log propio y watchdog del event loop ----------------
+# El bridge escribe SU log el mismo, sin depender de como lo hayan lanzado. Antes salia
+# por stdout y quedaba en bridge.log solo si el lanzador redirigia; lanzado con
+# Start-Process (ventana propia) se perdia entero, justo cuando mas se necesitaba.
+LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bridge.log")
+# Segundos sin latido del pump para declararlo colgado. El pump late a POLL_HZ y sigue
+# latiendo aunque AMS2 este cerrado (ahi reintenta abrir la memoria), asi que un silencio
+# de 30 s no es "el juego no esta": es que el loop dejo de correr.
+STALL_S = 30.0
+WATCHDOG_EVERY_S = 5.0
+MAX_REINICIOS = 3          # tope para no entrar en bucle de reinicios
+_hb = time.monotonic()     # ultimo latido del pump (lo lee el hilo del watchdog)
+
+
+def log(msg):
+    """A consola Y a archivo. Sin dependencias: esto tiene que funcionar incluso cuando
+    todo lo demas esta roto."""
+    linea = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
+    try:
+        print(linea, flush=True)
+    except Exception:                       # noqa: BLE001 - consola cerrada
+        pass
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(linea + "\n")
+    except OSError:
+        pass
+
+
+def _watchdog():
+    """Hilo del SO --no asyncio-- que vigila que el event loop siga vivo.
+
+    El modo de falla que motiva esto: el proceso queda VIVO y reteniendo los puertos
+    8765/8080, pero el loop deja de correr. Desde afuera se ve identico a "funcionando"
+    (netstat muestra LISTENING) y en el telefono el dash se ve conectado y CONGELADO;
+    ademas cualquier relanzamiento choca con WinError 10048 contra el zombi. Medido en
+    vivo: puertos escuchando y el handshake del WebSocket agotando el tiempo.
+
+    Al detectarlo vuelca el stack de TODOS los hilos --que es la unica forma de saber
+    donde se colgo, porque no hay excepcion ni traceback-- y reinicia el proceso en el
+    lugar. El contador de reinicios va por variable de entorno para sobrevivir al execv
+    y no quedar en bucle."""
+    global _hb
+    while True:
+        time.sleep(WATCHDOG_EVERY_S)
+        atraso = time.monotonic() - _hb
+        if atraso < STALL_S:
+            continue
+        n = int(os.environ.get("AMS2_BRIDGE_REINICIOS", "0")) + 1
+        log(f"[watchdog] EVENT LOOP COLGADO: {atraso:.0f}s sin latido del pump. "
+            f"Volcando stacks y reiniciando (intento {n}/{MAX_REINICIOS}).")
+        try:
+            with open(LOG_FILE, "a", encoding="utf-8") as f:
+                f.write("--- stacks de todos los hilos al momento del cuelgue ---\n")
+                f.flush()
+                faulthandler.dump_traceback(file=f, all_threads=True)
+                f.write("--- fin del volcado ---\n")
+        except (OSError, RuntimeError):
+            pass
+        if n > MAX_REINICIOS:
+            log("[watchdog] demasiados reinicios seguidos: salgo para no entrar en bucle.")
+            os._exit(1)
+        os.environ["AMS2_BRIDGE_REINICIOS"] = str(n)
+        try:
+            # execv reemplaza el proceso: mismos puertos, estado limpio, sin dejar zombi
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        except OSError as e:
+            log(f"[watchdog] no pude reiniciar ({e}); salgo.")
+            os._exit(1)
+
+
 POLL_HZ = 30   # frecuencia de lectura de shared memory y de broadcast
 LEADERBOARD_MAX = 16   # cuantos pilotos enviar a la pagina de tiempos
 
@@ -333,7 +407,7 @@ async def ws_handler(ws):
             if cmd == "reset_dampers" and analyzer:
                 analyzer.reset()
             elif cmd == "stop_server":
-                print("[bridge-shm] detenido por el usuario (boton del dash)")
+                log("[bridge-shm] detenido por el usuario (boton del dash)")
                 _shutdown = True
             elif cmd == "set_race":               # formato de carrera manual (plan en practica)
                 try:
@@ -385,9 +459,11 @@ async def pump():
     reader = None
     next_retry = 0.0
     next_damper = 0.0
+    global _hb
     while not _shutdown:
         await asyncio.sleep(period)
         now = time.monotonic()
+        _hb = now                    # latido para el watchdog (ver _watchdog arriba)
         # Histograma de dampers (del analizador, hilo aparte): siempre a ~2 Hz,
         # independiente del reader del bridge -> tambien se emite en el lobby.
         if analyzer is not None and now >= next_damper:
@@ -399,7 +475,7 @@ async def pump():
                 continue
             try:
                 reader = ams2_shm.Reader().open()
-                print("[bridge-shm] shared memory conectada ($pcars2$)")
+                log("[bridge-shm] shared memory conectada ($pcars2$)")
             except ams2_shm.SharedMemoryUnavailable:
                 state["connected"] = False
                 next_retry = now + 1.0
@@ -456,11 +532,18 @@ async def main():
     analyzer = ams2_dampers.DamperAnalyzer().start()
     telemetry = ams2_telemetry.TelemetryLogger().start()
     threading.Thread(target=serve_http, daemon=True).start()
+    # Vigilante del event loop: hilo del SO aparte, para que siga corriendo aunque el
+    # loop se cuelgue (que es justo el modo de falla que hay que cazar).
+    threading.Thread(target=_watchdog, daemon=True).start()
+    reint = os.environ.get("AMS2_BRIDGE_REINICIOS")
+    if reint:
+        log(f"[bridge-shm] arrancado por el watchdog (reinicio {reint}) "
+            f"-- revisa el volcado de stacks mas arriba en {LOG_FILE}")
     ip = lan_ip()
-    print(f"[bridge-shm] Fuente: AMS2 Shared Memory ($pcars2$, Project CARS 2)")
-    print(f"[bridge-shm] WS   : ws://{ip}:{WS_PORT}")
-    print(f"[bridge-shm] Dash : http://{ip}:{HTTP_PORT}  <- abrir en el celular")
-    print(f"[bridge-shm] (En AMS2: Options -> System -> Shared Memory = Project CARS 2)")
+    log("[bridge-shm] Fuente: AMS2 Shared Memory ($pcars2$, Project CARS 2)")
+    log(f"[bridge-shm] WS   : ws://{ip}:{WS_PORT}")
+    log(f"[bridge-shm] Dash : http://{ip}:{HTTP_PORT}  <- abrir en el celular")
+    log("[bridge-shm] (En AMS2: Options -> System -> Shared Memory = Project CARS 2)")
     async with websockets.serve(ws_handler, "0.0.0.0", WS_PORT):
         await pump()
 
@@ -469,7 +552,18 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n[bridge-shm] detenido")
+        log("[bridge-shm] detenido (Ctrl-C)")
+    except Exception as e:                    # noqa: BLE001
+        # Cualquier muerte del loop queda ESCRITA. Antes, lanzado con Start-Process el
+        # traceback se iba a una ventana minimizada y se perdia con el proceso.
+        import traceback
+        log(f"[bridge-shm] MUERTO por excepcion: {type(e).__name__}: {e}")
+        try:
+            with open(LOG_FILE, "a", encoding="utf-8") as f:
+                traceback.print_exc(file=f)
+        except OSError:
+            pass
+        raise
     finally:
         # Cierra la tanda de gomas en curso. Sin esto la referencia de camber solo se
         # persistia si el bridge alcanzaba a ver una rotacion de sesion, asi que cerrar
