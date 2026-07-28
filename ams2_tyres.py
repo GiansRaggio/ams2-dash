@@ -198,7 +198,30 @@ CAMBER_DELTA = 3.0        # entre el p90 (2.1) y el p95 (4.4) de la misma pista
 CAMBER_OK_LO = 0.0
 CAMBER_OK_HI = 10.0
 
-DEFAULT_TARGET_BAR = 1.75   # punto de partida GT3/GT4 lisos; el piloto lo ajusta
+# Punto de partida para lisos GT3/GT4; el piloto lo ajusta por auto con el boton objetivo.
+# 1.90 NO es una intuicion, es la interseccion de tres fuentes independientes:
+#   - Reiza (CrimsonEminence, staff): "default setups aim for hot pressures in the
+#     1.8-1.9 bar range for GT3 cars".
+#   - El corpus grabado: 45 sesiones GT3/GT4, 180 esquinas con la goma caliente ->
+#     min 1.68, p10 1.80, MEDIANA 1.89, p90 2.02, max 2.21 bar (27.4 psi de mediana).
+#   - La especificacion real Pirelli GT4: 2.0 bar en caliente, minimo de inflado 1.4 bar
+#     -- y ese 1.4 es exactamente el minimo que AMS2 deja poner en el setup, o sea el
+#     juego esta modelando esa especificacion.
+# EL VALOR ANTERIOR (1.75) ERA EL PISO, NO EL OBJETIVO: 169 de las 180 esquinas del
+# corpus corren POR ENCIMA de el. Consecuencia real reportada en pista: el piloto bajo
+# la presion en frio hasta 1.5 (con 1.4 de minimo) persiguiendo 1.75 en caliente, no
+# llego --las traseras se le quedaban en 1.9-- y el auto empeoro. El objetivo era
+# inalcanzable por debajo del minimo del auto.
+# OJO con la semantica: AMS2 no modela una presion optima fija (a diferencia de ACC).
+# La correcta se determina por el perfil de temperatura del neumatico... que aca NO se
+# puede construir porque mTyreTempCenter es byte-identico al bulk (ver nota 5). Por eso
+# el objetivo es configurable y esto es solo un punto de partida honesto.
+# Se eligio 1.90 y no 1.85 midiendo el veredicto que produce cada uno sobre el corpus
+# (tolerancia +-0.03): con 1.75 sale "SACAR" en 166 de 180 esquinas -- un instrumento
+# que dice siempre lo mismo no informa; con 1.85 sigue sesgado (98 SACAR / 29 AGREGAR);
+# con 1.90 queda balanceado (57 SACAR / 68 AGREGAR / 55 en objetivo). Y 1.90 es a la vez
+# la mediana medida (1.89) y el tope del rango que da Reiza.
+DEFAULT_TARGET_BAR = 1.90
 PRESS_TOL = 0.03            # +-bar que se considera "en objetivo"
 TARGETS_FILE = "tyre_targets.json"
 # Clave RESERVADA dentro de tyre_targets.json para las referencias de camber. El resto
