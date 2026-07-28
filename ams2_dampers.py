@@ -26,6 +26,15 @@ BIN_MAX = 400                   # mm/s (borde)
 N_BINS = (2 * BIN_MAX) // BIN_W  # 32
 LOW_HIGH = 50                   # mm/s: umbral low-speed / high-speed
 BOTTOM_GUARD_PCT = 5            # % de travel en tope para gatillar el guardrail anti-soften de bump.
+# Zona muerta de las reglas de SIMETRIA bump/rebound, en puntos porcentuales. 3.5 es el
+# p90 medido de |SB-SR| sobre 162 ejes-sesion del corpus; el valor anterior (8) estaba
+# sobre el p99 (7.5) y sobre el MAXIMO absoluto de |FB-FR| (4.0), o sea las dos reglas
+# eran codigo muerto: disparaban 2 y 0 veces respectivamente. Ver clicks().
+SIM_DEAD = 3.5
+# % del bin mas poblado sobre el que el histograma deja de ser una distribucion y pasa a
+# ser un canal muerto. Sin este gate, bajar SIM_DEAD hace que los primeros disparos sean
+# justo las sesiones rotas (una del corpus tiene 99.96% de susp_vel en cero exacto).
+PICO_MUERTO = 60
                                 # Mas bajo que el flag de bottoming de _spring_recommend (8%) a proposito:
                                 # no sugerir un click cuesta menos que recomendar algo peligroso (C3).
 CENTERS = [(-BIN_MAX + BIN_W * (i + 0.5)) for i in range(N_BINS)]
@@ -224,6 +233,7 @@ class DamperAnalyzer:
         if total == 0:
             return {"name": name, "hist": hist, "pctLow": 0, "pctHigh": 0,
                     "pctBump": 0, "pctRebound": 0, "medAbs": 0, "samples": 0,
+                    "pctPico": 0,
                     "pctSB": 0, "pctFB": 0, "pctSR": 0, "pctFR": 0}
         # 4 cuadrantes: slow/fast x bump/rebound (umbral LOW_HIGH = 50 mm/s)
         sb = fb = sr = fr = 0
@@ -255,6 +265,12 @@ class DamperAnalyzer:
             "pctSR": round(100 * sr / total),
             "pctFR": round(100 * fr / total),
             "medAbs": round(med),
+            # Fraccion del bin MAS poblado. Gate de canal vivo: un histograma sano
+            # reparte, uno muerto se apila en un solo bin. Necesario desde que el
+            # deadband de simetria bajo a la escala real -- sin esto los primeros
+            # disparos serian sesiones con susp_vel pegado en 0.0 (medido: una sesion
+            # del corpus con 99.96% de las muestras en cero exacto daba SB=93/SR=4).
+            "pctPico": round(100 * max(hist) / total),
             "samples": total,
         }
 
@@ -266,8 +282,20 @@ class DamperAnalyzer:
         contenido de alta velocidad. '-' = ablandar, '+' = endurecer. Son orientativos
         (iterar 1-2 clicks y re-medir), no el click exacto.
         """
-        def clicks(dev):                 # % de desviacion -> clicks (1-3); deadband 8%
-            return 0 if dev < 8 else max(1, min(3, round(dev / 8)))
+        def clicks(dev):
+            """Puntos de desviacion -> clicks (1-3), con la zona muerta de SIM_DEAD.
+
+            El deadband era 8 pp y ESO VOLVIA MUERTA LA REGLA: medido sobre 162
+            ejes-sesion del corpus, |SB-SR| tiene mediana 2.0, p90 3.5 y p99 7.5 (dispara
+            2 veces, y las dos en una sesion con el canal muerto), y |FB-FR| tiene un
+            MAXIMO de 4.0 en todo el corpus (dispara 0 veces). No es casualidad: el
+            recorrido en compresion y en extension de una vuelta son el mismo numero, asi
+            que la asimetria esta clavada cerca de cero por identidad de desplazamiento.
+            Con el umbral viejo, el 95% del consejo que emitia el panel salia de la regla
+            de alta velocidad -- que el docstring ni menciona -- y el piloto leia
+            'fast bump' creyendo que hablaba de las barras centrales que estaba mirando.
+            """
+            return 0 if dev < SIM_DEAD else max(1, min(3, round(dev / SIM_DEAD)))
 
         recs = ["Clicks orientativos (- = ablandar, + = endurecer). Iterar 1-2 por vez y "
                 "re-medir; el histograma guia balance/simetria, no da el click exacto."]
@@ -283,14 +311,23 @@ class DamperAnalyzer:
             high = FB + FR
             bottom = max(c1.get("tBottom", 0), c2.get("tBottom", 0))   # peor neumatico del eje (seguridad)
             adj = {"slow bump": 0, "fast bump": 0, "slow reb": 0, "fast reb": 0}
+            porque = {}                       # de que REGLA sale cada click
+            # Canal vivo: un histograma sano reparte; uno muerto se apila en un bin.
+            vivo = max(c1["pctPico"], c2["pctPico"]) < PICO_MUERTO
             aS = SB - SR                      # balance bump/rebound de baja velocidad
-            if clicks(abs(aS)):
-                adj["slow bump" if aS > 0 else "slow reb"] -= clicks(abs(aS))
+            if vivo and clicks(abs(aS)):
+                k = "slow bump" if aS > 0 else "slow reb"
+                adj[k] -= clicks(abs(aS))
+                porque[k] = f"simetria lenta {aS:+.0f}pp"
             aF = FB - FR                      # balance bump/rebound de alta velocidad
-            if clicks(abs(aF)):
-                adj["fast bump" if aF > 0 else "fast reb"] -= clicks(abs(aF))
-            if high >= 28 and bottom < BOTTOM_GUARD_PCT:   # mucha alta velocidad (salvo bottoming)
+            if vivo and clicks(abs(aF)):
+                k = "fast bump" if aF > 0 else "fast reb"
+                adj[k] -= clicks(abs(aF))
+                porque[k] = f"simetria rapida {aF:+.0f}pp"
+            if vivo and high >= 28 and bottom < BOTTOM_GUARD_PCT:   # mucha alta velocidad
                 adj["fast bump"] -= max(1, min(3, round((high - 22) / 6)))
+                porque["fast bump"] = (porque.get("fast bump", "") + " + " if "fast bump" in porque
+                                       else "") + f"alta velocidad {high:.0f}%"
             # GUARDRAIL FISICO (rubrica C3): con bottoming NUNCA ablandar bump (agravaria el toque de
             # fondo). NO forzamos un endurecimiento numerico: el histograma de velocidad no separa el
             # bombeo de curva (donde endurecer fast bump es defensa correcta) de los impactos de piano
@@ -301,9 +338,16 @@ class DamperAnalyzer:
                 adj["fast bump"] = max(0, adj["fast bump"])
                 note = (f" | BOTTOMING {bottom:.0f}%: NO ablandar bump -> subir rate/altura/packers "
                         "o endurecer fast bump; revisar tambien rebound (pack-down)")
+            # El consejo DICE de que regla sale. Sin esto el piloto lo lee contra las
+            # barras que esta mirando y saca la conclusion equivocada -- paso: leyo
+            # "fast bump" como si hablara de la simetria de las centrales cuando salia
+            # de las COLAS del histograma.
             tips = [f"{k} {'+' if dv > 0 else ''}{dv}"
+                    + (f" [{porque[k]}]" if k in porque else "")
                     for k, dv in ((k, max(-3, min(3, v))) for k, v in adj.items()) if dv]
-            body = " · ".join(tips) if tips else "balanceado, sin cambios"
+            body = (" · ".join(tips) if tips
+                    else ("canal sin señal (histograma en un solo bin): sin consejo" if not vivo
+                          else "balanceado, sin cambios"))
             return f"{label} [SB{SB:.0f}/FB{FB:.0f}/SR{SR:.0f}/FR{FR:.0f}%]: {body}{note}"
 
         recs.append(axle(0, 1, "DELANTERO"))
@@ -317,7 +361,20 @@ class DamperAnalyzer:
 
     @staticmethod
     def _travel_metrics(th):
-        """Metricas de recorrido de suspension (mm) a partir del histograma de travel."""
+        """Metricas de recorrido de suspension (mm) a partir del histograma de travel.
+
+        OJO CON EL SENTIDO: mSuspensionTravel CRECE cuando la rueda se EXTIENDE, no
+        cuando se comprime. Verificado con dos jueces independientes sobre 79 sesiones,
+        ninguno de los cuales depende de una convencion que haya que adivinar:
+          - corr(freno, travel delantero) = -0.405  (frenar comprime el delantero)
+          - corr(altura al piso, travel)  = +0.910  (comprimir baja la altura)
+        Estaba al reves: el bin SUPERIOR se llamaba tBottom ("compresion") y el INFERIOR
+        tTop ("extension"). Eso invertia dos consejos encadenados -- _spring_recommend
+        decia "posible bottoming, sube altura" con la rueda en DROOP, y el guardrail
+        anti-ablandar-bump de _recommend vigilaba el extremo equivocado, o sea NO se
+        activaba justo en el caso de toque de fondo que existe para cubrir. Testigo: un
+        Superkart 250cc (sin suspension) recibia "BOTTOMING 55%".
+        """
         total = sum(th)
         if total == 0:
             return {"tMin": 0, "tMax": 0, "tMed": 0, "tBottom": 0, "tTop": 0}
@@ -333,8 +390,10 @@ class DamperAnalyzer:
             "tMin": lo * TBIN_W,
             "tMax": (hi + 1) * TBIN_W,
             "tMed": med * TBIN_W + TBIN_W // 2,
-            "tBottom": round(100 * th[hi] / total),   # % en el bin superior ocupado (compresion)
-            "tTop": round(100 * th[lo] / total),       # % en el bin inferior ocupado (extension)
+            # travel MINIMO = maxima COMPRESION = toque de fondo (bottoming)
+            "tBottom": round(100 * th[lo] / total),
+            # travel MAXIMO = maxima EXTENSION = rueda descargada / topping (droop)
+            "tTop": round(100 * th[hi] / total),
         }
 
     @staticmethod

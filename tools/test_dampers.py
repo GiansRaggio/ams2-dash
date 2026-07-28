@@ -18,10 +18,12 @@ def _ok(name, cond, extra=""):
     return cond
 
 
-def corner(name, sb, fb, sr, fr, med=20, samples=1000, tbottom=0):
+def corner(name, sb, fb, sr, fr, med=20, samples=1000, tbottom=0, pico=20):
+    # pico = % del bin mas poblado. Default 20 = histograma sano; sobre PICO_MUERTO el
+    # canal se considera muerto y el analizador no debe opinar.
     return {"name": name, "samples": samples, "pctSB": sb, "pctFB": fb,
             "pctSR": sr, "pctFR": fr, "medAbs": med, "tBottom": tbottom, "tTop": 0,
-            "hist": []}
+            "pctPico": pico, "hist": []}
 
 
 def front_line(corners):
@@ -97,6 +99,44 @@ def main():
     an._ingest(Snap())
     _ok("cuenta vueltas del JUGADOR (3), no de la camara (9)", an._last_lap == 3, an._last_lap)
     _ok("acumula muestras del snapshot", an._cur_n == 1, an._cur_n)
+
+    print("test sentido del travel (bottoming = COMPRESION = travel MINIMO):")
+    # mSuspensionTravel CRECE con la EXTENSION. Verificado con dos jueces independientes
+    # sobre 79 sesiones: corr(freno, travel delantero) = -0.405 (frenar comprime) y
+    # corr(altura al piso, travel) = +0.910 (comprimir baja la altura).
+    # Estaba al reves y eso invertia dos consejos: "posible bottoming, sube altura" salia
+    # con la rueda en DROOP, y el guardrail anti-ablandar-bump vigilaba el extremo opuesto
+    # al que existe para cubrir. Testigo: un Superkart SIN suspension marcaba BOTTOMING 55%.
+    th = [0] * D.TN_BINS
+    th[2] = 30      # bin BAJO ocupado = travel minimo = maxima COMPRESION
+    th[9] = 60      # el grueso, en el medio
+    th[15] = 10     # bin ALTO = travel maximo = maxima EXTENSION (droop)
+    m = D.DamperAnalyzer._travel_metrics(th)
+    _ok("travel MINIMO cuenta como bottoming", m["tBottom"] == 30, f"tBottom={m['tBottom']}")
+    _ok("travel MAXIMO cuenta como topping/droop", m["tTop"] == 10, f"tTop={m['tTop']}")
+    _ok("no estan intercambiados", m["tBottom"] > m["tTop"], m)
+    # y el guardrail tiene que dispararse con COMPRESION, no con extension
+    cs = [corner("FL", 40, 15, 20, 15, tbottom=m["tBottom"]),
+          corner("FR", 40, 15, 20, 15, tbottom=m["tBottom"]),
+          corner("RL", 25, 10, 25, 10), corner("RR", 25, 10, 25, 10)]
+    _ok("el guardrail lee el extremo de COMPRESION", "BOTTOMING" in front_line(cs))
+
+    print("\ntest gate de canal muerto:")
+    muerto = [corner(n, 93, 2, 4, 1, pico=99) for n in ("FL", "FR", "RL", "RR")]
+    linea = front_line(muerto)
+    _ok("canal apilado en un bin -> no opina", "sin señal" in linea, linea)
+    vivo = [corner(n, 40, 15, 20, 15, pico=20) for n in ("FL", "FR", "RL", "RR")]
+    _ok("canal sano -> si opina", "sin señal" not in front_line(vivo))
+
+    print("\ntest la regla de simetria YA NO es codigo muerto:")
+    # |SB-SR| tiene p90 = 3.5 en el corpus; con el deadband viejo de 8 disparaba 2 de 162
+    # veces (y las dos en una sesion con el canal muerto). Con 3.5 tiene que hablar.
+    real = [corner(n, 30, 15, 25, 15) for n in ("FL", "FR", "RL", "RR")]   # aS = +5
+    ln = front_line(real)
+    _ok("asimetria de 5pp (bajo el umbral viejo de 8) ahora SI dispara", "slow bump" in ln, ln)
+    _ok("y dice de que regla sale", "simetria lenta" in ln, ln)
+    chico = [corner(n, 27, 15, 25, 15) for n in ("FL", "FR", "RL", "RR")]  # aS = +2 (ruido)
+    _ok("asimetria de 2pp sigue siendo ruido", "slow bump" not in front_line(chico))
 
     print("done.")
 

@@ -773,20 +773,56 @@ def balance_struct(folder):
         w0, w1 = _corner_window(d, s, c["apex"], c["prom"])
         media = (w1 - w0) * BAL_APEX_FRAC / 2.0
         ini, fin = c["apex"] - media, c["apex"] + media
-        fr, re = [], []
+        # SOLO LAS RUEDAS QUE LA CURVA CARGA, igual que saturation_struct. Promediar las
+        # dos de cada eje mezcla la que trabaja con la que va casi ociosa, y no se
+        # cancela: medido sobre 283 curvas, la descargada slipea MAS que la cargada en el
+        # 96% de los ejes traseros (mediana +1.10) contra el 85% adelante (+0.42). Como
+        # el trasero se contamina 2.6x mas y el ratio es una DIVISION entre ejes, el
+        # veredicto se corria sistematicamente hacia el sobreviraje: 71 de 283 curvas
+        # (25%) cambian al calcularlo bien, y la tasa de sobreviraje cae de 27% a 19%
+        # mientras la de subviraje sube de 11% a 25%. Esa asimetria trasera ni siquiera
+        # es balance -- correlaciona +0.30 con el gas y +0.02 con la G lateral: es la
+        # rueda interior patinando en el diferencial.
+        # Validado contra un juez INDEPENDIENTE (indice de subviraje = residual del
+        # volante sobre la curvatura yaw/velocidad, dentro de cada auto): la correlacion
+        # mejora de -0.433 a -0.539, y mejora en 5 de 6 autos.
+        fr, re, lats = [], [], []
         for _, t in traces:
             idx = [i for i, x in enumerate(t["lap_dist"]) if ini <= x <= fin]
-            if idx:
+            if not idx:
+                continue
+            if t.get("accel_x"):
+                lats.append([t["accel_x"][i] for i in idx])
+        ax_all = [v for L in lats for v in L]
+        ax = st.median(ax_all) if ax_all else 0.0
+        # Abstencion tambien por signo MEZCLADO (chicanas): si la ventana tiene curva a
+        # los dos lados no hay un lado cargado, y ahi no se opina. Medido: 5.7% de las
+        # curvas del corpus caen en esa zona.
+        frac_pos = (sum(1 for v in ax_all if v > 0) / len(ax_all)) if ax_all else 0.5
+        mezclada = 0.2 <= frac_pos <= 0.8
+        hay_lado = bool(ax_all) and abs(ax) >= SAT_LAT_MIN and not mezclada
+        wf, wr = (("FR", "RR") if ax > 0 else ("FL", "RL")) if hay_lado else (None, None)
+        for _, t in traces:
+            idx = [i for i, x in enumerate(t["lap_dist"]) if ini <= x <= fin]
+            if not idx:
+                continue
+            if hay_lado:
+                fr.append(st.median([t["tyre_slip_" + wf][i] for i in idx]))
+                re.append(st.median([t["tyre_slip_" + wr][i] for i in idx]))
+            else:
                 fr.append(st.median([(t["tyre_slip_FL"][i] + t["tyre_slip_FR"][i]) / 2 for i in idx]))
                 re.append(st.median([(t["tyre_slip_RL"][i] + t["tyre_slip_RR"][i]) / 2 for i in idx]))
         if len(fr) < 2:
             continue
         f, r = st.median(fr), st.median(re)
         ratio = round(r / f, 2) if f > 0.1 else 1.0
+        # Sin lado cargado el numero se muestra pero NO se dictamina: promediar las dos
+        # ruedas es exactamente la medicion contaminada de arriba.
+        bal = (("sobreviraje" if ratio >= 1.25 else "subviraje" if ratio <= 0.8 else "neutro")
+               if hay_lado else None)
         corners.append({"n": c["n"], "apex": c["apex"], "vmin": round(c["vmin"]),
-                        "largo": round(fin - ini),
-                        "front": round(f, 1), "rear": round(r, 1), "ratio": ratio,
-                        "bal": "sobreviraje" if ratio >= 1.25 else "subviraje" if ratio <= 0.8 else "neutro"})
+                        "largo": round(fin - ini), "cargadas": [wf, wr] if hay_lado else [],
+                        "front": round(f, 1), "rear": round(r, 1), "ratio": ratio, "bal": bal})
     # momento de inestabilidad POR SECTOR: el sector con mayor spike de slip trasero entre vueltas
     # (la peor vuelta muy por encima de la mediana = el trasero se suelta de forma inconsistente ahi).
     bounds = _sector_bounds(folder)
@@ -978,7 +1014,13 @@ def tyres_struct(folder):
         a = acc[c]
         if not a["mid"]:
             continue
-        i, mi, o = (sum(a[k]) / len(a[k]) for k in ("in", "mid", "out"))
+        # OJO: las columnas tyre_t_in_/tyre_t_out_ son mTyreTempLeft/Right CRUDOS, en
+        # marco ABSOLUTO DEL AUTO -- los nombres MIENTEN. Para FL y RL el borde INTERIOR
+        # es el lado DERECHO (INNER_IS_RIGHT en ams2_tyres.py), asi que sin este mapeo el
+        # dEdge de las dos ruedas izquierdas sale con el SIGNO INVERTIDO y el diagnostico
+        # de camber dice lo contrario de lo que pasa en esas ruedas.
+        izq, mi, der = (sum(a[k]) / len(a[k]) for k in ("in", "mid", "out"))
+        i, o = (der, izq) if c in ("FL", "RL") else (izq, der)
         b = sum(a["bulk"]) / len(a["bulk"])
         pr = st.median(a["press"]) if a["press"] else 0.0
         psi = pr / 100 * 14.5038 if 100 < pr < 400 else (pr if 15 < pr < 40 else None)
@@ -1177,11 +1219,17 @@ def report_balance(folder):
     if not bal:
         print("  faltan >=3 vueltas limpias con canal de slip por rueda.")
         return
-    print("  slip por rueda (trasero vs delantero) en el apex; R/F >1.25 = sobreviraje, <0.8 = subviraje.")
-    print(f"\n  {'curva':6} {'apex':>6} {'vmin':>5} {'largo':>6} {'slipF':>6} {'slipR':>6} {'R/F':>5}  balance")
+    print("  slip en el apex de la rueda que la curva CARGA (columna 'cargadas'), trasera vs")
+    print("  delantera; R/F >1.25 = sobreviraje, <0.8 = subviraje. Promediar las dos ruedas de")
+    print("  cada eje mete a la interior patinando en el diferencial y corre el ratio al")
+    print("  sobreviraje: medido, 25% de las curvas cambiaban de veredicto.")
+    print(f"\n  {'curva':6} {'apex':>6} {'vmin':>5} {'largo':>6} {'carga':>6} {'slipF':>6} {'slipR':>6} {'R/F':>5}  balance")
     for c in bal["corners"]:
-        print(f"  T{c['n']:<5} {c['apex']:>6} {c['vmin']:>5} {c.get('largo', 120):>5}m "
-              f"{c['front']:>6.1f} {c['rear']:>6.1f} {c['ratio']:>5.2f}  {c['bal']}")
+        cg = c.get("cargadas") or []
+        lado = (cg[0][1] + cg[1][1]) if len(cg) == 2 else "—"     # "R"/"L" del par cargado
+        print(f"  T{c['n']:<5} {c['apex']:>6} {c['vmin']:>5} {c.get('largo', 120):>5}m {lado:>6} "
+              f"{c['front']:>6.1f} {c['rear']:>6.1f} {c['ratio']:>5.2f}  "
+              f"{c['bal'] or 'sin lado dominante'}")
     m = bal["moment"]
     if m:
         print(f"\n  MOMENTO de inestabilidad: {m['sector']} — pico de slip trasero {m['peak']} vs {m['median']} "
