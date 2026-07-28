@@ -261,7 +261,15 @@ class TyreAnalyzer:
         # justo cuando puede mirarlo. Los bordes ademas se ponen en 0 fuera de pista,
         # asi que el veredicto de camber salia siempre "poco camber neg." (0 < umbral).
         self._edges_stale = [False] * 4  # el borde mostrado es de pista, no de ahora
+        # Lo que la goma ALCANZO rodando. El piloto casi nunca puede mirar el dash EN
+        # pista; cuando llega al box ya se enfrio y la presion bajo, asi que el numero
+        # de "ahora" no cuenta lo que paso. Se guarda el maximo de la tanda por canal.
         self._peak_carc = [None] * 4  # C, maxima carcasa alcanzada rodando
+        self._peak_press = [None] * 4  # bar
+        self._peak_surf = [None] * 4  # C, piel
+        self._peak_bulk = [None] * 4  # C, masa
+        self._peak_in = [None] * 4    # C, borde interior
+        self._peak_out = [None] * 4   # C, borde exterior
         self._in_track = [None] * 4   # C, ultimo borde interior valido EN PISTA
         self._out_track = [None] * 4  # C, idem exterior
         self._jump = False            # las 4 carcasas saltaron juntas -> sesion/gomas nuevas
@@ -412,8 +420,15 @@ class TyreAnalyzer:
         # La direccionalidad es de la PISTA: al cambiar de auto/sesion no aplica.
         self._t_izq = self._t_der = 0.0
         self._lado = "="
-        self._peak_carc = [None] * 4     # el pico es DE LA TANDA (el comentario de
-                                         # update() ya lo afirmaba, pero no ocurria)
+        # Los picos son DE LA TANDA (el comentario de update() ya lo afirmaba, pero no
+        # ocurria). Se limpian con el auto/pista, NO al pitear: justo al volver al box
+        # es cuando el piloto por fin puede mirar lo que la goma alcanzo girando.
+        self._peak_carc = [None] * 4
+        self._peak_press = [None] * 4
+        self._peak_surf = [None] * 4
+        self._peak_bulk = [None] * 4
+        self._peak_in = [None] * 4
+        self._peak_out = [None] * 4
         self._cam_prev = self._load_camber()
 
     # ---------------- ingesta ----------------
@@ -564,11 +579,24 @@ class TyreAnalyzer:
                 self._edges_stale[c] = False
             elif self._t_in[c] is not None:
                 self._edges_stale[c] = True     # lo que se muestra es DE PISTA, no de ahora
-            # Pico de carcasa de la tanda: lo que la goma ALCANZO, no lo que le queda
-            # cuando por fin la miras. Se resetea con el auto (reset()) y al saltar.
-            if self._live and math.isfinite(carc):
-                self._peak_carc[c] = (carc if self._peak_carc[c] is None
-                                      else max(self._peak_carc[c], carc))
+            # PICOS de la tanda: lo que la goma ALCANZO rodando, no lo que le queda
+            # cuando por fin la miras en el box. Se toman de las EMAs (ya filtradas) y
+            # solo con el auto en marcha. Se resetean con el auto/pista (reset()).
+            if self._live:
+                if math.isfinite(carc):
+                    self._peak_carc[c] = (carc if self._peak_carc[c] is None
+                                          else max(self._peak_carc[c], carc))
+                for pico, val in ((self._peak_press, self._press[c]),
+                                  (self._peak_surf, self._t_surf[c]),
+                                  (self._peak_bulk, self._t_bulk[c])):
+                    if val is not None and math.isfinite(val):
+                        pico[c] = val if pico[c] is None else max(pico[c], val)
+                # los bordes solo cuentan cuando NO son el centinela de fuera de pista
+                if bordes_ok:
+                    for pico, val in ((self._peak_in, self._t_in[c]),
+                                      (self._peak_out, self._t_out[c])):
+                        if val is not None and math.isfinite(val):
+                            pico[c] = val if pico[c] is None else max(pico[c], val)
             if wear is not None:
                 try:
                     w = float(wear[c])
@@ -712,8 +740,36 @@ class TyreAnalyzer:
                           if cam_band else None),
                 # de pista, no de ahora: la UI lo marca para no presentarlo como actual
                 "frozen": frozen,
-                # lo que la goma ALCANZO rodando (no decae al parar)
+                # lo que la goma ALCANZO rodando (no decae al parar). `peak` queda como
+                # estaba (carcasa) por compatibilidad; `peaks` trae la tanda completa,
+                # que es lo que el piloto viene a leer AL BOX -- ahi el numero de "ahora"
+                # ya se enfrio y la presion bajo, o sea no cuenta lo que paso en pista.
                 "peak": (round(self._peak_carc[c]) if self._peak_carc[c] is not None else None),
+                "peaks": {
+                    "press": (round(self._peak_press[c], 2)
+                              if self._peak_press[c] is not None else None),
+                    "psi": (round(self._peak_press[c] * BAR_TO_PSI, 1)
+                            if self._peak_press[c] is not None else None),
+                    "carc": (round(self._peak_carc[c])
+                             if self._peak_carc[c] is not None else None),
+                    "surf": (round(self._peak_surf[c])
+                             if self._surf_alive and self._peak_surf[c] is not None else None),
+                    "bulk": (round(self._peak_bulk[c])
+                             if self._surf_alive and self._peak_bulk[c] is not None else None),
+                    "t_in": (round(self._peak_in[c])
+                             if self._surf_alive and self._peak_in[c] is not None else None),
+                    "t_out": (round(self._peak_out[c])
+                              if self._surf_alive and self._peak_out[c] is not None else None),
+                },
+                # Balance centro-vs-hombros: bulk - media(bordes). MEDICION, no veredicto.
+                # AMS2 SI lo simula (corr +0.98 con la presion sobre 42 sesiones: sobre-
+                # inflado calienta el centro, desinflado los hombros), pero medido contra
+                # el corpus NO separa vueltas rapidas de lentas (mediana +0.23 en la mas
+                # rapida contra +0.00 en la mas lenta), asi que aca se muestra el numero
+                # y NO se dicta que la presion este mal. Escala real: +-2 C en GT.
+                "dcen": (round(tbulk - (ti + to) / 2.0, 1)
+                         if (tbulk is not None and ti is not None and to is not None)
+                         else None),
                 "carcass": round(car) if car is not None else None,
                 # rel: estructura (esta esquina vs la media de las 4, C). tdev: la
                 # esquina se salio de SU norma y de lo que hacen las otras tres.

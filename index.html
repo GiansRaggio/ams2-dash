@@ -1108,19 +1108,26 @@ function renderTyres(y){
        NULL-SAFE con bridge viejo: sin t_surf/t_bulk las bandas van en em-dash con fondo
        neutro y la pagina no revienta. t_mid del payload viejo ERA el bulk (mTyreTempCenter
        es byte-identico a mTyreTemp), asi que sirve de fallback directo, no de invento. */
-    const tSurf = c.t_surf ?? null;
-    const tBulk = c.t_bulk ?? c.t_mid ?? null;
+    /* MODO PICO: detenido en boxes, lo que el dash muestra "ahora" ya se enfrió y la
+       presión bajó, así que NO cuenta lo que pasó girando — que es justo lo único que el
+       piloto no pudo mirar en pista. Parado se muestra el MÁXIMO de la tanda, marcado.
+       Sólo entra si hay pico de verdad; con bridge viejo (sin `peaks`) queda como antes. */
+    const pk = !y.live && c.peaks && c.peaks.carc != null;
+    const P  = c.peaks || {};
+    const tSurf = pk ? (P.surf ?? null) : (c.t_surf ?? null);
+    const tBulk = pk ? (P.bulk ?? null) : (c.t_bulk ?? c.t_mid ?? null);
     const deg = v => v == null ? "—" : v + "°";
 
     /* rel: cuánto sobre/bajo la media de las 4 corre esta carcasa. El fill lo pinta,
        este número lo cuantifica. Con bridge viejo (sin rel) queda vacío, no "±0". */
     const relTxt = c.rel == null ? "" : `<span class="crel">${sgn(c.rel, 1)}° vs media</span>`;
 
-    /* PICO de carcasa de la tanda. El piloto casi nunca puede mirar el dash EN pista;
-       cuando llega al box la goma ya se enfrió, así que el número de "ahora" no cuenta
-       lo que pasó. Se muestra sólo si está por encima de la lectura actual. */
-    const pkTxt = (c.peak != null && c.carcass != null && c.peak > c.carcass + 2)
-                ? `<span class="cpk">pico ${c.peak}°</span>` : "";
+    /* En modo PICO la banda CARC ya muestra el máximo, así que el sufijo dice el valor
+       ACTUAL (lo contrario que rodando, donde el sufijo dice el pico). */
+    const pkTxt = pk
+        ? (c.carcass != null ? `<span class="cpk">ahora ${c.carcass}°</span>` : "")
+        : ((c.peak != null && c.carcass != null && c.peak > c.carcass + 2)
+            ? `<span class="cpk">pico ${c.peak}°</span>` : "");
 
     /* LA BALANZA: la señal es la diferencia int−ext, no los absolutos.
        cstat lo decide el bridge: "warn" fuera de criterio · "ok" dentro · "idle" hay
@@ -1139,9 +1146,14 @@ function renderTyres(y){
     /* el veredicto absorbe el freno (murio .tfoot); se arma por partes para no dejar
        separadores colgando cuando falta alguna */
     const vBits = [];
+    if(pk) vBits.push("PICO tanda");
     if(c.spread != null) vBits.push("Δ" + sgn(c.spread, 1) + "°");
     if(c.camber) vBits.push(c.camber);
-    if(c.brake != null) vBits.push("freno " + c.brake + "°");
+    /* centro−hombros: MEDICIÓN, no veredicto. AMS2 sí lo simula (corr +0.98 con la
+       presión), pero contra el corpus no separa vueltas rápidas de lentas, así que se
+       muestra el número y no se dictamina. Escala real ±2° en GT: por eso 1 decimal. */
+    if(!pk && c.dcen != null) vBits.push("centro " + sgn(c.dcen, 1) + "°");
+    if(!pk && c.brake != null) vBits.push("freno " + c.brake + "°");
     /* fuera de pista los bordes se van a 0 y la lectura queda CONGELADA en lo último
        medido rodando. Se dice, para no presentarlo como medición de ahora. */
     if(c.frozen) vBits.push("de pista");
@@ -1162,21 +1174,26 @@ function renderTyres(y){
     +     `<span class="dverb">${dVerb}</span>`
     /* absolutos en TRES líneas y no en una: medido a 390px de ancho la columna del
        delta queda en 75px y "1.69 bar · 24.5 psi" pide 122px -> elipsis comiéndose el psi */
-    +     `<span class="dabs">${c.press == null ? "—" : c.press.toFixed(2) + " bar"}</span>`
-    +     `<span class="dabs">${c.psi == null ? "" : c.psi.toFixed(1) + " psi"}</span>`
-    +     `<span class="dabs">${y.target == null ? "" : "obj " + y.target.toFixed(2)}</span></div>`
+    /* parado se muestra la presión MÁXIMA de la tanda: la de "ahora" ya bajó con la
+       goma fría y no dice nada de lo que pasó girando */
+    +     `<span class="dabs">${(pk ? P.press : c.press) == null ? "—"
+              : (pk ? P.press : c.press).toFixed(2) + " bar"}</span>`
+    +     `<span class="dabs">${(pk ? P.psi : c.psi) == null ? ""
+              : (pk ? P.psi : c.psi).toFixed(1) + " psi"}</span>`
+    +     `<span class="dabs">${pk ? "de la tanda"
+              : (y.target == null ? "" : "obj " + y.target.toFixed(2))}</span></div>`
     +   `<div class="prail"><i class="pband"></i><i class="ptgt"></i>${pMark}</div>`
     +   `<div class="tbody2">`
     +     `<div class="tband surf"><i>SUP</i><b>${deg(tSurf)}</b></div>`
     +     `<div class="tband bulk"><i>BULK</i><b>${deg(tBulk)}</b></div>`
     +     `<div class="tband carc" style="background:${heatRel(c.rel)}">`
-    +       `<div class="crow"><i>CARC</i><b>${deg(c.carcass)}</b></div>`
+    +       `<div class="crow"><i>${pk ? "PICO" : "CARC"}</i><b>${deg(pk ? P.carc : c.carcass)}</b></div>`
     +       `${pkTxt}`
     +       `${relTxt}</div></div></div>`
     + `<div class="tedge">`
-    +   `<span class="et"><i>EXT</i>${deg(c.t_out)}</span>`
+    +   `<span class="et"><i>EXT</i>${deg(pk ? P.t_out : c.t_out)}</span>`
     +   `<div class="eaxis">${eBand}<i class="ezero"></i>${eMark}</div>`
-    +   `<span class="et"><i>INT</i>${deg(c.t_in)}</span></div>`
+    +   `<span class="et"><i>INT</i>${deg(pk ? P.t_in : c.t_in)}</span></div>`
     + `<div class="everdict ${camWarn}">${verdict}</div>`;
   }
 

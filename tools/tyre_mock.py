@@ -266,9 +266,13 @@ def _canal_muerto(t):
 
 
 def _detenido(t):
-    """live=false: el auto esta parado (box/grilla). Las lecturas siguen siendo validas
-    -- reflejan el enfriamiento (carc_slow sobre la actual -> trend "cool") -- pero
-    el dash avisa DETENIDO. warm sigue true: recien salio de pista."""
+    """live=false: el auto esta parado (box/grilla) -> MODO PICO.
+
+    Es el estado que el piloto de verdad mira, porque en pista no puede. Las lecturas de
+    "ahora" ya se enfriaron y la presion bajo, asi que la pagina muestra el MAXIMO de la
+    tanda: CARC pasa a decir PICO, la presion muestra la mas alta alcanzada con el
+    sufijo "de la tanda", los bordes tambien, y el veredicto abre con "PICO tanda".
+    peak_add/peak_press_add son la distancia entre lo que se ve ahora y lo que alcanzo."""
     carc = [96, 95, 92, 93]
     bulk = _below(carc, 22)
     return dict(car="Porsche 911 GT3 R", compound="Slick Soft", live=False,
@@ -279,7 +283,8 @@ def _detenido(t):
                 brake=[180, 176, 140, 138],
                 wear=[0.34, 0.35, 0.30, 0.31],
                 eol=[18.0, 17.5, 21.0, 20.5],
-                stint=12, carc_slow=[v + 7.0 for v in carc])
+                stint=12, carc_slow=[v + 7.0 for v in carc],
+                peak_add=14.0, peak_press_add=0.11)
 
 
 def _parcial(t):
@@ -506,6 +511,21 @@ def tyres_payload(scn, t):
         _an._t_der = float(d.get("dir_der", 120.0))
     if hasattr(_an, "_cam_prev"):
         _an._cam_prev = dict(d.get("cam_prev", {}))
+    # PICOS de la tanda. Sin esto el mock nunca ejercita el modo PICO (el que se ve al
+    # volver a boxes), porque inyecta estado directo y jamas pasa por el update() que los
+    # acumula -- o sea el QA visual validaria una pantalla que en pista se ve distinta.
+    # Por default se derivan de la lectura actual con el `peak_add` del escenario.
+    add = d.get("peak_add", 0.0)
+    for attr, chan, delta in (("_peak_carc", "carcass", add),
+                              ("_peak_surf", "layer", add),
+                              ("_peak_bulk", "bulk", add),
+                              ("_peak_in", "t_in", add),
+                              ("_peak_out", "t_out", add)):
+        if hasattr(_an, attr):
+            setattr(_an, attr, [None if v is None else v + delta for v in d[chan]])
+    if hasattr(_an, "_peak_press"):
+        _an._peak_press = [None if v is None else v + d.get("peak_press_add", 0.0)
+                           for v in d["press"]]
 
     eol = d.get("eol", [None] * 4)
     stint = d.get("stint", 0)
