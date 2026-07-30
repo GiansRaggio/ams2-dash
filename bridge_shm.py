@@ -49,6 +49,9 @@ STALL_S = 30.0
 WATCHDOG_EVERY_S = 5.0
 MAX_REINICIOS = 3          # tope para no entrar en bucle de reinicios
 _hb = time.monotonic()     # ultimo latido del pump (lo lee el hilo del watchdog)
+# [ya_estuvo_conectado, monotonic de la ultima conexion]: para no escribir una linea de
+# "conectada" por cada reintento cuando AMS2 esta en menus (ver el pump).
+_conectado_antes = [False, 0.0]
 
 
 def log(msg):
@@ -475,7 +478,15 @@ async def pump():
                 continue
             try:
                 reader = ams2_shm.Reader().open()
-                log("[bridge-shm] shared memory conectada ($pcars2$)")
+                # Solo al RECONECTAR de verdad, no en cada reintento. Con AMS2 en menus o
+                # cerrado la memoria se congela, el pump la reabre cada ~4 s y esto
+                # escribia una linea POR SEGUNDO: 12.807 lineas en un dia, que ahogan el
+                # unico rastro que sirve cuando hay que diagnosticar algo. Se avisa la
+                # reconexion cuando venia de estar caida un rato, no el churn normal.
+                if not _conectado_antes[0] or (now - _conectado_antes[1]) > 30.0:
+                    log("[bridge-shm] shared memory conectada ($pcars2$)")
+                _conectado_antes[0] = True
+                _conectado_antes[1] = now
             except ams2_shm.SharedMemoryUnavailable:
                 state["connected"] = False
                 next_retry = now + 1.0
