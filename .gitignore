@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 .preview.html
 bridge.log
+bridge.log.*
 telemetry/
 references/
 player.txt
