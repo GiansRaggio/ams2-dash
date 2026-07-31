@@ -13,6 +13,22 @@ REM  (La version UDP original sigue disponible como: python bridge.py)
 REM ============================================================
 cd /d "%~dp0"
 
+REM  Guard de instancia unica: si ya hay un dash corriendo, el segundo muere al
+REM  instante con WinError 10048 (bind duplicado en 8765) escupiendo un traceback
+REM  que se lee como "no arranca" -- cuando en realidad el que si funciona es el
+REM  que ya estaba arriba. Avisar en vez de mostrar el stack.
+netstat -ano | findstr ":8765" | findstr "LISTENING" >nul 2>&1
+if errorlevel 1 goto :venv
+
+echo El dash YA esta corriendo (el puerto 8765 esta ocupado).
+echo No hace falta arrancarlo de nuevo: abre en el celular la URL de siempre (puerto 8080).
+echo.
+echo Si de verdad quieres reiniciarlo:  taskkill /F /IM python.exe   y vuelve a correr esto.
+echo.
+pause
+exit /b 0
+
+:venv
 if exist ".venv\Scripts\python.exe" goto :run
 
 echo No encontre el entorno virtual (.venv) todavia.
