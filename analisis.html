@@ -433,7 +433,11 @@ function pintarGraficos(){
   if (!n){ cont.innerHTML = ""; return; }
   const mtr = metros();
   const defs = [];
-  if (S.A && S.B) defs.push({delta:true, tit:"delta de tiempo", u:"s", alto:86, dec:3});
+  // El titulo dice el signo explicito. Un "delta" sin decir contra que y para
+  // que lado se lee al reves la mitad de las veces, y justo en el grafico que
+  // decide donde estas perdiendo tiempo.
+  if (S.A && S.B) defs.push({delta:true, alto:86, dec:3,
+    tit:"delta A vs B · sube = A pierde · s"});
   defs.push(...CANALES.filter(c => serie(S.A, c.k) || serie(S.B, c.k)));
 
   if (cont.childElementCount !== defs.length){
@@ -572,7 +576,8 @@ function pintarLectura(){
   const filas = [];
   if (ta && tb){
     const dv = ta.canales.t[i] - tb.canales.t[i];
-    filas.push(["delta", (dv>=0?"+":"") + dv.toFixed(3) + " s", ""]);
+    filas.push(["delta A-B", (dv>=0?"+":"") + dv.toFixed(3) + " s",
+                dv >= 0 ? "A va perdiendo" : "A va ganando"]);
   }
   for (const c of CANALES){
     const a = ta && ta.canales[c.k], b = tb && tb.canales[c.k];

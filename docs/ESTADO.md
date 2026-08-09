@@ -43,6 +43,34 @@ Al tocar algo nuevo por rueda: preguntarse **cuál rueda mide** antes de escribi
   centrales**. Rápido = las **colas** desde ±62.5. El `low%/alta%` de la cabecera ES esa
   partición.
 
+## Hechos del visor de telemetría (`ams2_analysis.py` + `analisis.html`)
+
+- **La traza NO llega a meta.** AMS2 congela la shared memory al cruzar y el recorder
+  guarda los últimos frames repetidos. Medido en 138 vueltas de 30 sesiones: mediana
+  **0 ms** de tiempo faltante, p90 11 ms. Pero **todos** los outliers (hasta 228 ms)
+  salen de UNA sesión, `Road_Atlanta__..._race__20260802_214607`, que además tiene
+  **44% de muestras con distancia repetida** → ahí el hilo grabador se quedó sin CPU.
+  Esos 12.5 m sin grabar a 178 km/h aparecían como un delta falso de 227 ms.
+  El visor completa el tramo con el **cronómetro** (que se conoce exacto) y publica
+  `cierre_s` para que una traza truncada se anuncie sola.
+- **Numerar curvas por mínimos de velocidad pierde las rápidas.** En Spa se comía Eau
+  Rouge y Blanchimont (14 de ~19). Se numera por **curvatura del trazado** + filtro de
+  giro total ≥10°: la geometría no depende de cómo manejaste ese día. Contra oficial:
+  Watkins Glen 11/11, Jerez 12/13, Road Atlanta 11/12, Spa 15/19 (el catálogo separa
+  lo que la geometría une). **El número no es verdad de catálogo** — en el mapa se ve
+  cada T dibujada, así que el error se detecta mirando.
+- **El contador de vueltas se REINICIA al volver al garage.** Una práctica de Road
+  Atlanta tiene seis tandas y tres "vuelta 1". La identidad es el `uid` del recorder,
+  que ahora va también en `timeline.jsonl`.
+- **Las vueltas de boxes son el BORDE de una tanda, no su inicio.** Tratar cada cruce
+  con `pit`+`out` como inicio daba **once** tandas donde hay **seis**.
+- **Trazas `X###.csv.gz` = vuelta invalidada.** Se graban para poder comparar la tanda
+  completa, pero NO entran a `summary.jsonl`: todas las herramientas de análisis llegan
+  a las trazas por el resumen, así que su corpus sigue siendo solo vueltas limpias.
+  Verificado con `tyre_replay` (83 sesiones, VERIFICA OK).
+- La API `/api/*` queda **expuesta en la LAN**: el nombre de sesión se valida como
+  frontera de confianza (un `..` colado serviría cualquier archivo del disco).
+
 ## Trampas del entorno
 
 - **`netstat` NO sirve para saber si el bridge está vivo.** Se puede colgar el event loop
