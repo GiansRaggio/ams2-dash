@@ -8,10 +8,17 @@ vuelca:
   telemetry/<pista>__<auto>__<sesion>__<fecha>/
       session.json                 metadatos de la sesion
       summary.jsonl                1 linea por vuelta valida (resumen)
-      L003_92.451s.csv.gz          traza completa de la vuelta (todos los canales)
+      L003_92.451s.csv.gz          traza completa de la vuelta LIMPIA
+      X005_93.118s.csv.gz          traza de una vuelta INVALIDADA por limites de pista
       timeline.jsonl               linea de tiempo COMPLETA (aditiva): 1 registro por CADA
                                    vuelta cruzada (out/in/pit/invalida/corta incluidas) +
                                    eventos (largada, pit_in/out, cambio de goma)
+
+El prefijo X es deliberado. Una vuelta invalidada por pisar un piano conserva
+frenadas y trazada utiles, asi que su TRAZA se guarda (el visor compara la tanda
+vuelta por vuelta y sin ellas se pierde media sesion), pero NO entra a
+summary.jsonl. Todo el analisis del repo llega a las trazas por el resumen, de
+modo que su corpus sigue siendo solo vueltas limpias y no cambia por esto.
 
 La traza es CSV gzippeado: 1 fila por muestra (~50 Hz), columnas = canales
 (velocidad, pedales, direccion, g-forces, posicion, y por esquina: temps de goma
@@ -466,6 +473,17 @@ class TelemetryLogger:
         # gateado en modo != off (en off _commit_lap SI se llama, pero no debe escribir nada).
         lap_no = int(p.mLapsCompleted)
         lap_time = d.mLastLapTime if d.mLastLapTime > 0 else None
+        # Nombre de la traza. Prefijo L = vuelta limpia, X = vuelta INVALIDADA por
+        # limites de pista. La distincion es deliberada y no cosmetica: todo el
+        # analisis del repo llega a las trazas por summary.jsonl (que solo lista
+        # las limpias), asi que mezclar las invalidadas bajo el mismo prefijo
+        # cambiaria en silencio el corpus de cada herramienta. Con X quedan
+        # visibles SOLO para quien las pida por la linea de tiempo -- el visor,
+        # que las necesita para comparar la tanda vuelta por vuelta.
+        tname = None
+        if flying and self._mode == "full":
+            tname = (f"{'X' if self._invalid else 'L'}{lap_no:03d}"
+                     f"_{(lap_time if lap_time else 0):.3f}s.csv.gz")
         if self._sess_dir is not None and self._mode != "off":
             if self._pit_this:
                 kind = "pit"
@@ -483,6 +501,11 @@ class TelemetryLogger:
                 "type": "lap", "lap": lap_no, "lap_time": round(lap_time, 3) if lap_time else None,
                 "kind": kind, "pit": bool(self._pit_this), "out": bool(self._pit_prev),
                 "invalid": bool(self._invalid), "samples": n_samples,
+                # uid AUN NO asignado (se incrementa mas abajo, solo para vueltas de
+                # pista): se anticipa aca para que la linea de tiempo pueda cruzarse
+                # con summary.jsonl y sectors.jsonl sin adivinar por orden.
+                "uid": (self._lap_uid + 1) if flying else None,
+                "trace": tname,
                 "compound": [_label(bytes(d.mTyreCompound[i])) for i in range(4)],
                 "fuel_start": round(self._start["fuel"], 2) if self._start else None,
                 "fuel_end": round(d.mFuelLevel * self._cap, 2),
@@ -512,20 +535,27 @@ class TelemetryLogger:
                 }, ensure_ascii=False) + "\n")
         except OSError:
             pass
-        if self._invalid:     # vuelta sucia: sectores rescatables guardados, pero sin traza/resumen
-            return
-        a, st = self._agg, self._start
-        end_fuel = d.mFuelLevel * self._cap
-        end_wear = [d.mTyreWear[i] for i in range(4)]
-        try:
-            tname = None
-            if self._mode == "full":               # la traza completa solo en modo full
-                tname = f"L{lap_no:03d}_{(lap_time if lap_time else 0):.3f}s.csv.gz"
+        # La TRAZA se guarda tambien si la vuelta se invalido (como X###). Una
+        # vuelta invalidada por pisar un piano sigue teniendo la frenada, la
+        # trazada y los cambios buenos: para comparar una tanda vuelta por vuelta
+        # descartarla es perder la mitad de la sesion. Lo que NO se guarda es su
+        # resumen: eso mantiene intacto el corpus de las herramientas de analisis,
+        # que se apoyan en que summary.jsonl solo tiene vueltas representativas.
+        if tname:
+            try:
                 with gzip.open(os.path.join(self._sess_dir, tname), "wt",
                                newline="", encoding="utf-8") as f:
                     f.write(",".join(HEADER) + "\n")
                     f.write("\n".join(self._buf))
                     f.write("\n")
+            except OSError:
+                tname = None
+        if self._invalid:     # vuelta sucia: sectores y traza guardados, sin resumen
+            return
+        a, st = self._agg, self._start
+        end_fuel = d.mFuelLevel * self._cap
+        end_wear = [d.mTyreWear[i] for i in range(4)]
+        try:
             n = max(1, a["n"]) if a else 1
             summary = {
                 "uid": self._lap_uid,

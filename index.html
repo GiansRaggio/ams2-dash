@@ -181,6 +181,7 @@
        color:var(--txt);background:rgba(13,17,24,.85);border:1px solid var(--line);
        border-radius:6px;padding:.6vh 1.5vw;-webkit-user-select:none;user-select:none;touch-action:manipulation}
   .btn:active{background:var(--panel2);border-color:var(--cyan);color:var(--cyan)}
+  a.btn{text-decoration:none}   /* el visor es un enlace a otra pagina, no un boton de la SPA */
   #ctrlbar{flex:none;display:flex;justify-content:flex-end;gap:1vw;padding:.5vh 1.4vw 0}
   #tbar{flex:none;display:flex;align-items:center;justify-content:space-between;
         gap:1vw;padding:.2vh 0 1.2vh}
@@ -690,6 +691,9 @@
     <button class="btn" id="btndamp">DAMPERS ▸</button>
     <button class="btn" id="btnstrat" title="Estrategia">⛽ ▸</button>
     <button class="btn" id="btntyres" title="Gomas">🛞 ▸</button>
+    <!-- El visor es una PAGINA aparte, no una vista mas de esta SPA: se usa parado
+         en boxes y no tiene por que cargarle peso al dash que corre en pista. -->
+    <a class="btn" id="btnanalisis" href="/analisis.html" title="Análisis de vueltas">📈 ▸</a>
   </div>
 
   <div id="grid">

@@ -34,6 +34,15 @@ import ams2_strategy
 import ams2_telemetry
 import ams2_tyres
 
+# El visor de telemetria es ACCESORIO: si su modulo no carga, el dash de manejar
+# tiene que seguir andando igual. Por eso el import es blando y no un import
+# normal arriba -- un error aca no puede dejarte sin instrumentos en pista.
+try:
+    import ams2_analysis
+except Exception as _e:                              # noqa: BLE001
+    ams2_analysis = None
+    _ANALISIS_ERR = _e
+
 WS_PORT = 8765
 HTTP_PORT = 8080
 
@@ -521,7 +530,12 @@ def lan_ip():
 
 
 class _NoCacheHandler(http.server.SimpleHTTPRequestHandler):
-    """Evita que el navegador del celular sirva una version cacheada del dash."""
+    """Sirve el dash y la API de analisis (/api/*).
+
+    Dos cosas: evita que el navegador del celular sirva una version cacheada, y
+    resuelve las rutas /api/* del visor de telemetria leyendo lo que ya esta en
+    telemetry/. Todo lo demas cae al servidor de archivos de siempre.
+    """
 
     def end_headers(self):
         self.send_header("Cache-Control", "no-store, max-age=0")
@@ -529,6 +543,67 @@ class _NoCacheHandler(http.server.SimpleHTTPRequestHandler):
 
     def log_message(self, *a):
         pass  # silencioso
+
+    # ---------------- API del visor ----------------
+    def do_GET(self):
+        if self.path.startswith("/api/"):
+            return self._api()
+        return super().do_GET()
+
+    def _json(self, obj, code=200):
+        cuerpo = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(cuerpo)))
+        self.end_headers()
+        self.wfile.write(cuerpo)
+
+    def _api(self):
+        from urllib.parse import urlparse, parse_qs
+        u = urlparse(self.path)
+        q = {k: v[0] for k, v in parse_qs(u.query).items()}
+        ruta = u.path[5:]
+        if ams2_analysis is None:
+            return self._json({"error": "el modulo de analisis no cargo; ver bridge.log"}, 503)
+        try:
+            if ruta == "sesiones":
+                return self._json({"sesiones": ams2_analysis.sesiones(int(q.get("n", 40)))})
+            carpeta = ams2_analysis._carpeta(q.get("s", ""))
+            if ruta == "sesion":
+                return self._json({
+                    "meta": ams2_analysis._meta(carpeta),
+                    "carpeta": os.path.basename(carpeta),
+                    "tandas": ams2_analysis.stints(carpeta),
+                })
+            if ruta == "mapa":
+                return self._json(ams2_analysis.mapa(carpeta, q.get("t")))
+            if ruta == "traza":
+                return self._json(ams2_analysis.traza(
+                    carpeta, q.get("t", ""), paso=float(q.get("paso", ams2_analysis.PASO_M))))
+            if ruta == "export":
+                return self._export(carpeta, int(q.get("tanda", 1)),
+                                    q.get("validas") == "1")
+        except ValueError as e:
+            return self._json({"error": str(e)}, 400)
+        except Exception as e:                       # nunca tumbar el hilo del server
+            log(f"[api] {ruta}: {type(e).__name__}: {e}")
+            return self._json({"error": f"{type(e).__name__}: {e}"}, 500)
+        return self._json({"error": "ruta desconocida"}, 404)
+
+    def _export(self, carpeta, tanda, solo_validas):
+        """CSV de una tanda completa. Se manda en streaming: una tanda larga son
+        decenas de MB y armarla entera en memoria antes del primer byte deja al
+        celular mirando una pantalla en blanco."""
+        lineas = ams2_analysis.stint_csv(carpeta, tanda, solo_validas)
+        primera = next(lineas)                       # dispara los errores ANTES del 200
+        nombre = f"{os.path.basename(carpeta)}__tanda{tanda}.csv"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/csv; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="{nombre}"')
+        self.end_headers()
+        self.wfile.write(primera.encode("utf-8"))
+        for ln in lineas:
+            self.wfile.write(ln.encode("utf-8"))
 
 
 def serve_http():

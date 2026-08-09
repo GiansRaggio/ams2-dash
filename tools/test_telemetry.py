@@ -180,14 +180,27 @@ def main():
             _ok("limpia: sec_valid todos True", srec["sec_valid"] == [True, True, True], srec["sec_valid"])
             _ok("limpia: invalid=False", srec["invalid"] is False)
 
-        print("test_invalid_lap (lap invalida -> NO se guarda):")
+        # La invalidada guarda TRAZA (prefijo X, para que el visor pueda comparar la
+        # tanda completa) pero NO resumen: el corpus de las herramientas de analisis
+        # llega por summary.jsonl y tiene que seguir siendo solo vueltas limpias.
+        print("test_invalid_lap (lap invalida -> traza X, pero fuera del resumen):")
         log2 = T.TelemetryLogger(base_dir=tempfile.mkdtemp(prefix="ams2tel2_"))
         feed_lap(log2, 0); cross_to(log2, 1)
         feed_lap(log2, 1, invalid=True)          # se invalida
         cross_to(log2, 2)
         sd2 = session_dir(log2._base)
         tr2 = [f for f in os.listdir(sd2) if f.endswith(".csv.gz")] if sd2 else []
-        _ok("vuelta invalida no guardada (sin traza)", len(tr2) == 0, tr2)
+        _ok("invalida: guarda traza con prefijo X", len(tr2) == 1 and tr2[0][0] == "X", tr2)
+        _ok("invalida: NINGUNA traza con prefijo L (no se cuela al corpus)",
+            not any(f[0] == "L" for f in tr2), tr2)
+        sumf2 = os.path.join(sd2, "summary.jsonl") if sd2 else ""
+        _ok("invalida: NO entra a summary.jsonl", not os.path.exists(sumf2)
+            or not open(sumf2, encoding="utf-8").read().strip())
+        tlf2 = os.path.join(sd2, "timeline.jsonl") if sd2 else ""
+        tl2 = [json.loads(x) for x in open(tlf2, encoding="utf-8").read().splitlines()] if os.path.exists(tlf2) else []
+        inv = [r for r in tl2 if r.get("type") == "lap" and r.get("kind") == "invalid"]
+        _ok("invalida: la linea de tiempo apunta a su traza", bool(inv) and inv[0].get("trace") in tr2,
+            inv[0].get("trace") if inv else None)
         secf2 = os.path.join(sd2, "sectors.jsonl") if sd2 else ""
         sl2 = open(secf2, encoding="utf-8").read().strip().splitlines() if os.path.exists(secf2) else []
         _ok("invalida: sectors.jsonl SI guarda el registro (rescate)", len(sl2) == 1, len(sl2))

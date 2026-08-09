@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#04060a">
+<title>AMS2 · Análisis</title>
+<!--
+  VISOR DE TELEMETRIA. Pagina aparte a proposito: el dash de manejar corre a rAF
+  con el WebSocket encima y no tiene por que cargar el peso de un analizador que
+  solo se usa parado en boxes. Se sirve del mismo puerto, asi que se abre igual
+  desde el celular o desde el PC.
+
+  Todo se dibuja en canvas y se compara POR DISTANCIA, nunca por tiempo: dos
+  vueltas duran distinto, asi que superpuestas por tiempo se desfasan cada vez
+  mas y el grafico deja de significar nada a mitad de vuelta.
+-->
+<style>
+  :root{
+    --bg:#04060a; --panel:#0d1118; --panel2:#11161f; --line:#1f2733;
+    --txt:#eef3fa; --dim:#5d6b7e;
+    --green:#2bf07a; --amber:#ffb020; --red:#ff2e4d;
+    --blue:#3f8cff; --cyan:#27e0ff; --purple:#b44dff;
+    --mono:ui-monospace,"JetBrains Mono","Cascadia Mono","Roboto Mono",monospace;
+    --chamfer:polygon(8px 0,100% 0,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%,0 8px);
+  }
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{min-height:100%}
+  body{background:radial-gradient(120% 90% at 50% -20%,#0b1220 0%,var(--bg) 55%),var(--bg);
+       color:var(--txt);font-family:var(--mono);font-size:14px;
+       padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+  .label{font-size:max(9px,1.2vh);letter-spacing:.2em;color:var(--dim);text-transform:uppercase;font-weight:600}
+  .box{background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--line);
+       clip-path:var(--chamfer);padding:8px 10px}
+
+  /* ---------- cabecera ---------- */
+  header{position:sticky;top:0;z-index:20;background:linear-gradient(180deg,#0b1018 70%,#0b101800);
+         padding:8px 10px 10px;display:flex;flex-direction:column;gap:6px}
+  .hrow{display:flex;gap:8px;align-items:center}
+  #volver{flex:none;font-size:max(13px,1.7vh);color:var(--dim);text-decoration:none;padding:6px 10px;
+          border:1px solid var(--line);border-radius:4px}
+  select,button{font-family:var(--mono);background:var(--panel2);color:var(--txt);
+                border:1px solid var(--line);border-radius:4px;padding:7px 9px;font-size:max(12px,1.5vh)}
+  select{flex:1;min-width:0}
+  #meta{font-size:max(11px,1.4vh);color:var(--dim);display:flex;gap:10px;flex-wrap:wrap}
+  #meta b{color:var(--txt);font-weight:700}
+
+  /* ---------- tandas ---------- */
+  #tandas{display:flex;gap:6px;overflow-x:auto;padding-bottom:2px;scrollbar-width:none}
+  #tandas::-webkit-scrollbar{display:none}
+  .tanda{flex:none;padding:7px 11px;border:1px solid var(--line);border-radius:4px;background:var(--panel);
+         font-size:max(12px,1.5vh);color:var(--dim);white-space:nowrap;cursor:pointer}
+  .tanda.sel{border-color:var(--cyan);color:var(--txt);box-shadow:0 0 0 1px var(--cyan) inset}
+  .tanda small{display:block;font-size:max(9px,1.1vh);opacity:.65;letter-spacing:.05em}
+
+  main{padding:0 10px 24px;display:flex;flex-direction:column;gap:10px}
+
+  /* ---------- mapa ---------- */
+  #mapwrap{position:relative}
+  #mapa{width:100%;display:block;touch-action:none}
+  #leyenda{position:absolute;right:8px;top:8px;display:flex;flex-direction:column;gap:3px;
+           font-size:max(9px,1.1vh);color:var(--dim);text-align:right;pointer-events:none}
+  #leyenda i{display:inline-block;width:14px;height:3px;vertical-align:middle;margin-right:5px}
+
+  /* ---------- vueltas ---------- */
+  #vueltas{display:flex;flex-direction:column;gap:3px;max-height:38vh;overflow-y:auto}
+  .v{display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--line);
+     border-radius:4px;background:var(--panel);font-size:max(12px,1.5vh)}
+  .v.inv{opacity:.5}
+  .v .n{color:var(--dim);width:3.2em;flex:none}
+  .v .t{font-variant-numeric:tabular-nums;font-weight:700;flex:1}
+  .v .d{font-variant-numeric:tabular-nums;color:var(--dim);font-size:max(11px,1.3vh)}
+  .v .sel{flex:none;width:26px;height:26px;border-radius:4px;border:1px solid var(--line);
+          background:var(--panel2);color:var(--dim);font-weight:700;font-size:max(11px,1.3vh)}
+  .v .sel.on.a{border-color:var(--cyan);color:#04060a;background:var(--cyan)}
+  .v .sel.on.b{border-color:var(--red);color:#fff;background:var(--red)}
+  .v.notrace .t{color:var(--dim);font-weight:400}
+  .v.notrace .sel{opacity:.25}
+
+  /* ---------- cursor / lectura ---------- */
+  #lectura{position:sticky;bottom:0;z-index:15;background:linear-gradient(0deg,#0b1018 78%,#0b101800);
+           padding:8px 10px 10px;font-size:max(11px,1.4vh)}
+  #lectura .fila{display:grid;grid-template-columns:5.5em 1fr 1fr;gap:6px;align-items:baseline}
+  #lectura .k{color:var(--dim)}
+  #lectura .a{color:var(--cyan);font-variant-numeric:tabular-nums;font-weight:700}
+  #lectura .b{color:var(--red);font-variant-numeric:tabular-nums;font-weight:700}
+  #curva{font-weight:800;font-size:max(15px,2vh);letter-spacing:.05em}
+
+  /* ---------- graficos ---------- */
+  .g{position:relative}
+  .g canvas{width:100%;display:block;touch-action:none}
+  .g .tit{position:absolute;left:8px;top:5px;pointer-events:none}
+  .aviso{color:var(--amber);font-size:max(11px,1.3vh);padding:2px 2px 0}
+  #vacio{color:var(--dim);text-align:center;padding:30px 10px;line-height:1.7}
+  .fnota{color:var(--dim);font-size:max(10px,1.2vh);line-height:1.5}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="hrow">
+    <a id="volver" href="/">←</a>
+    <select id="sesion"></select>
+    <button id="recargar" title="releer del disco">↻</button>
+  </div>
+  <div id="meta"></div>
+  <div id="tandas"></div>
+</header>
+
+<main>
+  <div id="vacio" class="box">cargando…</div>
+
+  <div id="app" style="display:none;flex-direction:column;gap:10px">
+    <div class="box" id="mapwrap">
+      <canvas id="mapa"></canvas>
+      <div id="leyenda">
+        <span><i style="background:var(--blue)"></i>a fondo</span>
+        <span><i style="background:var(--red)"></i>freno</span>
+        <span><i style="background:var(--green)"></i>parcial</span>
+      </div>
+    </div>
+
+    <div>
+      <div class="label" style="padding:0 2px 4px">vueltas de la tanda · A para ver · B para comparar</div>
+      <div id="vueltas"></div>
+    </div>
+
+    <div id="avisos"></div>
+    <div id="graficos" style="display:flex;flex-direction:column;gap:8px"></div>
+
+    <div class="hrow" style="gap:8px">
+      <button id="csv" style="flex:1">⬇ exportar tanda a CSV</button>
+      <label class="fnota" style="display:flex;align-items:center;gap:5px">
+        <input type="checkbox" id="solovalidas"> solo válidas
+      </label>
+    </div>
+    <div class="fnota" id="pie"></div>
+  </div>
+</main>
+
+<div id="lectura" style="display:none">
+  <div class="fila"><span id="curva" style="grid-column:1/2">—</span>
+    <span class="a" id="lecA" style="grid-column:2/3"></span>
+    <span class="b" id="lecB" style="grid-column:3/4"></span></div>
+  <div id="lecfilas"></div>
+</div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const api = (r, q) => fetch("/api/" + r + "?" + new URLSearchParams(q)).then(async res => {
+  const j = await res.json();
+  if (!res.ok) throw new Error(j.error || res.status);
+  return j;
+});
+
+// ---------------------------------------------------------------- estado ---
+const S = {
+  sesion: null, meta: null, tandas: [], tanda: 0,
+  mapa: null, trazas: new Map(),      // nombre de archivo -> traza remuestreada
+  A: null, B: null,                   // nombres de archivo de las vueltas elegidas
+  cursor: null,                       // indice en la grilla de metros
+};
+
+const CANALES = [
+  {k:"speed_kmh", tit:"velocidad", u:"km/h", alto:96, dec:0},
+  {k:"throttle",  tit:"acelerador", u:"%",   alto:70, dec:0, esc:[0,1], pct:true},
+  {k:"brake",     tit:"freno",      u:"%",   alto:70, dec:0, esc:[0,1], pct:true},
+  {k:"gear",      tit:"marcha",     u:"",    alto:64, dec:0, paso:true},
+  {k:"rpm",       tit:"rpm",        u:"",    alto:70, dec:0},
+  {k:"steer",     tit:"volante",    u:"",    alto:64, dec:2, esc:[-1,1]},
+];
+
+// -------------------------------------------------------------- utilidades ---
+const t2s = t => t == null ? "—" :
+  (t >= 60 ? Math.floor(t/60) + ":" + (t%60).toFixed(3).padStart(6,"0") : t.toFixed(3));
+const dpr = () => Math.min(window.devicePixelRatio || 1, 2.5);
+
+// Devuelve null si todavia no hay ancho con que dibujar y se reagenda solo.
+// Pasa de verdad: pestaña en segundo plano, o la pagina abierta desde el icono
+// de inicio en iOS antes de que WebKit haga el primer layout. Sin esto el canvas
+// se dibuja de 0 px, queda en blanco y NO se vuelve a pintar nunca -- se ve
+// exactamente igual que un error de datos.
+let reintento = null;
+function lienzo(cv, alto){
+  const w = cv.clientWidth || cv.parentElement.clientWidth;
+  if (w < 50){
+    if (!reintento) reintento = requestAnimationFrame(() => { reintento = null; pintarTodo(); });
+    return null;
+  }
+  const r = dpr();
+  cv.width = Math.round(w * r); cv.height = Math.round(alto * r);
+  cv.style.height = alto + "px";
+  const c = cv.getContext("2d");
+  c.setTransform(r, 0, 0, r, 0, 0);
+  c.clearRect(0, 0, w, alto);
+  return {c, w, h: alto};
+}
+
+// ---------------------------------------------------------------- sesiones ---
+async function cargarSesiones(){
+  const j = await api("sesiones", {n: 60});
+  const sel = $("sesion");
+  sel.innerHTML = "";
+  for (const s of j.sesiones){
+    const o = document.createElement("option");
+    o.value = s.carpeta;
+    const f = (s.inicio || "").slice(5,16).replace("T"," ");
+    o.textContent = `${f}  ${(s.pista||"?").replace(/_/g," ")} · ${(s.auto||"?").replace(/_/g," ")}`
+                  + (s.vueltas ? `  (${s.vueltas}v)` : "");
+    sel.appendChild(o);
+  }
+  if (!j.sesiones.length) throw new Error("no hay sesiones grabadas todavía");
+  // Arrancar en la ultima sesion CON VUELTAS, no en la ultima a secas: una qualy
+  // donde todas las vueltas salieron invalidadas existe como carpeta pero no
+  // tiene nada que mostrar, y abrir en ella parece que el visor esta roto.
+  const conDatos = j.sesiones.find(s => s.vueltas > 0);
+  const elegida = (conDatos || j.sesiones[0]).carpeta;
+  sel.value = elegida;
+  return elegida;
+}
+
+async function cargarSesion(carpeta, mantenerTanda){
+  S.sesion = carpeta;
+  const j = await api("sesion", {s: carpeta});
+  S.meta = j.meta; S.tandas = j.tandas;
+  const conTraza = S.tandas.map((t,i) => [i, t.con_traza]).filter(x => x[1] > 0);
+  if (!mantenerTanda || S.tanda >= S.tandas.length)
+    S.tanda = conTraza.length ? conTraza[conTraza.length-1][0] : S.tandas.length - 1;
+
+  $("meta").innerHTML = S.tandas.length
+    ? `<span><b>${(S.meta.track||"?").replace(/_/g," ")}</b></span>
+       <span>${(S.meta.car||"?").replace(/_/g," ")}</span>
+       <span>${S.meta.session||""}</span>
+       <span>${S.tandas.length} tanda${S.tandas.length>1?"s":""}</span>`
+    : "";
+  pintarTandas();
+  S.mapa = null;
+  if (S.tandas.some(t => t.con_traza > 0)){
+    try { S.mapa = await api("mapa", {s: carpeta}); } catch(e){}
+  }
+  await cargarTanda();
+}
+
+function pintarTandas(){
+  const c = $("tandas"); c.innerHTML = "";
+  S.tandas.forEach((t, i) => {
+    const d = document.createElement("div");
+    d.className = "tanda" + (i === S.tanda ? " sel" : "");
+    d.innerHTML = `T${t.n} <small>${t.con_traza}/${t.n_vueltas}v · ${t.mejor ? t2s(t.mejor) : "—"}</small>`;
+    d.onclick = () => { S.tanda = i; S.A = S.B = null; pintarTandas(); cargarTanda(); };
+    c.appendChild(d);
+  });
+}
+
+async function cargarTanda(){
+  const t = S.tandas[S.tanda];
+  const conTraza = t ? t.vueltas.filter(v => v.traza) : [];
+  $("vacio").style.display = conTraza.length ? "none" : "block";
+  $("app").style.display   = conTraza.length ? "flex" : "none";
+  $("lectura").style.display = conTraza.length ? "block" : "none";
+  if (!conTraza.length){
+    $("vacio").textContent = t
+      ? `La tanda T${t.n} no tiene ninguna vuelta con traza guardada.\n` +
+        `El grabador solo guarda la traza de las vueltas limpias.`
+      : "Esta sesión no tiene tandas.";
+    return;
+  }
+  // por defecto: la mas rapida como A, la segunda como B (la comparacion util de entrada)
+  const orden = [...conTraza].sort((a,b) => (a.tiempo||9e9) - (b.tiempo||9e9));
+  if (!S.A || !conTraza.some(v => v.traza === S.A)) S.A = orden[0].traza;
+  if (!S.B || !conTraza.some(v => v.traza === S.B)) S.B = orden[1] ? orden[1].traza : null;
+  pintarVueltas();
+  await asegurarTrazas();
+  S.cursor = null;
+  pintarTodo();
+}
+
+function pintarVueltas(){
+  const t = S.tandas[S.tanda];
+  const cont = $("vueltas"); cont.innerHTML = "";
+  const mejor = Math.min(...t.vueltas.filter(v => v.tiempo && v.traza).map(v => v.tiempo));
+  for (const v of t.vueltas){
+    const d = document.createElement("div");
+    d.className = "v" + (v.valida ? "" : " inv") + (v.traza ? "" : " notrace");
+    const dif = v.tiempo && v.traza && v.tiempo !== mejor ? "+" + (v.tiempo - mejor).toFixed(3) : "";
+    d.innerHTML = `<span class="n">L${v.vuelta}</span>
+      <span class="t">${v.tiempo ? t2s(v.tiempo) : "—"}</span>
+      <span class="d">${dif || (v.traza ? "" : (v.tipo === "out" ? "salida" : v.tipo === "invalid" ? "invalidada" : v.tipo))}</span>`;
+    for (const cual of ["A","B"]){
+      const b = document.createElement("button");
+      b.className = "sel " + cual.toLowerCase() + (S[cual] === v.traza ? " on" : "");
+      b.textContent = cual;
+      b.disabled = !v.traza;
+      b.onclick = async () => {
+        if (!v.traza) return;
+        S[cual] = (S[cual] === v.traza) ? null : v.traza;
+        if (cual === "A" && S.A === S.B) S.B = null;
+        if (cual === "B" && S.B === S.A) S.A = null;
+        pintarVueltas(); await asegurarTrazas(); pintarTodo();
+      };
+      d.appendChild(b);
+    }
+    cont.appendChild(d);
+  }
+}
+
+async function asegurarTrazas(){
+  for (const n of [S.A, S.B]){
+    if (n && !S.trazas.has(n))
+      S.trazas.set(n, await api("traza", {s: S.sesion, t: n}));
+  }
+  const a = S.A && S.trazas.get(S.A), b = S.B && S.trazas.get(S.B);
+  const av = [];
+  for (const [tr, cual] of [[a,"A"],[b,"B"]]){
+    if (tr && tr.cierre_s > 0.05)
+      av.push(`⚠ la traza de la vuelta ${cual} termina ${(tr.cierre_s*1000).toFixed(0)} ms antes de meta ` +
+              `(la grabación se quedó corta); ese tramo se completó con el cronómetro.`);
+  }
+  $("avisos").innerHTML = av.map(x => `<div class="aviso">${x}</div>`).join("");
+}
+
+// -------------------------------------------------------------- pintado ---
+function serie(nombre, canal){
+  const tr = nombre && S.trazas.get(nombre);
+  return tr && tr.canales[canal] ? tr.canales[canal] : null;
+}
+
+function nPuntos(){
+  const a = S.A && S.trazas.get(S.A), b = S.B && S.trazas.get(S.B);
+  const la = a ? a.metros.length : 0, lb = b ? b.metros.length : 0;
+  return (la && lb) ? Math.min(la, lb) : (la || lb);
+}
+
+function metros(){
+  const a = S.A && S.trazas.get(S.A) || S.B && S.trazas.get(S.B);
+  return a ? a.metros : [];
+}
+
+function pintarTodo(){
+  pintarMapa();
+  pintarGraficos();
+  pintarLectura();
+}
+
+// ---- mapa: el trazado real, coloreado por lo que hace el pie ----
+function pintarMapa(){
+  const cv = $("mapa");
+  if (!S.mapa){ cv.style.display = "none"; return; }
+  cv.style.display = "block";
+  const alto = Math.max(190, Math.min(340, (window.innerHeight || 700) * 0.34));
+  const lz = lienzo(cv, alto);
+  if (!lz) return;
+  const {c, w, h} = lz;
+  const M = S.mapa, pad = 20;
+  const xs = M.x, zs = M.z;
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  const z0 = Math.min(...zs), z1 = Math.max(...zs);
+  const k = Math.min((w - 2*pad) / (x1 - x0 || 1), (h - 2*pad) / (z1 - z0 || 1));
+  const cx = (w - (x1-x0)*k)/2, cy = (h - (z1-z0)*k)/2;
+  const X = i => cx + (xs[i]-x0)*k, Y = i => h - (cy + (zs[i]-z0)*k);   // Z crece hacia el norte
+
+  // color por estado del pie en la vuelta A (o la que haya)
+  const nom = S.A || S.B;
+  const tr = nom && S.trazas.get(nom);
+  const paso = tr ? tr.paso_m : 2, mtr = tr ? tr.metros : null;
+  const brk = tr && tr.canales.brake, thr = tr && tr.canales.throttle;
+  const idxDe = m => mtr ? Math.min(mtr.length-1, Math.round(m/paso)) : 0;
+  const colorEn = m => {
+    if (!brk) return "#3f8cff";
+    const i = idxDe(m);
+    if (brk[i] > 0.02) return "#ff2e4d";
+    if (thr[i] > 0.90) return "#3f8cff";
+    return "#2bf07a";
+  };
+
+  c.lineWidth = 6; c.lineCap = "round"; c.lineJoin = "round";
+  for (let i = 0; i < xs.length-1; i++){
+    c.strokeStyle = colorEn(M.metros[i]);
+    c.beginPath(); c.moveTo(X(i), Y(i)); c.lineTo(X(i+1), Y(i+1)); c.stroke();
+  }
+
+  // meta
+  c.strokeStyle = "#eef3fa"; c.lineWidth = 3;
+  c.beginPath(); c.moveTo(X(0), Y(0));
+  c.lineTo(X(0) + (Y(1)-Y(0))*0.5, Y(0) - (X(1)-X(0))*0.5); c.stroke();
+
+  // numeros de curva
+  c.font = `700 ${Math.max(10, Math.round(w/34))}px ui-monospace,monospace`;
+  c.textAlign = "center"; c.textBaseline = "middle";
+  for (const cu of M.curvas){
+    const i = Math.round(cu.metro / (M.metros[1]-M.metros[0] || 1));
+    const j = Math.min(Math.max(i,1), xs.length-2);
+    // se corre hacia AFUERA de la curva para no tapar el trazado
+    const nx = -(Y(j+1)-Y(j-1)), ny = (X(j+1)-X(j-1));
+    const L = Math.hypot(nx, ny) || 1, s = cu.lado === "izq" ? -15 : 15;
+    c.fillStyle = "#0d1118"; c.beginPath();
+    c.arc(X(j)+nx/L*s, Y(j)+ny/L*s, Math.max(8, w/48), 0, 7); c.fill();
+    c.fillStyle = "#5d6b7e";
+    c.fillText("T"+cu.n, X(j)+nx/L*s, Y(j)+ny/L*s);
+  }
+
+  // cursor
+  if (S.cursor != null && mtr){
+    const m = mtr[Math.min(S.cursor, mtr.length-1)];
+    const i = Math.min(xs.length-1, Math.round(m / (M.metros[1]-M.metros[0] || 1)));
+    c.fillStyle = "#fff"; c.beginPath(); c.arc(X(i), Y(i), 6, 0, 7); c.fill();
+    c.strokeStyle = "#04060a"; c.lineWidth = 2; c.stroke();
+  }
+
+  cv.onpointerdown = cv.onpointermove = ev => {
+    if (ev.buttons === 0 && ev.type === "pointermove") return;
+    const r = cv.getBoundingClientRect();
+    const px = ev.clientX - r.left, py = ev.clientY - r.top;
+    let mejor = 0, dmin = 1e18;
+    for (let i = 0; i < xs.length; i++){
+      const d = (X(i)-px)**2 + (Y(i)-py)**2;
+      if (d < dmin){ dmin = d; mejor = i; }
+    }
+    const paso2 = tr ? tr.paso_m : 2;
+    S.cursor = Math.round(M.metros[mejor] / paso2);
+    pintarTodo();
+  };
+}
+
+// ---- graficos por distancia ----
+function pintarGraficos(){
+  const cont = $("graficos");
+  const n = nPuntos();
+  if (!n){ cont.innerHTML = ""; return; }
+  const mtr = metros();
+  const defs = [];
+  if (S.A && S.B) defs.push({delta:true, tit:"delta de tiempo", u:"s", alto:86, dec:3});
+  defs.push(...CANALES.filter(c => serie(S.A, c.k) || serie(S.B, c.k)));
+
+  if (cont.childElementCount !== defs.length){
+    cont.innerHTML = "";
+    for (const d of defs){
+      const w = document.createElement("div");
+      w.className = "g box"; w.style.padding = "0";
+      w.innerHTML = `<span class="tit label"></span><canvas></canvas>`;
+      cont.appendChild(w);
+    }
+  }
+  defs.forEach((d, i) => {
+    const w = cont.children[i];
+    w.querySelector(".tit").textContent = d.tit + (d.u ? " · " + d.u : "");
+    dibujar(w.querySelector("canvas"), d, mtr, n);
+  });
+}
+
+function dibujar(cv, d, mtr, n){
+  const lz = lienzo(cv, d.alto);
+  if (!lz) return;
+  const {c, w, h} = lz;
+  const padL = 34, padR = 6, padT = 16, padB = 10;
+  const W = w - padL - padR, H = h - padT - padB;
+  const largo = mtr[n-1] || 1;
+  const px = m => padL + m/largo*W;
+
+  let A = null, B = null;
+  if (d.delta){
+    const ta = serie(S.A,"t"), tb = serie(S.B,"t");
+    A = new Array(n); for (let i=0;i<n;i++) A[i] = ta[i]-tb[i];
+  } else { A = serie(S.A, d.k); B = serie(S.B, d.k); }
+
+  // escala
+  let lo, hi;
+  if (d.esc){ [lo,hi] = d.esc; }
+  else {
+    lo = Infinity; hi = -Infinity;
+    for (const s of [A,B]) if (s) for (let i=0;i<n;i++){ if(s[i]<lo)lo=s[i]; if(s[i]>hi)hi=s[i]; }
+    if (!isFinite(lo)) { lo = 0; hi = 1; }
+    if (d.delta){ const m = Math.max(Math.abs(lo),Math.abs(hi),0.05); lo=-m; hi=m; }
+    else { const m = (hi-lo)*0.08 || 1; lo -= m; hi += m; }
+  }
+  const py = v => padT + H - (v-lo)/(hi-lo||1)*H;
+
+  // rejilla: las curvas, que es la referencia con la que uno habla
+  if (S.mapa){
+    c.strokeStyle = "#182029"; c.lineWidth = 1; c.font = "9px ui-monospace,monospace";
+    c.fillStyle = "#2c3746"; c.textAlign = "center"; c.textBaseline = "top";
+    for (const cu of S.mapa.curvas){
+      if (cu.metro > largo) continue;
+      const x = px(cu.metro);
+      c.beginPath(); c.moveTo(x, padT); c.lineTo(x, padT+H); c.stroke();
+      if (d.delta) c.fillText("T"+cu.n, x, 3);
+    }
+  }
+  // cero del delta
+  if (d.delta){
+    c.strokeStyle = "#3a4756"; c.setLineDash([3,3]);
+    c.beginPath(); c.moveTo(padL, py(0)); c.lineTo(padL+W, py(0)); c.stroke();
+    c.setLineDash([]);
+  }
+
+  const trazo = (s, color) => {
+    if (!s) return;
+    c.strokeStyle = color; c.lineWidth = 1.6; c.beginPath();
+    for (let i=0;i<n;i++){
+      const X = px(mtr[i]), Y = py(s[i]);
+      if (i===0) c.moveTo(X,Y);
+      else if (d.paso){ c.lineTo(X, py(s[i-1])); c.lineTo(X,Y); }
+      else c.lineTo(X,Y);
+    }
+    c.stroke();
+  };
+  if (d.delta){
+    // relleno con signo: bajo cero ganas, sobre cero pierdes
+    c.beginPath(); c.moveTo(px(mtr[0]), py(0));
+    for (let i=0;i<n;i++) c.lineTo(px(mtr[i]), py(A[i]));
+    c.lineTo(px(mtr[n-1]), py(0)); c.closePath();
+    const g = c.createLinearGradient(0, py(hi), 0, py(lo));
+    g.addColorStop(0, "rgba(255,46,77,.35)"); g.addColorStop(0.5, "rgba(255,46,77,0)");
+    g.addColorStop(0.5, "rgba(43,240,122,0)"); g.addColorStop(1, "rgba(43,240,122,.35)");
+    c.fillStyle = g; c.fill();
+    trazo(A, "#eef3fa");
+  } else {
+    trazo(B, "#ff2e4d");
+    trazo(A, "#27e0ff");
+  }
+
+  // eje Y: solo los extremos, que es lo que se lee de una mirada
+  c.fillStyle = "#3d4a5c"; c.font = "9px ui-monospace,monospace";
+  c.textAlign = "right"; c.textBaseline = "middle";
+  const f = v => d.pct ? Math.round(v*100) : v.toFixed(d.dec ?? 0);
+  c.fillText(f(hi), padL-4, py(hi)+4);
+  c.fillText(f(lo), padL-4, py(lo)-4);
+
+  if (S.cursor != null){
+    const i = Math.min(S.cursor, n-1), x = px(mtr[i]);
+    c.strokeStyle = "#8fa0b5"; c.lineWidth = 1;
+    c.beginPath(); c.moveTo(x, padT); c.lineTo(x, padT+H); c.stroke();
+  }
+
+  const mover = ev => {
+    const r = cv.getBoundingClientRect();
+    const frac = ((ev.clientX - r.left) - padL) / W;
+    S.cursor = Math.max(0, Math.min(n-1, Math.round(frac*largo / (mtr[1]-mtr[0] || 1))));
+    pintarTodo();
+  };
+  cv.onpointerdown = ev => { cv.setPointerCapture(ev.pointerId); mover(ev); };
+  cv.onpointermove = ev => { if (ev.buttons) mover(ev); };
+}
+
+// ---- lectura bajo el cursor ----
+function pintarLectura(){
+  const n = nPuntos();
+  if (!n){ $("lectura").style.display = "none"; return; }
+  $("lectura").style.display = "block";
+  const i = S.cursor == null ? null : Math.min(S.cursor, n-1);
+  const mtr = metros();
+  const ta = S.A && S.trazas.get(S.A), tb = S.B && S.trazas.get(S.B);
+
+  if (i == null){
+    $("curva").textContent = "—";
+    $("lecA").textContent = ta ? `A · L${ta.vuelta} ${t2s(ta.tiempo)}` : "";
+    $("lecB").textContent = tb ? `B · L${tb.vuelta} ${t2s(tb.tiempo)}` : "";
+    $("lecfilas").innerHTML = `<div class="fnota">arrastra el dedo sobre un gráfico o el mapa para leer punto por punto</div>`;
+    return;
+  }
+  const m = mtr[i];
+  let cu = null;
+  if (S.mapa) for (const x of S.mapa.curvas) if (x.inicio - 60 <= m && m <= x.fin + 40) cu = x;
+  $("curva").textContent = (cu ? "T"+cu.n : "—") + "  " + Math.round(m) + "m";
+  $("lecA").textContent = ta ? `A L${ta.vuelta}` : "";
+  $("lecB").textContent = tb ? `B L${tb.vuelta}` : "";
+
+  const filas = [];
+  if (ta && tb){
+    const dv = ta.canales.t[i] - tb.canales.t[i];
+    filas.push(["delta", (dv>=0?"+":"") + dv.toFixed(3) + " s", ""]);
+  }
+  for (const c of CANALES){
+    const a = ta && ta.canales[c.k], b = tb && tb.canales[c.k];
+    if (!a && !b) continue;
+    const f = v => v == null ? "" : (c.pct ? Math.round(v*100)+"%" : v.toFixed(c.dec ?? 0));
+    filas.push([c.tit, f(a && a[i]), f(b && b[i])]);
+  }
+  $("lecfilas").innerHTML = filas.map(([k,a,b]) =>
+    `<div class="fila"><span class="k">${k}</span><span class="a">${a}</span><span class="b">${b}</span></div>`).join("");
+}
+
+// ------------------------------------------------------------------ eventos ---
+$("sesion").onchange = async e => { S.A = S.B = null; S.trazas.clear(); await cargarSesion(e.target.value); };
+$("recargar").onclick = async () => { S.trazas.clear(); await cargarSesion(S.sesion, true); };
+$("csv").onclick = () => {
+  const t = S.tandas[S.tanda];
+  const q = new URLSearchParams({s: S.sesion, tanda: t.n, validas: $("solovalidas").checked ? "1" : "0"});
+  location.href = "/api/export?" + q;
+};
+let redib;
+window.addEventListener("resize", () => { clearTimeout(redib); redib = setTimeout(pintarTodo, 150); });
+
+// Refresco en vivo: mientras giras, la tanda en curso crece sola. Solo se releen
+// las TANDAS (barato); las trazas ya cargadas se conservan para no perder la
+// comparacion que tengas puesta en pantalla.
+setInterval(async () => {
+  if (!S.sesion || document.hidden) return;
+  try {
+    const j = await api("sesion", {s: S.sesion});
+    const antes = JSON.stringify(S.tandas.map(t => [t.n, t.con_traza]));
+    if (antes !== JSON.stringify(j.tandas.map(t => [t.n, t.con_traza]))){
+      S.tandas = j.tandas;
+      pintarTandas(); pintarVueltas();
+      $("pie").textContent = "actualizado " + new Date().toLocaleTimeString();
+    }
+  } catch(e){}
+}, 15000);
+
+(async () => {
+  try {
+    const primera = await cargarSesiones();
+    await cargarSesion(primera);
+  } catch(e){
+    $("vacio").textContent = "no se pudo cargar: " + e.message;
+  }
+})();
+</script>
+</body>
+</html>
