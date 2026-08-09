@@ -115,6 +115,9 @@ def _vueltas(folder: str) -> list[dict]:
             "combustible": r.get("fuel_used"),
         } for r in res]
 
+    def _existe(nombre):
+        return bool(nombre) and os.path.exists(os.path.join(folder, nombre))
+
     out, k = [], 0
     for r in laps:
         v = {
@@ -126,9 +129,15 @@ def _vueltas(folder: str) -> list[dict]:
                             if r.get("fuel_start") is not None and r.get("fuel_end") is not None
                             else None),
         }
-        if r.get("trace"):
-            # sesiones nuevas: la linea de tiempo ya trae uid y archivo, incluido
-            # el de las vueltas invalidadas (X###), que el resumen nunca lista
+        # sesiones nuevas: la linea de tiempo ya trae uid y archivo, incluido el
+        # de las vueltas invalidadas (X###), que el resumen nunca lista.
+        #
+        # Se COMPRUEBA que el archivo exista, en los DOS caminos. El nombre se
+        # anota antes de volcar el .gz, asi que hay una ventana; y si el volcado
+        # falla (disco lleno) el nombre queda apuntando a un fantasma para
+        # siempre. Mirando la sesion en vivo, mientras giras, esa ventana se
+        # puede pisar de verdad.
+        if _existe(r.get("trace")):
             v["traza"] = r["trace"]
         if r.get("kind") == "flying" and k < len(res):
             s = res[k]
@@ -137,7 +146,8 @@ def _vueltas(folder: str) -> list[dict]:
             # esta vuelta se queda sin traza en vez de mostrar la de otra.
             if s.get("lap") == r.get("lap") and abs((s.get("lap_time") or 0) - (r.get("lap_time") or 0)) < 0.002:
                 v["uid"] = v["uid"] or s.get("uid")
-                v["traza"] = v["traza"] or s.get("trace")
+                if not v["traza"] and _existe(s.get("trace")):
+                    v["traza"] = s["trace"]
                 v["sectores"] = s.get("sectors")
                 v["compuesto"] = s.get("compound")
                 k += 1

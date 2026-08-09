@@ -178,6 +178,77 @@ def test_curvas():
     ok("todas tienen lado y radio", all(x["lado"] in ("izq", "der") and x["radio_m"] for x in c))
 
 
+def test_tanda_de_verdad():
+    """Una tanda como la que se gira: sales de boxes, das 5 vueltas (una se
+    invalida) y vuelves a entrar. .Que ve el visor?
+
+    Es la unica prueba que recorre el camino NUEVO completo -- grabador ->
+    timeline con `trace` -> tandas -> traza remuestreada -> CSV. Todo lo demas
+    se valida contra el corpus viejo, que no tiene nada de esto.
+    """
+    print("\ntanda completa de punta a punta (grabador -> visor -> CSV):")
+    import shutil
+    import tempfile
+    sys.path.insert(0, os.path.join(HERE, "tools"))
+    import test_telemetry as TT
+    import ams2_telemetry as T
+
+    base = tempfile.mkdtemp(prefix="ams2stint_")
+    try:
+        log = T.TelemetryLogger(base_dir=base)
+        # `feed_lap(N)` alimenta la vuelta con mLapsCompleted=N y `cross_to(N+1)`
+        # la cierra: cada par es UNA vuelta completa.
+        TT.feed_lap(log, 0, pit=2)              # sales del garage, cruzas en boxes
+        TT.cross_to(log, 1)
+        TT.feed_lap(log, 1)                     # out-lap (calentamiento)
+        TT.cross_to(log, 2)
+        for n in range(2, 7):                   # 5 VUELTAS DE PISTA, la 3a invalidada
+            TT.feed_lap(log, n, invalid=(n == 4))
+            TT.cross_to(log, n + 1)
+        TT.feed_lap(log, 7, pit=1)              # vuelta de entrada a boxes
+        TT.cross_to(log, 8)
+
+        d = TT.session_dir(base)
+        ss = A.stints(d)
+        ok("el visor ve UNA tanda", len(ss) == 1, [s["n_vueltas"] for s in ss])
+        if not ss:
+            return
+        s = ss[0]
+        tipos = [v["tipo"] for v in s["vueltas"]]
+        ok("la tanda arranca en la vuelta de salida", tipos[0] == "out", tipos)
+        ok("la vuelta de entrada a boxes NO esta en la tanda", "pit" not in tipos, tipos)
+        con = [v for v in s["vueltas"] if v["traza"]]
+        ok("de 5 vueltas de pista quedan 5 con traza (incluida la invalidada)",
+           len(con) == 5, f"{len(con)} trazas de {s['n_vueltas']} vueltas: {tipos}")
+        ok("la out-lap NO tiene traza (es de calentamiento)",
+           not s["vueltas"][0]["traza"])
+        inval = [v for v in con if not v["valida"]]
+        ok("la invalidada esta, marcada como invalida y con traza X",
+           len(inval) == 1 and inval[0]["traza"].startswith("X"),
+           [v["traza"] for v in inval])
+        # el resumen (corpus del resto de las herramientas) NO la incluye
+        res = AT._read_jsonl(os.path.join(d, "summary.jsonl"))
+        ok("summary.jsonl sigue teniendo solo las 4 limpias", len(res) == 4, len(res))
+
+        tr = A.traza(d, con[0]["traza"])
+        ok("la traza se puede remuestrear por distancia", len(tr["metros"]) > 100,
+           f"{len(tr['metros'])} puntos")
+        filas = list(A.stint_csv(d, 1))
+        vueltas_csv = {ln.split(",", 1)[0] for ln in filas[1:]}
+        ok("el CSV de la tanda trae las 5 vueltas", len(vueltas_csv) == 5, sorted(vueltas_csv))
+        ok("el CSV lleva cabecera con lap y uid", filas[0].startswith("lap,uid,t,"))
+        solo_ok = list(A.stint_csv(d, 1, solo_validas=True))
+        v_ok = {ln.split(",", 1)[0] for ln in solo_ok[1:]}
+        ok("con 'solo validas' quedan 4", len(v_ok) == 4, sorted(v_ok))
+
+        # una traza que se anuncia pero no llego al disco no puede romper el visor
+        os.remove(os.path.join(d, con[0]["traza"]))
+        ok("si falta el archivo, esa vuelta queda sin traza (no revienta)",
+           len([v for v in A.stints(d)[0]["vueltas"] if v["traza"]]) == 4)
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def test_frontera():
     """La API queda expuesta en la LAN: el nombre de sesion es entrada no confiable."""
     print("\nfrontera de confianza (nombre de sesion):")
@@ -265,6 +336,7 @@ def main():
     test_remuestreo()
     test_delta()
     test_curvas()
+    test_tanda_de_verdad()
     test_frontera()
     test_api()
     print(f"\n{'TODO VERDE' if not _fallos else str(_fallos) + ' FALLO(S)'}")
