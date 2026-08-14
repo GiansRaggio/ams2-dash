@@ -5,6 +5,7 @@ __pycache__/
 bridge.log
 bridge.log.*
 telemetry/
+frametime/
 references/
 player.txt
 tyre_targets.json

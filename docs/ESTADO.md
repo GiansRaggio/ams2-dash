@@ -71,6 +71,57 @@ Al tocar algo nuevo por rueda: preguntarse **cuál rueda mide** antes de escribi
 - La API `/api/*` queda **expuesta en la LAN**: el nombre de sesión se valida como
   frontera de confianza (un `..` colado serviría cualquier archivo del disco).
 
+## Stuttering y frame times (investigación del 2026-08-12)
+
+Herramienta: `tools/grabar-presentmon.bat` (PresentMon de Intel, binario en
+`sim/lmu-dash/tools/bin/`). Salida a `frametime/` (gitignoreado, ~150 MB por noche).
+Análisis con `sim/lmu-dash/tools/lmu_presentmon.py`, que sirve para cualquier juego.
+
+**Cadena de mejoras, cada eslabón medido** (Ryzen 5 7600X, RTX 4070 SUPER,
+Samsung LC34G55T 3440×1440 @165 Hz con G-SYNC, AMS2 en Road America):
+
+| paso | mediana | eventos/min | ms perdidos por evento |
+|---|---|---|---|
+| sin nada | 5,61 ms (178 fps) | 28,5 | 37 |
+| **cap a 160** | **6,25 ms (160 fps)** | 26,9 | 39 |
+| **+ apps de fondo cerradas** | 6,25 ms | 25,0 | **20** |
+| **+ Game Bar apagado** | 6,25 ms | 24,0 | 21 |
+
+El cap arregló el **ritmo**: de 68% de frames fuera de la ventana VRR a 0,3%.
+Cerrar aplicaciones arregló la **severidad**: partió a la mitad los ms perdidos por
+evento y eliminó los atascos catastróficos (el peor pasó de 2064 ms a 59 ms).
+Ninguno de los dos cambió la FRECUENCIA de los eventos, que se quedó en ~25/min.
+En todos los casos los frames malos son CPU-bound: CPU ~30 ms contra GPU ~5 ms.
+
+**Trampas, todas verificadas contra capturas reales:**
+
+- **AMS2 no tiene limitador de fotogramas.** `graphicsconfigdx11.xml` declara todas
+  sus propiedades y no hay ninguna: solo `Vsync` y `FrameLatency`. El cap va por driver.
+- **El cap de la NVIDIA App NO se escribe en el perfil del driver.** Se configuró a
+  160, la App lo mostraba aplicado, y la medición dio 178 fps de mediana con 70% de
+  frames sobre 166 — idéntico a no tener cap. En el **Panel de Control clásico** la
+  lista de programas aparecía VACÍA, sin rastro de AMS2. Agregándolo ahí a mano
+  (`Agregar` → `Examinar` → el .exe) y pulsando **Aplicar**, funcionó: mediana 6,25 ms
+  exactos. Usar siempre el panel clásico y verificar midiendo.
+- **El proceso real es `AMS2AVX.exe`, no `AMS2.exe`.** El lanzador elige según el
+  soporte AVX de la CPU. Apuntar al otro captura CERO frames sin dar ningún error.
+- **PresentMon debe arrancar ANTES que el juego.** Enganchado a un AMS2 ya corriendo
+  clasifica todo como `Composed: Flip` en vez de `Hardware Composed: Independent Flip`
+  —pierde la creación de la swap chain— y en modo compuesto el DWM regulariza los
+  intervalos, **escondiendo los atascos**. Misma máquina, mismo día: p99 = 6,34 ms
+  enganchando tarde contra 13,05 ms arrancando antes. La captura sale preciosa y no
+  significa nada. Verificar siempre la columna `PresentMode`.
+- **`--terminate_on_proc_exit` produce un abrazo mortal.** PresentMon abre un handle al
+  proceso del juego; ese handle mantiene vivo el objeto del proceso aunque el juego ya
+  esté muerto (0 hilos, 0 handles), así que espera para siempre a que desaparezca algo
+  que él mismo sostiene, y deja el CSV bloqueado en exclusiva. Se usa `--timed N
+  --terminate_after_timed`.
+- **El CSV queda bloqueado mientras PresentMon vive**: ni leerlo ni copiarlo. Y no se
+  puede matar sin elevar, porque `--restart_as_admin` deja el proceso de trabajo
+  elevado. De ahí que la captura se corte sola por tiempo.
+- **El MOZA Pit House muestra el juego como "Ejecutando" después de cerrarlo.** Es
+  estado obsoleto de su interfaz, no un proceso vivo: verificar con `tasklist`.
+
 ## Trampas del entorno
 
 - **`netstat` NO sirve para saber si el bridge está vivo.** Se puede colgar el event loop
@@ -107,6 +158,18 @@ Al tocar algo nuevo por rueda: preguntarse **cuál rueda mide** antes de escribi
    construyó el registro de ajustes por auto.
 5. **Dash para Le Mans Ultimate**: evaluado y viable, plan en [LMU-DASH.md](LMU-DASH.md).
    Sin empezar. Lo próximo es la sonda de medio día.
+6. **Stuttering: falta la medición limpia del undervolt.** Tras aplicar Curve Optimizer
+   −12 el piloto reporta mejora sustancial y el gráfico del juego ya no muestra caídas,
+   pero la única captura posterior se enganchó tarde (`Composed: Flip`) y por eso no
+   sirve para cuantificarla. Repetir con PresentMon arrancado ANTES del juego. Vigilar
+   además errores WHEA: al momento de escribir esto no había ninguno, pero llevaba 18
+   minutos de encendido y un undervolt inestable puede tardar días en dar la cara.
+7. **Ruido tipo estática mientras se maneja, no en boxes ni en el escritorio.** Es
+   anterior al undervolt. La hipótesis de que fuera el mismo evento que los atascos de
+   CPU quedó debilitada cuando el piloto precisó que lo escucha **al girar**: apunta a
+   la muestra de sonido de fricción de goma del auto. Test barato: cambiar de auto, y
+   comparar el ritmo del ruido contra el de las curvas (en Road America, 12 curvas en
+   133 s = una cada 11 s).
 
 ## Corpus
 
