@@ -42,6 +42,10 @@ import ams2_shm
 CORNERS = ("FL", "FR", "RL", "RR")
 RATE_HZ = 50                  # muestras por segundo de la traza
 MIN_LAP_SAMPLES = 200         # menos que esto = vuelta demasiado corta (out/parcial)
+# Techo duro del buffer de una vuelta. 20 min a 50 Hz: mas del doble de la vuelta
+# mas larga del corpus (Nordschleife, 6:31 = 19.500 muestras). Es una red de
+# seguridad contra el crecimiento sin limite, no un limite de diseno.
+MAX_LAP_SAMPLES = 60000
 TELEM_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "telemetry")
 
 _LIVE = (ams2_shm.GAME_INGAME_PLAYING, ams2_shm.GAME_INGAME_INMENU_TIME_TICKING)
@@ -307,8 +311,28 @@ class TelemetryLogger:
                     self._compound_prev = comp
             self._in_pit_prev = in_pit
             self._update_agg(d)                       # agregados de resumen (ambos modos)
-            if self._mode == "full":                  # la traza completa solo en full
-                self._buf.append(_row(d, p, cap))
+            # La traza completa solo en full, y SOLO manejando.
+            #
+            # `_LIVE` incluye INMENU_TIME_TICKING (menu con el reloj corriendo:
+            # lobby, garage, espera entre carreras). En ese estado el contador de
+            # vueltas no avanza, asi que `_begin_lap` -- el unico que vacia el
+            # buffer -- nunca se llama y la lista crece a 50 filas/s PARA SIEMPRE.
+            # Son ~580 bytes por fila: 1.7 MB por minuto, 104 MB por hora. Y el
+            # costo real no es la memoria sino el GC de Python, que recorre
+            # contenedores: con millones de strings cada pasada se vuelve carisima
+            # y se lleva el GIL, hundiendo los FPS del juego. Medido por el piloto:
+            # tras varias carreras seguidas el juego caia de 160 a 60 fps, y
+            # cerrando el dash volvia a 160.
+            if self._mode == "full" and d.mGameState == ams2_shm.GAME_INGAME_PLAYING:
+                if len(self._buf) < MAX_LAP_SAMPLES:
+                    self._buf.append(_row(d, p, cap))
+                elif self._buf:
+                    # Segunda red: una "vuelta" mas larga que esto no es una vuelta
+                    # (quedaste detenido en pista, o el contador no avanzo). Se suelta
+                    # el buffer en vez de arrastrarlo; la vuelta se pierde, que es
+                    # justo lo que ya iba a pasar con ella.
+                    self._buf = []
+                    self._lap_ok = False
             self._recording = True
 
     # ---------------- ciclo de vuelta / sesion ----------------

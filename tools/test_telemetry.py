@@ -210,6 +210,26 @@ def main():
             _ok("invalida: sec_valid marca >=1 sector sucio", r2["sec_valid"].count(False) >= 1, r2["sec_valid"])
         shutil.rmtree(log2._base, ignore_errors=True)
 
+        # El buffer de la vuelta SOLO se vacia en _begin_lap, que corre al cambiar el
+        # contador de vueltas. En el lobby/garage con el reloj corriendo el contador
+        # NO avanza, asi que si se acumulara ahi la lista creceria a 50 filas/s para
+        # siempre: 104 MB/hora de strings. El GC de Python recorre contenedores, se
+        # lleva el GIL en cada pasada y hunde los FPS del juego -- medido en pista,
+        # de 160 a 60 fps tras varias carreras seguidas.
+        print("test_buffer_en_menu (con el reloj corriendo en menu NO se acumula):")
+        log6 = T.TelemetryLogger(base_dir=tempfile.mkdtemp(prefix="ams2tel6_"))
+        for k in range(300):                      # 6 s a 50 Hz en el lobby
+            s = Snap(laps_completed=3, dist=k * 2.0)
+            s.mGameState = 4                      # INGAME_INMENU_TIME_TICKING
+            log6._ingest(s)
+        _ok("en menu con reloj: el buffer NO crece", len(log6._buf) == 0, len(log6._buf))
+        for k in range(120):                      # y manejando SI graba
+            log6._ingest(Snap(laps_completed=3, dist=1000 + k * 2.0))
+        _ok("manejando: el buffer si acumula", len(log6._buf) == 120, len(log6._buf))
+        _ok("techo duro definido por si el contador nunca avanza",
+            T.MAX_LAP_SAMPLES >= 20000, T.MAX_LAP_SAMPLES)
+        shutil.rmtree(log6._base, ignore_errors=True)
+
         print("test_disabled (modo off -> NO se guarda):")
         log3 = T.TelemetryLogger(base_dir=tempfile.mkdtemp(prefix="ams2tel3_"))
         log3.set_mode("off")
