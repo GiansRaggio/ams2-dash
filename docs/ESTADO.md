@@ -43,15 +43,25 @@ Al tocar algo nuevo por rueda: preguntarse **cuál rueda mide** antes de escribi
   centrales**. Rápido = las **colas** desde ±62.5. El `low%/alta%` de la cabecera ES esa
   partición.
 
-- **`mLapInvalidated` NO es un pulso: queda alto hasta meta.** Por eso la atribución del
-  sector sucio, que se re-evaluaba en cada frame con el flag arriba, terminaba culpando
-  siempre al último sector poblado: en el corpus, **134 de 134 vueltas invalidadas marcan
-  el S3**, y 128 marcan SÓLO el S3. Físicamente imposible. Arreglado el 2026-08-20
-  atribuyendo sólo en el flanco de subida (`ams2_telemetry.py:284`), con test de regresión.
-  ⚠️ **El `sectors.jsonl` grabado ANTES de esa fecha está contaminado**: no rescatar de ahí
-  sectores "limpios" de vueltas sucias para rankings ni para la vuelta ideal. Lo que separó
-  esta causa de la otra hipótesis (arrastre de `_sectimes` entre vueltas) fueron las 6
-  vueltas que marcan DOS sectores: el arrastre habría dado siempre el mismo patrón.
+- **La atribución del sector sucio NO es de fiar, ni antes ni (todavía) después del
+  arreglo.** Medido en el corpus: **134 de 134 vueltas invalidadas marcan el S3**, y 128
+  marcan SÓLO el S3. Eso no puede ser cierto — no hay circuito donde todos los cortes
+  ocurran en el último sector. El código re-evaluaba a qué sector culpar en CADA frame
+  con `mLapInvalidated` en alto, así que un flag sostenido terminaba marcando el último
+  sector poblado. **Arreglado el 2026-08-20** atribuyendo sólo en el flanco de subida
+  (`ams2_telemetry.py:284`), con test de regresión que falla sin el fix.
+  ⚠️ **Pero el arreglo NO está verificado en pista, y puede no ser suficiente.** Las tres
+  hipótesis sobre el flag siguen abiertas y el dato grabado no las separa:
+  el flag persiste hasta meta · el flag sube y baja · **AMS2 lo levanta tarde**, ya en el
+  S3, cuando confirma la infracción. Si es la tercera, el flanco también cae en el S3 y el
+  fix no corrige la atribución (sólo evita ensuciar sectores posteriores).
+  **Verificación pendiente, y es barata**: salirse de pista A PROPÓSITO en el S1 de una
+  vuelta y mirar qué marca `sectors.jsonl`. Un intento en cada sector cierra el tema.
+  ⚠️ **No rescatar sectores "limpios" de vueltas sucias** para rankings ni para la vuelta
+  ideal, ni con el corpus viejo ni con el nuevo, hasta que esa prueba se haga.
+  Nota de método: el terreno de la traza NO sirve para ubicar el corte — detecta la primera
+  vez que dos ruedas pisan algo que no es asfalto, y eso incluye pianos legítimos (da S1 en
+  37 de 40 vueltas, que es el sesgo del detector, no el dato).
 
 ## Hechos del visor de telemetría (`ams2_analysis.py` + `analisis.html`)
 
