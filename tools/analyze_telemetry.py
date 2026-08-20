@@ -428,7 +428,7 @@ def report_session(folder):
         best_lap_time = min(clean_t) if clean_t else min(r["t"] for r in sl if r["t"])
         best_i = []                        # vuelta dueña de cada sector (solo sectores LIMPIOS)
         for i in range(3):
-            cands = [r for r in sl if r["v"][i]]
+            cands = [r for r in sl if r["v"][i] and not r["inv"]]
             best_i.append(min(cands, key=lambda r: r["s"][i]) if cands else None)
         print(f"\n  {'LAP':>3} {'S1':>10} {'S2':>10} {'S3':>10}")
         for r in sl:
@@ -602,7 +602,12 @@ def sectors_struct(folder):
     best_lap_time = min(clean_t) if clean_t else min(r["t"] for r in sl if r["t"])
     best_i = []
     for i in range(3):
-        cands = [r for r in sl if r["v"][i]]
+        # Sin `not r["inv"]` entraban al ranking los S1/S2 de vueltas CORTADAS: 128 de
+        # las 134 invalidadas del corpus marcan [True, True, False], asi que sus dos
+        # primeros sectores se leian como limpios. Y esa atribucion no es de fiar (ver
+        # ams2_telemetry.py: el flag de invalidacion llega tarde). Hasta verificarlo en
+        # pista, la vuelta ideal se arma SOLO con vueltas limpias.
+        cands = [r for r in sl if r["v"][i] and not r["inv"]]
         best_i.append(min(cands, key=lambda r: r["s"][i]) if cands else None)
     if not all(best_i):
         return None

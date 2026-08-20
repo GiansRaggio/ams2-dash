@@ -232,6 +232,27 @@ def main():
     _ok("None si falta lap_time", A._lap_sectors({"sectors": [10, 10, 10]}) is None)
     _ok("None si S1 recuperado da <=0", A._lap_sectors({"lap_time": 50.0, "sectors": [0.02, 30.0, 30.0]}) is None)
 
+    print("\ntest vuelta ideal: NO se rescatan sectores de vueltas sucias:")
+    _b = tempfile.mkdtemp(prefix="anaideal_")
+    try:
+        _f = write_session(_b)
+        # El fixture trae la vuelta 3 INVALIDA con sec_valid=[True,True,False] y los
+        # mejores S1 (29.0) y S2 (31.0) de la sesion. Esa atribucion no es de fiar -- el
+        # flag de invalidacion de AMS2 llega tarde, ver el comentario en ams2_telemetry.py
+        # -- asi que la vuelta ideal tiene que ignorar la vuelta entera y armarse solo con
+        # las limpias: S1 29.5 + S2 32.0 + S3 31.5 = 93.0, la mejor vuelta limpia.
+        _st = A.sectors_struct(_f)
+        _ok("la ideal no toma el S1 de la invalidada", _st and _st["best_s"][0] == 29.5,
+            _st and _st["best_s"])
+        _ok("la ideal no toma el S2 de la invalidada", _st and _st["best_s"][1] == 32.0,
+            _st and _st["best_s"])
+        _ok("ninguna vuelta sucia es duena de un sector", _st and 3 not in _st["owners"],
+            _st and _st["owners"])
+        _ok("la ideal da 93.0 (todas limpias)", _st and abs(_st["ideal"] - 93.0) < 0.01,
+            _st and _st["ideal"])
+    finally:
+        shutil.rmtree(_b, ignore_errors=True)
+
     print("\ntest reportes end-to-end (sin crash):")
     base = tempfile.mkdtemp(prefix="anatest_")
     try:

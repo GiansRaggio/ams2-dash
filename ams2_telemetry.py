@@ -275,6 +275,14 @@ class TelemetryLogger:
                 self._begin_lap(d, p, cap)
                 self._pit_prev = True
 
+            # El sector EN CURSO se deduce de lo que el juego publica en ESTE frame, y
+            # se calcula ANTES de copiar los splits. Con `_sectimes` habia dos fallas:
+            # se actualiza unas lineas mas abajo con el split de este mismo frame (un
+            # corte justo en la linea del S1 se le atribuia al S2), y es sticky -- solo
+            # se escribe cuando el valor supera 0.1 y nunca se baja, asi que un frame
+            # torn con basura dejaba el sector en curso mintiendo hasta meta.
+            cs_ahora = (0 if d.mCurrentSector1Time <= 0.1
+                        else 1 if d.mCurrentSector2Time <= 0.1 else 2)
             # captura de sectores en vivo: S1/S2 se finalizan a mitad de vuelta y quedan
             # estables hasta meta (el bug viejo leia mCurrentSector1Time ya reseteado al cruzar).
             if d.mCurrentSector1Time > 0.1:
@@ -282,16 +290,21 @@ class TelemetryLogger:
             if d.mCurrentSector2Time > 0.1:
                 self._sectimes[1] = round(d.mCurrentSector2Time, 3)
             if bool(d.mLapInvalidated):
-                # SOLO en el flanco de subida. mLapInvalidated no es un pulso: una vez
-                # que AMS2 lo levanta queda alto hasta meta, asi que re-evaluar el
-                # sector en curso en cada frame terminaba marcando SIEMPRE el ultimo
-                # (medido en el corpus: 134 de 134 vueltas sucias culpaban al S3, y
-                # 128 culpaban SOLO al S3). Eso envenenaba el rescate de sectores
-                # limpios: un S1 cortado entraba al ranking como si fuera bueno.
+                # Marcar SOLO en el flanco de subida, y con el sector del frame.
+                #
+                # OJO CON EL RAZONAMIENTO, que ya me lo comi una vez: `_sec_invalid[cs]`
+                # ACUMULA, no pisa. Si el flag estuviera alto desde el S1 hasta meta, el
+                # codigo viejo habria dejado los TRES sectores sucios -- y en el corpus
+                # eso pasa 1 vez de 134, mientras 128 marcan SOLO el S3. Conclusion: el
+                # flag NO esta alto durante S1/S2. AMS2 lo levanta TARDE, ya cerca de
+                # meta, cuando confirma la infraccion de limites.
+                #
+                # Por eso el flanco NO basta para atribuir bien el sector, y el rescate
+                # de sectores "limpios" de vueltas sucias queda DESACTIVADO en el
+                # analizador hasta verificarlo en pista: salirse a proposito en el S1 y
+                # mirar que marca sectors.jsonl. Un intento por sector cierra el tema.
                 if not self._invalid:
-                    # atribuir la invalidacion al sector EN CURSO; los previos quedan limpios
-                    cs = 0 if self._sectimes[0] <= 0.1 else (1 if self._sectimes[1] <= 0.1 else 2)
-                    self._sec_invalid[cs] = True
+                    self._sec_invalid[cs_ahora] = True
                 self._invalid = True
             if self._mode == "off":
                 self._recording = False
@@ -562,6 +575,10 @@ class TelemetryLogger:
                     "lap": lap_no, "lap_time": round(lap_time, 3) if lap_time else None,
                     "sectors": sectors, "sec_valid": [not x for x in self._sec_invalid],
                     "invalid": bool(self._invalid),
+                    # Version del esquema. Sin esto no hay forma de saber si un
+                    # sectors.jsonl viejo trae la atribucion contaminada: los registros
+                    # sin `sv` son anteriores al 2026-08-20 y su sec_valid no sirve.
+                    "sv": 2,
                     "ts": datetime.now().isoformat(timespec="seconds"),
                 }, ensure_ascii=False) + "\n")
         except OSError:
