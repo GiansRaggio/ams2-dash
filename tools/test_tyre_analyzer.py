@@ -11,7 +11,6 @@ vuelven a producir la clase de bug que costo dos redisenos:
   * NaN/faltantes no envenenan el broadcast (un NaN en el JSON tumba el dash entero)
 """
 import json
-import math
 import os
 import shutil
 import sys

@@ -33,7 +33,17 @@ REM Duracion en segundos como primer argumento (default 1800 = 30 min).
 REM Para cortarlo antes: Ctrl+C en esta ventana.
 
 setlocal
+REM HERRAMIENTA DE DESARROLLO, no de alumnos: PresentMon vive fuera de este
+REM repo (lo comparte con el proyecto lmu-dash de esta maquina). Si no existe
+REM en tu equipo, descargalo de github.com/GameTechDev/PresentMon y ajusta BIN.
 set BIN=C:\Users\gians\sim\lmu-dash\tools\bin
+if not exist "%BIN%\PresentMon.exe" (
+    echo No encontre PresentMon.exe en %BIN%
+    echo Esta es una herramienta de DESARROLLO, no hace falta para usar el dash.
+    echo Descarga PresentMon de github.com/GameTechDev/PresentMon y ajusta BIN.
+    pause
+    exit /b 1
+)
 set SALIDA=%~dp0..\frametime
 set DURACION=%~1
 if "%DURACION%"=="" set DURACION=1800

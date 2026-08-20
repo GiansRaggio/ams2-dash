@@ -434,6 +434,14 @@
   #sbar .stitle b{color:var(--txt)}
   #sbar #sinfo{color:var(--cyan);font-variant-numeric:tabular-nums}
   #srec{font-size:clamp(12px,1.9vh,20px);letter-spacing:.06em;color:var(--dim);font-variant-numeric:tabular-nums}
+  /* chip BETA de la pagina GOMAS: el area con mas supuestos en revision del dash
+     (ver ESTADO.md). El disclaimer es deliberado para distribuir a los alumnos:
+     que nadie ajuste presiones de carrera confiando ciegamente en esta pagina. */
+  .betachip{display:inline-block;font-size:max(9px,1.2vh);font-weight:800;letter-spacing:.14em;
+            color:#04060a;background:var(--amber);border-radius:3px;padding:.1em .45em;
+            vertical-align:middle;margin-left:.4em}
+  #ynota{flex:none;font-size:max(10px,1.3vh);color:var(--dim);padding:.4vh 1.4vw .8vh;line-height:1.45}
+  #ynota b{color:var(--amber)}
   #srec.on{color:var(--red)}
   #sbar .sbtns{display:flex;gap:.8vw}
   #scalib{flex:1;display:flex;align-items:center;justify-content:center;text-align:center;
@@ -772,7 +780,7 @@
   <div id="tyreview" class="page hidden">
     <div id="ybar">
       <button class="btn" id="btnbacky">◂ DASH</button>
-      <span class="ytitle"><b>GOMAS</b> <span id="yinfo">—</span></span>
+      <span class="ytitle"><b>GOMAS</b><span class="betachip" title="Área en beta: veredictos térmicos y de presión aún en validación">BETA</span> <span id="yinfo">—</span></span>
       <span class="dbtns">
         <button class="btn" id="btntgt" title="Presión objetivo en caliente">🎯</button>
         <button class="btn" id="btnfs5" title="Pantalla completa">⛶</button>
@@ -795,6 +803,9 @@
       <div class="tcell" id="yRL"></div>
       <div class="tcell mirror" id="yRR"></div>
     </div>
+    <div id="ynota"><b>BETA:</b> los veredictos térmicos y de presión de esta página siguen en
+      validación — úsalos como referencia, no como verdad. Las mediciones (temperaturas,
+      presiones, desgaste) sí son directas del juego.</div>
   </div>
 
   <div id="strategyview" class="page hidden">

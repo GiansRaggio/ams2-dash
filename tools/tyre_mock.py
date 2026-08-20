@@ -707,7 +707,7 @@ def lan_ip():
 async def main():
     threading.Thread(target=serve_http, daemon=True).start()
     ip = lan_ip()
-    print(f"[mock] MOCK de gomas (no toca AMS2 ni el bridge real de :8765/:8080)")
+    print("[mock] MOCK de gomas (no toca AMS2 ni el bridge real de :8765/:8080)")
     print(f"[mock] WS   : ws://{ip}:{WS_PORT}")
     print(f"[mock] Dash : http://localhost:{HTTP_PORT}   (o http://{ip}:{HTTP_PORT})")
     print(f"[mock] Escenarios: {', '.join(n for n, _ in SCENARIOS)}")

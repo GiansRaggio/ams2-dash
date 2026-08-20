@@ -111,7 +111,7 @@ def main():
 
     print("\n--- VEREDICTO ---")
     print(f"(1) L/C/R poblados y distintos: {'SI' if populated else 'NO (0 o identicos -> spread INUTIL)'}")
-    print(f"(2) center entre bordes (% muestras): " +
+    print("(2) center entre bordes (% muestras): " +
           " · ".join(f"{CORNERS[i]} {between_pct[i]:.0f}%" for i in range(4)))
     if min(between_pct) < 70:
         print("    OJO: en alguna esquina el center NO cae entre bordes consistentemente")

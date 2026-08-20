@@ -35,6 +35,12 @@ def _trace(folder, lap, ltime, rear=4.0, front=4.0, spike=None):
         r[idx["t"]] = round(t, 3)
         r[idx["lap_dist"]] = round(dist, 2)
         r[idx["speed_kmh"]] = round(spd, 2)
+        # G lateral en la curva: sin esto el analisis (correctamente) no encuentra
+        # lado cargado y NO dictamina -- el test quedo roto cuando el balance paso
+        # a juzgar solo la rueda que la curva carga. accel_x>0 => cargan las
+        # derechas, la convencion medida del proyecto.
+        if 700 <= dist <= 1300:
+            r[idx["accel_x"]] = 12.0
         rv = spike[2] if (spike and spike[0] <= dist <= spike[1]) else rear
         for c in ("RL", "RR"):
             r[idx[f"tyre_slip_{c}"]] = rv

@@ -523,8 +523,6 @@ def importar(ruta, destino=None, minimo_s=30.0):
     carpeta = os.path.join(destino, nombre)
     os.makedirs(carpeta, exist_ok=True)
 
-    presentes = sorted(set(_MAPA) | {f"{k}_{c}" for k in _MAPA_RUEDA for c in RUEDAS}
-                       | {"speed_kmh"})
     with open(os.path.join(carpeta, "session.json"), "w", encoding="utf-8") as f:
         _json.dump({
             "track": m.get("pista"), "car": m.get("auto"), "session": "importada",

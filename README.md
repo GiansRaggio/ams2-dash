@@ -173,6 +173,24 @@ fullscreen como una app.
   juego en Linux (ver "Arranque automático en Linux"). Específico del setup del
   autor, ajustable.
 
+## Compartir telemetría con tu coach
+
+Cada sesión queda **autocontenida** en una carpeta
+`telemetry/<pista>__<auto>__<sesión>__<fecha>/`: metadatos (`session.json`),
+resumen por vuelta (`summary.jsonl`), línea de tiempo (`timeline.jsonl`) y una
+traza completa por vuelta (`L###_<tiempo>s.csv.gz`, ~95 canales a 50 Hz; las
+vueltas invalidadas van como `X###`). Para enviarla, **comprime la carpeta
+completa y mándala** — el coach la deja en su `telemetry/` y la ve en el visor
+(`http://<su-ip>:8080/analisis.html`) con mapa de pista, curvas numeradas,
+comparación entre vueltas y delta de tiempo.
+
+También se puede **exportar una tanda a CSV** desde el propio visor (botón ⬇),
+para abrirla en Excel o donde quieras.
+
+Si usas la app **Sim Racing Telemetry**, `ams2_srt.py` convierte en ambos
+sentidos: `python ams2_srt.py <archivo.srt> --importar` trae vueltas ajenas al
+visor, y `ams2_srt.exportar(...)` genera un `.srt` que esa app abre.
+
 ## Variante UDP (Linux, o si de verdad la necesitas en Windows): `bridge.py`
 
 `bridge.py` es la variante original del fork base: escucha el broadcast UDP de
@@ -224,7 +242,13 @@ Notas para adaptarlo:
   AMS2), verificados en pista. El protocolo expone telemetría e intervención de
   asistentes, pero **no** el nivel configurado de TC/ABS.
 
-## Página GOMAS (`ams2_tyres.py`)
+## Página GOMAS (`ams2_tyres.py`) — **BETA**
+
+> ⚠️ **Esta página está en beta.** Las **mediciones** (temperaturas, presiones,
+> desgaste) son directas del juego y confiables. Los **veredictos** (qué presión
+> agregar/sacar, el estado térmico, el camber) siguen en validación: úsalos como
+> referencia y contrasta con lo que sientes en pista, no como verdad. El detalle
+> de qué está verificado y qué no vive en `docs/ESTADO.md`.
 
 Por esquina: el **corte térmico por profundidad** (SUP/BULK/CARC — piel, masa,
 carcasa), los bordes **interior/exterior** (spread → camber), presión en caliente

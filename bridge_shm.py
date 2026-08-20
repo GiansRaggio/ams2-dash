@@ -19,6 +19,7 @@ import asyncio
 import faulthandler
 import http.server
 import json
+import math
 import os
 import socket
 import subprocess
@@ -455,9 +456,31 @@ async def _send_all(msg):
             CLIENTS.discard(ws)
 
 
+def _sanear(x):
+    """Reemplaza los floats no finitos por None, recursivamente."""
+    if isinstance(x, float):
+        return x if math.isfinite(x) else None
+    if isinstance(x, dict):
+        return {k: _sanear(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return [_sanear(v) for v in x]
+    return x
+
+
 async def _broadcast():
     if CLIENTS:
-        await _send_all(json.dumps(state))
+        # allow_nan=False NO es opcional: json.dumps serializa un NaN como
+        # `NaN`, que es JSON invalido -- el JSON.parse del navegador tira y el
+        # dash ENTERO se congela, no solo el widget culpable (ya paso; ver
+        # ESTADO.md). Los modulos validan lo suyo, pero en la maquina de un
+        # alumno cualquier campo suelto de la SHM (otro auto, otro mod) puede
+        # traer basura. El camino normal no paga nada; solo si aparece un no
+        # finito se sanea y se emite igual, en vez de congelar el telefono.
+        try:
+            msg = json.dumps(state, allow_nan=False)
+        except ValueError:
+            msg = json.dumps(_sanear(state))
+        await _send_all(msg)
 
 
 async def pump():
