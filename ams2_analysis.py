@@ -40,6 +40,23 @@ TELEM = os.path.join(HERE, "telemetry")
 sys.path.insert(0, os.path.join(HERE, "tools"))
 
 import analyze_telemetry as AT   # noqa: E402  (necesita el sys.path de arriba)
+import ams2_srt                  # noqa: E402  (importaciones de otros pilotos)
+
+# Las sesiones de OTROS pilotos (.srt importados) viven aparte de telemetry/ y se
+# listan igual en el visor. Separarlas no es cosmetico: telemetry/ es el corpus con
+# el que tyre_replay valida los analizadores, y una sesion ajena trae canales que
+# nosotros no tenemos (van en 0.0) que envenenarian ese corpus en silencio.
+RAICES = (TELEM, ams2_srt.IMPORT_DIR)
+
+
+def _dirs():
+    """Todas las carpetas de sesion, propias e importadas."""
+    out = []
+    for raiz in RAICES:
+        if os.path.isdir(raiz):
+            out += [os.path.join(raiz, d) for d in os.listdir(raiz)
+                    if os.path.isdir(os.path.join(raiz, d))]
+    return out
 
 # Canales que el visor pide por defecto. `t` NO es opcional: es el reloj con el
 # que se calcula el delta entre vueltas.
@@ -61,7 +78,7 @@ def _meta(folder: str) -> dict:
 def sesiones(limite: int = 40) -> list[dict]:
     """Sesiones grabadas, de la mas reciente a la mas vieja."""
     out = []
-    for d in sorted(AT._sessions(), key=os.path.getmtime, reverse=True)[:limite]:
+    for d in sorted(_dirs(), key=os.path.getmtime, reverse=True)[:limite]:
         m = _meta(d)
         vueltas = AT._read_jsonl(os.path.join(d, "summary.jsonl"))
         out.append({
@@ -70,6 +87,7 @@ def sesiones(limite: int = 40) -> list[dict]:
             "auto": m.get("car"), "tipo": m.get("session"),
             "largo_m": m.get("track_length_m"),
             "inicio": m.get("started"),
+            "origen": m.get("origen"), "piloto": m.get("piloto"),
             "vueltas": len(vueltas),
             "mejor": min((l["lap_time"] for l in vueltas if l.get("lap_time")), default=None),
         })
@@ -85,10 +103,11 @@ def _carpeta(nombre: str) -> str:
     """
     if not nombre or os.path.isabs(nombre) or os.sep in nombre or "/" in nombre or ".." in nombre:
         raise ValueError("nombre de sesion invalido")
-    ruta = os.path.join(TELEM, nombre)
-    if not os.path.isdir(ruta):
-        raise ValueError("no existe esa sesion")
-    return ruta
+    for raiz in RAICES:
+        ruta = os.path.join(raiz, nombre)
+        if os.path.isdir(ruta):
+            return ruta
+    raise ValueError("no existe esa sesion")
 
 
 # ------------------------------------------------------------------ vuelta ---
@@ -292,23 +311,36 @@ def delta(a: dict, b: dict) -> list[float]:
 
 
 # --------------------------------------------------------- mapa de pista ---
-def _curvatura(xs, zs, suav=9):
-    """Curvatura (rad/m) del trazado. El signo dice el lado: + izquierda."""
+def _curvatura(xs, zs, paso, base_m=12.0):
+    """Curvatura (rad/m) del trazado. El signo dice el lado: + izquierda.
+
+    El rumbo NO se mide entre puntos adyacentes sino sobre una BASE FISICA de
+    `base_m` metros. Es la diferencia entre funcionar y no funcionar con datos
+    de otra fuente: la app del otro piloto muestrea a 20 Hz, asi que a 240 km/h
+    sus puntos van cada 3.3 m; al llevarlos a la grilla de 2 m se interpola y
+    queda una poligonal con codos -- curvatura cero dentro de cada tramo y un
+    pico brutal en cada vertice. Medido: con rumbo entre adyacentes Spielberg
+    daba 41 curvas con radios de 0.1 m y giros de 116.000 grados. Sobre una base
+    de 12 m el estimador ignora el paso de la fuente y mide la geometria real.
+    """
     n = len(xs)
+    w = max(1, int(round(base_m / max(paso, 0.1) / 2)))
     rumbo = [0.0] * n
-    for i in range(n - 1):
-        rumbo[i] = math.atan2(zs[i + 1] - zs[i], xs[i + 1] - xs[i])
-    rumbo[-1] = rumbo[-2] if n > 1 else 0.0
+    for i in range(n):
+        a, b = max(0, i - w), min(n - 1, i + w)
+        if b > a:
+            rumbo[i] = math.atan2(zs[b] - zs[a], xs[b] - xs[a])
     k = [0.0] * n
-    for i in range(1, n):
-        dth = rumbo[i] - rumbo[i - 1]
+    for i in range(n):
+        a, b = max(0, i - w), min(n - 1, i + w)
+        dth = rumbo[b] - rumbo[a]
         while dth > math.pi:
             dth -= 2 * math.pi
         while dth < -math.pi:
             dth += 2 * math.pi
-        ds = math.dist((xs[i], zs[i]), (xs[i - 1], zs[i - 1]))
-        k[i] = dth / ds if ds > 0.05 else 0.0
-    return AT._smooth(k, suav)
+        ds = (b - a) * paso
+        k[i] = dth / ds if ds > 0.5 else 0.0
+    return AT._smooth(k, 5)
 
 
 def _curvas(metros, xs, zs, radio_max=250.0, giro_min=10.0, sep_min=45.0):
@@ -338,8 +370,8 @@ def _curvas(metros, xs, zs, radio_max=250.0, giro_min=10.0, sep_min=45.0):
     sostiene. En el mapa se ve cada T dibujada sobre la pista, asi que el error
     se detecta mirando, no confiando.
     """
-    k = _curvatura(xs, zs)
     paso = (metros[1] - metros[0]) if len(metros) > 1 else 1.0
+    k = _curvatura(xs, zs, paso)
     umbral = 1.0 / radio_max
     curvas, dentro = [], None
     for i, kv in enumerate(k):

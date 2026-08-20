@@ -6,6 +6,7 @@ bridge.log
 bridge.log.*
 telemetry/
 frametime/
+telemetry_importado/
 references/
 player.txt
 tyre_targets.json
