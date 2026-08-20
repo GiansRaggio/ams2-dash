@@ -57,6 +57,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # validan los analizadores (tyre_replay y compania). Una sesion ajena, con canales
 # que no tenemos y ceros en el resto, envenenaria ese corpus en silencio.
 IMPORT_DIR = os.path.join(HERE, "telemetry_importado")
+# Tope del bloque descomprimido. Un archivo real de 33 vueltas son 40 MB; 512
+# deja margen de sobra para una sesion larga y ataja la bomba de descompresion.
+MAX_DESCOMPRIMIDO = 512 * 1024 * 1024
 
 
 class SrtError(Exception):
@@ -76,23 +79,52 @@ def _chunks(buf, off, fin):
 
 
 def _texto(buf, off):
-    """String con prefijo de largo u32. Devuelve (texto, offset siguiente)."""
+    """String con prefijo de largo u32. Devuelve (texto, offset siguiente).
+
+    El largo viene del archivo, o sea de afuera: sin esta guarda un u32 corrupto
+    corre el offset fuera del buffer y el siguiente unpack revienta con
+    struct.error en vez de SrtError.
+    """
+    if off + 4 > len(buf):
+        raise SrtError("string fuera del chunk")
     (n,) = struct.unpack_from("<I", buf, off)
+    if n > len(buf) - off - 4:
+        raise SrtError(f"largo de string invalido: {n} en un chunk de {len(buf)}")
     return buf[off + 4:off + 4 + n].decode("utf-8", "replace"), off + 4 + n
 
 
-def _juntar(buf, off, fin, salida):
-    """Recorre el arbol juntando las cargas de los chunks hoja por tag."""
+def _juntar(buf, off, fin, salida, prof=0):
+    """Recorre el arbol juntando las cargas de los chunks hoja por tag.
+
+    Con tope de profundidad: contenedores anidados a mano (F___/L___/Z___ uno
+    dentro de otro) hacen RecursionError, que no es SrtError y rompe la promesa
+    del modulo de fallar siempre igual.
+    """
+    if prof > 32:
+        raise SrtError("anidamiento de contenedores absurdo")
     for tag, ini, n in _chunks(buf, off, fin):
         if tag in CONTENEDORES:
-            _juntar(buf, ini + 4, ini + n, salida)
+            _juntar(buf, ini + 4, ini + n, salida, prof + 1)
         else:
             salida.setdefault(tag, []).append(buf[ini:ini + n])
 
 
 # ------------------------------------------------------------------- lectura ---
 def leer(ruta):
-    """Lee un .srt completo: metadatos, vueltas y muestras decodificadas."""
+    """Lee un .srt completo: metadatos, vueltas y muestras decodificadas.
+
+    Todo lo que salga mal sale como SrtError: el archivo viene de un tercero y
+    quien llame no tiene por que saber de zlib ni de struct.
+    """
+    try:
+        return _leer(ruta)
+    except SrtError:
+        raise
+    except (zlib.error, struct.error, RecursionError, UnicodeError, MemoryError) as e:
+        raise SrtError(f"archivo .srt corrupto o truncado: {type(e).__name__}: {e}") from e
+
+
+def _leer(ruta):
     with open(ruta, "rb") as f:
         b = f.read()
     if b[:4] != b"F___" or b[8:12] != b"SRT ":
@@ -132,7 +164,17 @@ def leer(ruta):
     if z[12:16] != b"zlib":
         raise SrtError(f"compresion no soportada: {z[12:16]!r}")
     (crudo,) = struct.unpack_from("<I", z, 8)
-    d = zlib.decompress(z[16:])
+    if crudo > MAX_DESCOMPRIMIDO:
+        raise SrtError(f"el archivo declara {crudo:,} bytes sin comprimir; "
+                       f"el tope es {MAX_DESCOMPRIMIDO:,}")
+    # ACOTADO A PROPOSITO: `zlib.decompress()` a secas descomprime todo antes de
+    # que nadie valide nada, asi que un .srt ajeno de 300 KB puede reventar a
+    # cientos de MB de RAM (medido: ratio 1028x). Se descomprime como maximo lo
+    # que el archivo DECLARA, y si sobra stream es que mentia.
+    obj = zlib.decompressobj()
+    d = obj.decompress(z[16:], crudo)
+    if obj.unconsumed_tail:
+        raise SrtError("el stream comprimido es mas grande de lo que declara")
     if len(d) != crudo:
         raise SrtError(f"descompresion inconsistente: {len(d)} != {crudo}")
 
@@ -390,9 +432,20 @@ _MAPA = {
     "clutch": ("clutch", None, 1.0),
     "steer": ("steering", None, 1.0),
     "steer_f": ("filteredSteering", None, 1.0),
-    "accel_x": ("gforce", 0, 9.80665),
-    "accel_y": ("gforce", 1, 9.80665),
-    "accel_z": ("gforce", 2, 9.80665),
+    # PERMUTACION DE EJES DE CUERPO. SRT ordena sus vectores de cuerpo como
+    # [LONGITUDINAL, LATERAL, VERTICAL] y los nuestros van [lateral, vertical,
+    # longitudinal] (accel_x es lateral: "accel_x>0 => cargan las derechas",
+    # fijado por temperatura en 69 sesiones, ver docs/ESTADO.md). Mapear por
+    # indice identico deja la G de FRENADO en el canal LATERAL, y como el visor
+    # y analyze_telemetry deciden con accel_x que rueda carga cada curva, el
+    # veredicto de toda sesion importada sale invertido -- sin que nada se vea
+    # raro, porque posicion, pedales y temperaturas siguen bien.
+    # Medido sobre el archivo real: gforce[0] corr -0.669 con (acelerador-freno)
+    # = longitudinal; gforce[1] corr -0.873 con el volante = lateral; gforce[2]
+    # con sd 0.03 = vertical.
+    "accel_x": ("gforce", 1, 9.80665),
+    "accel_y": ("gforce", 2, 9.80665),
+    "accel_z": ("gforce", 0, 9.80665),
     # OJO CON EL ORDEN DE LOS EJES: SRT guarda world_position como [x, z, y] --
     # el VERTICAL es el componente 2, no el 1 como en la shared memory de AMS2.
     # Se detecto midiendo rangos en una vuelta de Spielberg: [0]=791 m, [1]=1250 m,
@@ -408,11 +461,23 @@ _MAPA = {
     "oil_t": ("oil_temp", None, 1.0),
     "fuel_l": ("fuel", None, 1.0),
     "engine_torque": ("engine_torque", None, 1.0),
-    "local_vx": ("velocity", 0, 1.0),
-    "local_vz": ("velocity", 2, 1.0),
-    "ang_vel_x": ("angular_vel", 0, 1.0),
-    "ang_vel_y": ("angular_vel", 1, 1.0),
-    "ang_vel_z": ("angular_vel", 2, 1.0),
+    # misma permutacion: velocity[0] es la longitudinal (12..56 m/s, o sea la
+    # velocidad). Entre [1] y [2] la evidencia es mas debil (ambas chicas), pero
+    # solo [1] CAMBIA DE SIGNO, y una velocidad lateral tiene que cambiarlo entre
+    # curvas a izquierda y a derecha; ademas es lo consistente con el orden que
+    # gforce y angular_vel si fijan de forma concluyente.
+    "local_vx": ("velocity", 1, 1.0),
+    # SIGNO OPUESTO: nuestro local_vz (mLocalVelocity[2]) es NEGATIVO hacia
+    # adelante -- medido, -63.6..-17.8 m/s con el auto avanzando -- y el
+    # velocity[0] de SRT es positivo. Sin el -1 el export le llega a la app con
+    # la velocidad en reversa.
+    "local_vz": ("velocity", 0, -1.0),
+    # rotaciones alrededor de esos mismos ejes: SRT da [roll, pitch, yaw] y
+    # nosotros guardamos [pitch, yaw, roll]. El yaw se identifico solo:
+    # angular_vel[2] corr -0.963 con el volante.
+    "ang_vel_x": ("angular_vel", 1, 1.0),
+    "ang_vel_y": ("angular_vel", 2, 1.0),
+    "ang_vel_z": ("angular_vel", 0, 1.0),
     "abs_active": ("abs", None, 1.0),
 }
 _MAPA_RUEDA = {
@@ -422,7 +487,9 @@ _MAPA_RUEDA = {
     "susp_travel": ("susp_pos", 1.0),
     "susp_vel": ("susp_vel", 1.0),
     "tyre_slip": ("tyre_slipSpeed", 1.0),
-    "ride_h": ("ride_height", 1.0),
+    # UNIDAD DISTINTA: nuestro ride_h esta en CENTIMETROS (6.7..12.2 en un GT4,
+    # que en metros seria absurdo) y el ride_height de SRT en metros (0.04..0.16).
+    "ride_h": ("ride_height", 100.0),
     "tyre_press": ("tyre_press", 0.001),
     "tyre_rps": ("tyre_rps", 1.0),
     "terrain": ("terrain", 1.0),
@@ -551,8 +618,13 @@ if __name__ == "__main__":
 
 # Inverso de _MAPA: como se arma cada canal SRT desde NUESTRA traza.
 # Lo que no tenemos va en 0.0 -- la app lo mostrara plano, que es honesto.
-def _constructor(d, n):
-    """Devuelve una funcion k -> lista de 155 floats en el orden de CANALES_SRT."""
+def _constructor(d, n, ctes=None):
+    """Devuelve una funcion k -> lista de 155 floats en el orden de CANALES_SRT.
+
+    `ctes` son valores constantes para canales que no estan en la traza pero si
+    en el resumen de la vuelta (temperaturas de ambiente y pista).
+    """
+    ctes = ctes or {}
     g = lambda c: d.get(c) or [0.0] * n
     esc = {c: g(c) for c in ("t", "lap_dist", "rpm", "gear", "throttle", "brake",
                              "clutch", "steer", "steer_f", "fuel_l", "water_t",
@@ -576,11 +648,13 @@ def _constructor(d, n):
                 # SRT ordena [x, z, y]: el vertical es el TERCERO (ver _MAPA)
                 f += [esc["pos_x"][k], esc["pos_z"][k], esc["pos_y"][k]]
             elif nom == "velocity":
-                f += [esc["local_vz"][k], esc["local_vx"][k], 0.0]
+                # inverso del signo de _MAPA: hacia adelante debe salir POSITIVO
+                f += [-esc["local_vz"][k], esc["local_vx"][k], 0.0]
             elif nom == "gforce":
-                f += [esc["accel_x"][k] / G, esc["accel_y"][k] / G, esc["accel_z"][k] / G]
+                # inverso de la permutacion de _MAPA: SRT espera [long, lat, vert]
+                f += [esc["accel_z"][k] / G, esc["accel_x"][k] / G, esc["accel_y"][k] / G]
             elif nom == "angular_vel":
-                f += [esc["ang_vel_x"][k], esc["ang_vel_y"][k], esc["ang_vel_z"][k]]
+                f += [esc["ang_vel_z"][k], esc["ang_vel_x"][k], esc["ang_vel_y"][k]]
             elif nom == "throttle" or nom == "filteredThrottle":
                 f.append(esc["throttle"][k])
             elif nom == "brake" or nom == "filteredBrake":
@@ -615,11 +689,21 @@ def _constructor(d, n):
                          "susp_pos", "susp_vel"):
                 base = {"tyre_slipSpeed": "tyre_slip", "ride_height": "ride_h",
                         "susp_pos": "susp_travel"}.get(nom, nom)
-                f += [rue[base][j][k] for j in range(4)]
+                fac = 0.01 if nom == "ride_height" else 1.0   # cm -> m
+                f += [rue[base][j][k] * fac for j in range(4)]
             elif nom == "tyre_tempCarcass":
                 f += [rue["carcass_t"][j][k] for j in range(4)]
             elif nom == "tyre_tempLayer" or nom == "tyre_tempTread":
                 f += [rue["layer_t"][j][k] for j in range(4)]
+            elif nom == "tyre_isOnGround":
+                # NO va en 0.0: cero significaria "las 4 ruedas en el aire toda
+                # la vuelta", que la app del otro leeria como una medicion real.
+                # Un hueco honesto aca no existe (el formato no lo tiene), asi
+                # que se pone el valor casi siempre cierto en vez del casi
+                # siempre falso.
+                f += [1.0] * 4
+            elif nom in ctes:
+                f += [float(ctes[nom])] * (inst * comp)
             else:
                 f += [0.0] * (inst * comp)
         return f
@@ -644,11 +728,24 @@ def exportar(carpeta, destino, piloto="", max_vueltas=None):
         raise SrtError("la sesion no tiene vueltas con traza")
 
     largo = meta_s.get("track_length_m") or 0.0
+    # ambiente y pista viven en el resumen, no en la traza. Mandarlos en 0.0
+    # seria decirle a la app que se corrio a 0 grados.
+    ctes_por_uid = {}
+    for r in AT._read_jsonl(os.path.join(carpeta, "summary.jsonl")):
+        c = {}
+        if r.get("ambient_t") is not None:
+            c["ambient_temp"] = r["ambient_t"]
+        if r.get("track_t") is not None:
+            c["track_temp"] = r["track_t"]
+        if r.get("rain") is not None:
+            c["track_rain"] = r["rain"]
+        if c:
+            ctes_por_uid[r.get("uid")] = c
     vueltas = []
     for v in vs:
         d = AT._read_trace(os.path.join(carpeta, v["traza"]))
         n = len(d["lap_dist"])
-        fila = _constructor(d, n)
+        fila = _constructor(d, n, ctes=ctes_por_uid.get(v.get("uid"), {}))
         sec = list(v.get("sectores") or [])[:3]
         sec += [0.0] * (3 - len(sec))
         vueltas.append({"tiempo": v["tiempo"], "sectores": sec,

@@ -104,7 +104,10 @@ def main():
     ok("summary.jsonl solo con las limpias", len(ses) == n_ok, len(ses))
     trazas = [f for f in os.listdir(carpeta) if f.endswith(".csv.gz")]
     ok("una traza por vuelta", len(trazas) == n_v, len(trazas))
-    ok("las invalidadas van con prefijo X", any(f[0] == "X" for f in trazas) or True)
+    inval = [f for f in trazas if f[0] == "X"]
+    res_uids = {r.get("uid") for r in AT._read_jsonl(os.path.join(carpeta, "summary.jsonl"))}
+    ok("las trazas X son exactamente las que NO estan en el resumen",
+       len(inval) == n_v - len(res_uids), f"{len(inval)} X, {n_v - len(res_uids)} fuera del resumen")
     d = AT._read_trace(os.path.join(carpeta, sorted(f for f in trazas if f[0] == "L")[0]))
     import ams2_telemetry as T
     ok("la traza tiene NUESTRA cabecera completa", list(d.keys()) == list(T.HEADER), len(d))
@@ -113,6 +116,83 @@ def main():
                for k in range(len(d["pos_x"])-1)) - m["largo_m"]) / m["largo_m"] < 0.05)
     import shutil
     shutil.rmtree(dest, ignore_errors=True)
+
+    print("\nEJES DE CUERPO (el bug que Fable encontro):")
+    # SRT ordena sus vectores de cuerpo [longitudinal, lateral, vertical] y los
+    # nuestros van [lateral, vertical, longitudinal]. Mapear por indice identico
+    # deja la G de FRENADO en el canal LATERAL, y como analyze_telemetry decide
+    # con accel_x que rueda carga cada curva, el veredicto sale invertido. No se
+    # ve raro: posicion, pedales y temperaturas siguen bien. Estas assertions
+    # miran la HUELLA FISICA, que es lo unico que lo delata.
+    def _corr(u, v):
+        mu = sum(u) / len(u); mv = sum(v) / len(v)
+        du = sum((x - mu) ** 2 for x in u) ** 0.5
+        dv = sum((x - mv) ** 2 for x in v) ** 0.5
+        return sum((x - mu) * (y - mv) for x, y in zip(u, v)) / (du * dv) if du and dv else 0.0
+
+    import gzip as _gz, csv as _csv, tempfile as _tf, shutil as _sh
+    dimp = _tf.mkdtemp(prefix="srtejes_")
+    cimp, _, _ = ams2_srt.importar(MUESTRA, destino=dimp)
+    tr = sorted(f for f in os.listdir(cimp) if f.endswith(".csv.gz"))[0]
+    col = {}
+    with _gz.open(os.path.join(cimp, tr), "rt", encoding="utf-8") as f:
+        r = _csv.DictReader(f)
+        for k in r.fieldnames:
+            col[k] = []
+        for row in r:
+            for k in r.fieldnames:
+                col[k].append(float(row[k]))
+    pedal = [a - b for a, b in zip(col["throttle"], col["brake"])]
+    ok("accel_z (nuestro LONGITUDINAL) sigue al pedal",
+       abs(_corr(col["accel_z"], pedal)) > 0.4,
+       f'corr={_corr(col["accel_z"], pedal):+.3f}')
+    ok("accel_x (nuestro LATERAL) NO sigue al pedal",
+       abs(_corr(col["accel_x"], pedal)) < 0.35,
+       f'corr={_corr(col["accel_x"], pedal):+.3f}')
+    ok("accel_x (LATERAL) sigue al volante",
+       abs(_corr(col["accel_x"], col["steer"])) > 0.5,
+       f'corr={_corr(col["accel_x"], col["steer"]):+.3f}')
+    ok("ang_vel_y (nuestro YAW) sigue al volante",
+       abs(_corr(col["ang_vel_y"], col["steer"])) > 0.7,
+       f'corr={_corr(col["ang_vel_y"], col["steer"]):+.3f}')
+    vlong = max(abs(x) for x in col["local_vz"])
+    vlat = max(abs(x) for x in col["local_vx"])
+    ok("local_vz (LONGITUDINAL) es de orden de la velocidad y local_vx (lateral) no",
+       vlong > 10 and vlat < vlong / 4, f"long max {vlong:.1f} m/s · lat max {vlat:.1f}")
+    _sh.rmtree(dimp, ignore_errors=True)
+
+    print("\nENTRADA NO CONFIABLE (el .srt llega de un tercero):")
+    import zlib as _zl
+    raw = open(MUESTRA, "rb").read()
+    d2 = _tf.mkdtemp(prefix="srtmal_")
+
+    def _falla_limpio(nombre, datos):
+        ruta = os.path.join(d2, "x.srt")
+        open(ruta, "wb").write(datos)
+        try:
+            ams2_srt.leer(ruta)
+            ok(nombre, False, "no lanzo nada")
+        except ams2_srt.SrtError:
+            ok(nombre, True)
+        except Exception as e:                      # noqa: BLE001
+            ok(nombre, False, f"lanzo {type(e).__name__} en vez de SrtError")
+
+    _falla_limpio("archivo truncado a la mitad", raw[:len(raw) // 2])
+    _falla_limpio("solo la cabecera", raw[:1565])
+    _falla_limpio("no es un .srt", b"esto no es un srt" * 100)
+    _falla_limpio("stream zlib corrupto",
+                  raw[:1565 + 40] + bytes(len(raw) - 1565 - 40))
+    malo = bytearray(raw)
+    malo[76:80] = (2 ** 31).to_bytes(4, "little")   # largo de string absurdo en 'src '
+    _falla_limpio("largo de string absurdo", bytes(malo))
+    # bomba de descompresion: poco en disco, gigas al abrir
+    bomba = _zl.compress(bytes(400 * 1024 * 1024), 9)
+    z = b"F___TD  " + (400 * 1024 * 1024).to_bytes(4, "little") + b"zlib" + bomba
+    cab = raw[:1557]
+    cuerpo = cab[20:] + b"Z___" + len(z).to_bytes(4, "little") + z
+    _falla_limpio("bomba de descompresion (declara 400 MB)",
+                  b"F___" + (len(cuerpo) + 4).to_bytes(4, "little") + b"SRT " + cuerpo)
+    _sh.rmtree(d2, ignore_errors=True)
 
     print("\nESCRITURA - reconstruir el archivo original (la prueba dura):")
     # Si se puede volver a emitir el .srt de otro y el bloque de datos sale
@@ -179,6 +259,14 @@ def main():
         ok("la altura quedo en el componente 2, no mezclada con el plano",
            max(alt2) - min(alt2) < largo2 * 0.1,
            str(round(max(alt2) - min(alt2))) + " m")
+        ok("la velocidad longitudinal exportada sale POSITIVA hacia adelante",
+           max(q[0] for q in c2["velocity"]) > 10,
+           f'velocity[0] max {max(q[0] for q in c2["velocity"]):.1f} m/s')
+        ok("la altura al piso exportada esta en metros, no en cm",
+           all(0.01 < x < 0.5 for x in c2["ride_height"][n2 // 2]),
+           [round(x, 3) for x in c2["ride_height"][n2 // 2]])
+        ok("tyre_isOnGround no dice que el auto volo toda la vuelta",
+           all(x > 0.5 for x in c2["tyre_isOnGround"][n2 // 2]))
 
     print(f"\n{'TODO VERDE' if not _fallos else str(_fallos) + ' FALLO(S)'}")
     return 1 if _fallos else 0
