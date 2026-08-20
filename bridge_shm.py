@@ -232,7 +232,11 @@ class SpeechServer:
 
 
 # Voz del ingeniero en el PC (sin navegador). AMS2_VOICE=0 para apagarla.
-speech = SpeechServer(enabled=os.environ.get("AMS2_VOICE", "1") != "0")
+# APAGADO POR DEFECTO desde que el dash se distribuye a los alumnos: la voz
+# nunca funciono del todo bien y un TTS hablando solo en el PC de un alumno es
+# un susto + un ticket de soporte. Quien la quiera (nosotros) la prende con la
+# variable de entorno AMS2_VOICE=1; ya no hay forma de activarla por accidente.
+speech = SpeechServer(enabled=os.environ.get("AMS2_VOICE", "0") == "1")
 
 # Economia de combustible (identica a bridge.py: delta de nivel al cruzar meta)
 _fuel_lap_start = None

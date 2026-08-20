@@ -814,7 +814,6 @@
       <span class="stitle"><b>ESTRATEGIA</b> <span id="sinfo">—</span> <span id="srec"></span></span>
       <span class="sbtns">
         <button class="btn" id="btnracecfg" title="Configurar carrera">⚙</button>
-        <button class="btn" id="btntts" title="Voz del ingeniero">🔊</button>
         <button class="btn" id="btnfs4" title="Pantalla completa">⛶</button>
       </span>
     </div>
@@ -1490,14 +1489,18 @@ function renderNoRace(s){
 }
 
 /* ---- voz del ingeniero (Web Speech API): edge-trigger, sin spam ---- */
-let ttsOn = true;
+/* MUDO por defecto y SIN boton para prenderlo: la voz del ingeniero nunca
+   funciono bien y en el telefono de un alumno hablaria sola. speak()/primeTTS
+   quedan inertes (todas las rutas chequean ttsOn) para poder reactivarla algun
+   dia restaurando el boton #btntts, sin reescribir nada. */
+let ttsOn = false;
 const announced = new Set();       // alertas ya dichas mientras siguen activas
 
 /* iOS bloquea speechSynthesis hasta hablar dentro de un gesto de usuario;
    una utterance muda en el primer tap lo desbloquea para las alertas posteriores. */
 let ttsPrimed = false;
 function primeTTS(){
-  if(ttsPrimed || !("speechSynthesis" in window)) return;
+  if(!ttsOn || ttsPrimed || !("speechSynthesis" in window)) return;
   try{ const u = new SpeechSynthesisUtterance(" "); u.volume = 0; u.lang = "es-ES";
        speechSynthesis.speak(u); ttsPrimed = true; }catch(e){}
 }
@@ -1650,11 +1653,6 @@ $("tgtsave").addEventListener("click", () => {
   if(!isFinite(bar) || bar < 0.5 || bar > 4) return;      // fuera de rango: no cerrar, que corrija
   try{ if(sock && sock.readyState === 1) sock.send(JSON.stringify({cmd:"set_tyre_target", bar})); }catch(e){}
   $("tgtcfg").classList.add("hidden");
-});
-$("btntts").addEventListener("click", () => {
-  ttsOn = !ttsOn;
-  $("btntts").textContent = ttsOn ? "🔊" : "🔇";
-  if(!ttsOn && "speechSynthesis" in window) speechSynthesis.cancel();
 });
 
 /* ---- formato de carrera manual (plan en práctica) + persistencia ---- */
