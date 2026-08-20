@@ -114,6 +114,72 @@ def main():
     import shutil
     shutil.rmtree(dest, ignore_errors=True)
 
+    print("\nESCRITURA - reconstruir el archivo original (la prueba dura):")
+    # Si se puede volver a emitir el .srt de otro y el bloque de datos sale
+    # IDENTICO byte a byte, el escritor produce el formato de verdad y no una
+    # aproximacion que quizas la app acepte.
+    import struct, zlib, tempfile
+    b = open(MUESTRA, "rb").read()
+    cab = {}
+    for tag, ini, nn in ams2_srt._chunks(b, 12, len(b)):
+        if tag in ams2_srt.CONTENEDORES and b[ini:ini + 4] == b"hdrl":
+            ams2_srt._juntar(b, ini + 4, ini + nn, cab)
+    guid = cab[b"hdr "][0][16:32]
+    (ts,) = struct.unpack_from("<Q", cab[b"hdr "][0], 32)
+    (tss,) = struct.unpack_from("<Q", cab[b"sess"][0], 4)
+    val = [(q[28], q[29], q[30]) for q in cab[b"lap "]]
+    vv = [{"tiempo": v["tiempo"], "sectores": v["sectores"],
+           "sec_validos": [bool(x) for x in val[j]],
+           "muestras": [list(struct.unpack_from("<" + str(s["n_valores"]) + "f",
+                                                s["_datos"], o))
+                        for o, _ in v["muestras"]]}
+          for j, v in enumerate(s["vueltas"])]
+    meta2 = dict(m)
+    meta2.update(guid=guid, ts=ts, ts_sesion=tss)
+    tmp = os.path.join(tempfile.mkdtemp(), "r.srt")
+    ams2_srt.escribir(tmp, meta2, vv)
+    nb = open(tmp, "rb").read()
+    oi = zlib.decompress(b[1565 + 16:])
+    ni = zlib.decompress(nb[1565 + 16:])
+    ok("el bloque de datos sale IDENTICO byte a byte", oi == ni,
+       str(len(oi)) + " vs " + str(len(ni)) + " bytes")
+    ok("la cabecera sale identica salvo el tamano de archivo",
+       nb[8:1557] == b[8:1557], "(el u32 de tamano cambia por el nivel de zlib)")
+
+    print("\nEXPORTAR una sesion NUESTRA y releerla:")
+    import ams2_analysis as A
+    propias = [d for d in A._dirs()
+               if A._meta(d).get("origen") != "srt"
+               and [v for v in A._vueltas(d) if v.get("traza") and v.get("tiempo")]]
+    if not propias:
+        ok("hay alguna sesion propia con trazas", False)
+    else:
+        out = os.path.join(tempfile.mkdtemp(), "mio.srt")
+        ruta, nv = ams2_srt.exportar(propias[0], out, piloto="Test", max_vueltas=2)
+        ok("genera el archivo", os.path.getsize(ruta) > 1000, str(nv) + " vueltas")
+        s2 = ams2_srt.leer(ruta)
+        ok("se relee con nuestro propio lector", len(s2["vueltas"]) == nv)
+        ok("conserva piloto y auto",
+           s2["meta"]["piloto"] == "Test" and bool(s2["meta"]["auto"]))
+        c2 = ams2_srt.como_dict(s2, 0)
+        n2 = len(c2["lap_distance"])
+        ok("acelerador y freno siguen en 0..1",
+           max(c2["throttle"]) <= 1.001 and max(c2["brake"]) <= 1.001)
+        ok("presiones exportadas en pascal (1-3 bar al releer)",
+           all(1.0 < x / 100000 < 3.5 for x in c2["tyre_press"][n2 // 2]),
+           [round(x / 100000, 2) for x in c2["tyre_press"][n2 // 2]])
+        P2 = c2["world_position"]
+        largo2 = sum(math.hypot(P2[k + 1][0] - P2[k][0], P2[k + 1][1] - P2[k][1])
+                     for k in range(n2 - 1))
+        L2 = s2["meta"]["largo_m"]
+        ok("el trazado exportado cierra el largo (ejes bien puestos)",
+           bool(L2) and abs(largo2 - L2) / L2 < 0.05,
+           str(round(largo2)) + " m vs " + str(round(L2)))
+        alt2 = [q[2] for q in P2]
+        ok("la altura quedo en el componente 2, no mezclada con el plano",
+           max(alt2) - min(alt2) < largo2 * 0.1,
+           str(round(max(alt2) - min(alt2))) + " m")
+
     print(f"\n{'TODO VERDE' if not _fallos else str(_fallos) + ' FALLO(S)'}")
     return 1 if _fallos else 0
 
