@@ -63,6 +63,24 @@ Al tocar algo nuevo por rueda: preguntarse **cuál rueda mide** antes de escribi
   vez que dos ruedas pisan algo que no es asfalto, y eso incluye pianos legítimos (da S1 en
   37 de 40 vueltas, que es el sesgo del detector, no el dato).
 
+- **El punto de frenada por curva se mide bien, pero tiene tres trampas** (todas con
+  test desde el 2026-08-20, `--frenadas`):
+  1. **Modular el freno parte la frenada en dos.** Cortar en el primer hueco daba dos
+     poblaciones en la misma curva (Snetterton: 5 vueltas en ~3.220 m y 12 en ~3.410) y
+     una σ falsa de 89 m. Se tolera hasta 15 m con el freno suelto antes de cortar.
+  2. **Las trazas truncadas envenenan el cálculo y hay que decirlo.** Sesiones enteras
+     con ~300 muestras (6 s a 50 Hz) por inanición de CPU: se descartan bajo 1.000
+     muestras y se reporta cuántas, porque callarlo parece "esta sesión no tiene frenadas".
+  3. **En esas mismas trazas `lap_dist` NO es monótona**, así que las restas dejan de
+     acotar y el punto se va al otro lado de la vuelta (rango de 1.117 m con un tope de
+     búsqueda de 400). Guard explícito sobre el resultado.
+  La dispersión va con el **filtro MAD de `_split_anomalas`**, no con σ cruda: 3 vueltas
+  de 17 que frenaban 190 m más tarde llevaban la σ de 8 a 72 m.
+- **La dispersión del punto de frenada es MENOR en práctica que en carrera** (1.9-6.7 m
+  contra 3.6-11.6 m, mismo piloto). Es lo que el tráfico predice, y sirve como validación
+  cruzada de que la métrica mide algo real y no ruido del detector.
+  ⚠️ El corte de 10 m para llamar "inconsistente" a una curva **es de trabajo, no medido**.
+
 ## Hechos del visor de telemetría (`ams2_analysis.py` + `analisis.html`)
 
 - **La traza NO llega a meta.** AMS2 congela la shared memory al cruzar y el recorder
