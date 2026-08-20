@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests del lector de .srt (Sim Racing Telemetry) y de su importacion al visor.
+r"""Tests del lector de .srt (Sim Racing Telemetry) y de su importacion al visor.
 
 Corren contra un archivo REAL si esta disponible. No hay mock que valga aca: lo
 que se valida es una ingenieria inversa, y un mock solo repetiria mis propias
@@ -232,7 +232,9 @@ def main():
                if A._meta(d).get("origen") != "srt"
                and [v for v in A._vueltas(d) if v.get("traza") and v.get("tiempo")]]
     if not propias:
-        ok("hay alguna sesion propia con trazas", False)
+        # sin sesiones propias no hay nada que exportar: es ausencia de datos
+        # (clon fresco), no un defecto -- mismo criterio que el archivo de muestra
+        print("  (sin sesiones propias con trazas; nada que exportar)")
     else:
         out = os.path.join(tempfile.mkdtemp(), "mio.srt")
         ruta, nv = ams2_srt.exportar(propias[0], out, piloto="Test", max_vueltas=2)

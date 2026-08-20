@@ -23,7 +23,7 @@ if errorlevel 1 goto :venv
 echo El dash YA esta corriendo (el puerto 8765 esta ocupado).
 echo No hace falta arrancarlo de nuevo: abre en el celular la URL de siempre (puerto 8080).
 echo.
-echo Si de verdad quieres reiniciarlo:  taskkill /F /IM python.exe   y vuelve a correr esto.
+echo Si de verdad quieres reiniciarlo: cierra la ventana negra del dash y vuelve a correr esto.
 echo.
 pause
 exit /b 0

@@ -156,7 +156,7 @@ def main():
     subs = sorted([d for d in glob.glob(os.path.join(TELEM, "*")) if os.path.isdir(d)],
                   key=os.path.getmtime)
     if not subs:
-        print(f"No hay sesiones en {TELEM}. Graba con el dash y volve.")
+        print(f"No hay sesiones en {TELEM}. Graba con el dash y vuelve.")
         return
     evaluate(subs[-1])
 

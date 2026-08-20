@@ -1477,14 +1477,14 @@ def main():
         else:
             folder = a.folder or (_sessions()[-1] if _sessions() else None)
             if not folder or not os.path.isdir(folder):
-                print(f"No hay sesiones en {TELEM}. Maneja con el dash grabando y volve.")
+                print(f"No hay sesiones en {TELEM}. Maneja con el dash grabando y vuelve.")
                 return
             report_timeline(folder)
         return
 
     folder = a.folder or (_sessions()[-1] if _sessions() else None)
     if not folder or not os.path.isdir(folder):
-        print(f"No hay sesiones en {TELEM}. Maneja con el dash grabando y volve.")
+        print(f"No hay sesiones en {TELEM}. Maneja con el dash grabando y vuelve.")
         return
     if a.save_ref is not None:
         print(save_reference(folder, None if a.save_ref == -1 else a.save_ref))

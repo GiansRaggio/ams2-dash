@@ -621,7 +621,12 @@ setInterval(async () => {
     const primera = await cargarSesiones();
     await cargarSesion(primera);
   } catch(e){
-    $("vacio").textContent = "no se pudo cargar: " + e.message;
+    // sin sesiones grabadas NO es un error: es el estado normal de una
+    // instalacion recien hecha. Redactarlo como falla asusta al alumno.
+    const msg = String(e.message || e);
+    $("vacio").textContent = msg.includes("no hay sesiones")
+      ? "Todavía no hay sesiones grabadas. Corre el dash mientras giras y las vueltas aparecen acá solas."
+      : "no se pudo cargar: " + msg;
   }
 })();
 </script>

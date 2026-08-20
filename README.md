@@ -11,6 +11,11 @@ Automobilista 2.
 
 ## Qué muestra
 
+- **Visor de análisis** (`http://<IP>:8080/analisis.html`, botón 📈 del dash):
+  después de girar, tus vueltas quedan grabadas solas — mapa de la pista con las
+  curvas numeradas, comparación entre dos vueltas, delta de tiempo metro a metro
+  y export a CSV. Es la herramienta con la que tu coach revisa tu sesión.
+
 - **Página principal**: tira de 20 LEDs de cambio (verde/ámbar/rojo + strobe azul al
   límite), marcha con glow y velocidad. Splits a coche de adelante/atrás, posición,
   vuelta, current/last/best lap (flash púrpura al mejorar), tiempo restante de sesión.
@@ -58,12 +63,16 @@ lo que queremos.
 
 ### 2. Descargar el proyecto
 
+En la página del repo: botón verde **Code → Download ZIP**, y descomprime el ZIP
+en una carpeta tuya (Documentos, por ejemplo — **no lo dejes en Descargas**, que
+suele limpiarse). Eso es todo: no necesitas git.
+
+Si ya usas git, lo de siempre:
+
 ```
 git clone https://github.com/GiansRaggio/ams2-dash.git
 cd ams2-dash
 ```
-
-(O bajar el ZIP desde GitHub y descomprimirlo, si no usas git.)
 
 ### 3. Instalar dependencias y configurar el nombre de piloto
 

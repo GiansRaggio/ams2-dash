@@ -42,6 +42,15 @@ def _sesion_con_tandas():
     return None
 
 
+def _hay_corpus():
+    """True si hay sesiones grabadas. En un clon fresco telemetry/ NO existe
+    (esta gitignoreado): ahi los tests de corpus se SALTAN en vez de fallar --
+    la ausencia de datos no es un defecto del codigo. Reventar aca fue un bug
+    real: el traceback abortaba main() en el 4o test y los que NO necesitan
+    corpus (tanda sintetica, frontera, API) nunca corrian."""
+    return bool(AT._sessions())
+
+
 def test_stints():
     print("\ntandas (stints):")
     d = _sesion_con_tandas()
@@ -131,6 +140,9 @@ def test_delta():
     """
     print("\ndelta de tiempo contra el cronometro:")
     peor, n, cierres = (None, 0.0), 0, []
+    if not _hay_corpus():
+        print("  (sin corpus grabado; nada que medir)")
+        return
     for d in sorted(AT._sessions(), key=os.path.getmtime, reverse=True)[:30]:
         vs = [v for v in A._vueltas(d) if v.get("traza") and v.get("tiempo")]
         if len(vs) < 2:
@@ -286,7 +298,15 @@ def test_api():
         return c, json.loads(b)
     try:
         c, j = jget("/api/sesiones")
-        ok("/api/sesiones responde", c == 200 and j["sesiones"], c)
+        ok("/api/sesiones responde con lista (vacia es valido: clon fresco)",
+           c == 200 and isinstance(j.get("sesiones"), list), c)
+        if not j["sesiones"]:
+            print("  (sin sesiones; se prueban igual la frontera y los errores)")
+            c, _ = jget("/api/sesion?s=..")
+            ok("path traversal por HTTP -> 400", c == 400, c)
+            c, _ = jget("/api/nada?s=x")
+            ok("ruta desconocida sin sesion -> 4xx", c in (400, 404), c)
+            return
         s = j["sesiones"][0]["carpeta"]
         # una sesion con trazas, que es lo que el visor necesita
         s = next((x["carpeta"] for x in j["sesiones"] if x["vueltas"] > 1), s)
@@ -331,11 +351,15 @@ def test_api():
 
 def main():
     print("=== tests del visor de telemetria ===")
-    test_stints()
-    test_emparejamiento()
-    test_remuestreo()
-    test_delta()
-    test_curvas()
+    if _hay_corpus():
+        test_stints()
+        test_emparejamiento()
+        test_remuestreo()
+        test_delta()
+        test_curvas()
+    else:
+        print("(sin telemetry/ grabado -- normal en un clon fresco: se saltan los")
+        print(" tests que comparan contra el corpus y corren los independientes)")
     test_tanda_de_verdad()
     test_frontera()
     test_api()
