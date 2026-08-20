@@ -253,6 +253,43 @@ def main():
     finally:
         shutil.rmtree(_b, ignore_errors=True)
 
+    print("\ntest punto de frenada (referencias):")
+
+    def _traza(puntos_freno, largo=3000, paso=2.0, apex=1500.0):
+        """Traza sintetica: velocidad con un minimo en `apex`, y freno pisado en los
+        tramos [ini, fin] que se pidan."""
+        n = int(largo / paso)
+        dist = [i * paso for i in range(n)]
+        spd = [200.0 - 120.0 * max(0.0, 1.0 - abs(d - apex) / 300.0) for d in dist]
+        br = []
+        for d in dist:
+            br.append(0.9 if any(i <= d <= f for i, f in puntos_freno) else 0.0)
+        return {"lap_dist": dist, "speed_kmh": spd, "brake": br}
+
+    # frenada simple: empieza en 1200
+    tz = _traza([(1200.0, 1480.0)])
+    _ok("frenada simple: detecta el inicio", abs(A._punto_frenada(tz, 1500.0) - 1200.0) <= 2.0,
+        A._punto_frenada(tz, 1500.0))
+
+    # frenada MODULADA: afloja 10 m y vuelve. Debe seguir dando 1200, no 1300.
+    tz2 = _traza([(1200.0, 1290.0), (1300.0, 1480.0)])
+    _ok("frenada modulada: no se parte en el hueco chico",
+        abs(A._punto_frenada(tz2, 1500.0) - 1200.0) <= 2.0, A._punto_frenada(tz2, 1500.0))
+
+    # dos frenadas SEPARADAS (curva anterior a 600, esta a 1200): toma la de esta curva
+    tz3 = _traza([(500.0, 620.0), (1200.0, 1480.0)])
+    _ok("frenada encadenada: toma la de ESTA curva, no la anterior",
+        abs(A._punto_frenada(tz3, 1500.0) - 1200.0) <= 2.0, A._punto_frenada(tz3, 1500.0))
+
+    # curva de apoyo: sin freno -> None
+    _ok("curva sin frenada: None", A._punto_frenada(_traza([]), 1500.0) is None)
+
+    # distancia fuera de rango: el guard devuelve None en vez de un metro absurdo
+    tz4 = _traza([(0.0, 1480.0)])          # freno pisado desde el metro 0
+    r4 = A._punto_frenada(tz4, 1500.0, max_atras_m=400.0)
+    _ok("frenada mas larga que el tope de busqueda: None, no un metro inventado",
+        r4 is None or 1500.0 - r4 <= 400.0, r4)
+
     print("\ntest reportes end-to-end (sin crash):")
     base = tempfile.mkdtemp(prefix="anatest_")
     try:

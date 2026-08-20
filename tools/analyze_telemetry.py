@@ -569,6 +569,123 @@ def report_lap(folder, lap_no):
 # priorizados por tiempo recuperable. Referencia = tu propia mejor vuelta limpia.
 # Funciones *_struct devuelven datos (no print) -> inicio del refactor a estructuras.
 
+def _punto_frenada(t, apex_m, umbral=0.05, max_atras_m=400.0, hueco_m=15.0):
+    """Metro donde EMPIEZA la frenada de una curva, caminando hacia ATRAS desde el apex.
+
+    Hacia atras a proposito: buscar "la primera muestra con freno" avanzando desde
+    antes agarra la frenada de la curva ANTERIOR cuando vienen encadenadas, y en un
+    circuito con chicanes eso pasa todo el rato.
+
+    None si en los `max_atras_m` previos al apex no hubo freno (curva de apoyo).
+    """
+    dist, br = t.get("lap_dist"), t.get("brake")
+    if not dist or not br or len(dist) != len(br):
+        return None
+    i = min(range(len(dist)), key=lambda k: abs(dist[k] - apex_m))
+    j = i
+    while j > 0 and br[j] <= umbral and dist[i] - dist[j] < max_atras_m:
+        j -= 1                                   # bajar hasta encontrar el freno pisado
+    if br[j] <= umbral:
+        return None                              # nunca freno: curva de apoyo
+    # Seguir hacia atras tolerando MODULACION. Un piloto que afloja y vuelve a pisar
+    # parte la frenada en dos, y cortar en el primer hueco daba dos poblaciones
+    # distintas en la misma curva (medido en Snetterton: 5 vueltas en ~3.220 m y 12 en
+    # ~3.410 m, sigma falsa de 89 m). Solo se corta cuando el freno lleva `hueco_m`
+    # metros suelto, que ya no es modular sino haber terminado otra frenada.
+    ultimo = j
+    while j > 0 and dist[i] - dist[j] < max_atras_m:
+        if br[j] > umbral:
+            ultimo = j
+        elif dist[ultimo] - dist[j] > hueco_m:
+            break
+        j -= 1
+    # Cinturon: con `lap_dist` no monotona (trazas truncadas por CPU justa, donde la
+    # distancia se repite o retrocede) las restas de arriba dejan de acotar y el punto
+    # se va al otro lado de la vuelta -- medido en Buenos Aires: rango de 1.117 m con
+    # un tope de busqueda de 400. Si el resultado no cae donde puede caer, no hay dato.
+    d0 = dist[ultimo]
+    return d0 if 0.0 < apex_m - d0 <= max_atras_m else None
+
+
+def braking_struct(folder, umbral=0.05):
+    """Punto de frenada de cada curva y su DISPERSION entre vueltas, en metros.
+
+    Es la medicion objetiva de "tener referencias", que es de lo primero que un
+    piloto rapido enumera como fundamental. La media dice DONDE frena; la sigma dice
+    si tiene una referencia o esta adivinando cada vuelta. Y traduce a un consejo que
+    el alumno puede ejecutar tal cual: "frenas en el 118 un dia y en el 132 el otro".
+
+    A diferencia del tiempo por vuelta, esto es una meta de PROCESO: el alumno la
+    controla en la proxima vuelta, y por eso sirve para coaching y no solo para nota.
+
+    None si no hay al menos 2 vueltas limpias con canal de freno.
+    """
+    cl = clean_laps(folder)
+    if cl["n_clean"] < 2:
+        return None
+    traces = [(rec, _lap_trace(folder, rec)) for rec in cl["clean"]]
+    traces = [(rec, t) for rec, t in traces if t and t.get("brake") and t.get("lap_dist")]
+    # Una traza con pocas muestras es una grabacion truncada, no una vuelta corta: el
+    # corpus tiene sesiones enteras con ~300 muestras (6 s a 50 Hz) por inanicion de CPU.
+    # Entran al calculo como ruido puro, asi que se descartan y se REPORTA cuantas --
+    # callarlo haria parecer que la sesion no tiene frenadas.
+    completas = [(rec, t) for rec, t in traces if len(t.get("lap_dist") or []) >= 1000]
+    descartadas = len(traces) - len(completas)
+    traces = completas
+    if len(traces) < 2:
+        return {"curvas": [], "descartadas": descartadas, "n_vueltas": len(traces)}
+    rt = traces[0][1]
+    d, sp = _mono(rt["lap_dist"], rt["speed_kmh"])[:2]
+    out = []
+    for c in _corners(d, sp):
+        puntos = [x for x in (_punto_frenada(t, c["apex"], umbral) for _, t in traces)
+                  if x is not None]
+        if len(puntos) < 2:
+            continue                             # curva sin frenada, o sin dato suficiente
+        # Mismo criterio que para los tiempos de vuelta: la dispersion se mide sobre el
+        # comportamiento HABITUAL y las vueltas raras se reportan aparte, no se promedian.
+        # En Snetterton 3 vueltas de 17 frenaban 190 m mas tarde (trafico, o un levante) y
+        # se llevaban la sigma de 8 a 72 m -- el veredicto salia al reves de la realidad.
+        buenos, fuera = _split_anomalas(puntos)
+        if len(buenos) < 2:
+            continue
+        out.append({"apex": round(c["apex"], 1), "n": len(buenos), "fuera": len(fuera),
+                    "media_m": round(st.mean(buenos), 1),
+                    "sigma_m": round(st.pstdev(buenos), 1),
+                    "rango_m": round(max(buenos) - min(buenos), 1),
+                    "vmin_kmh": round(c["vmin"], 1) if c.get("vmin") is not None else None})
+    return {"curvas": out, "descartadas": descartadas, "n_vueltas": len(traces)}
+
+
+def report_braking(folder):
+    """Imprime el punto de frenada por curva y que tan repetible es."""
+    bs = braking_struct(folder)
+    if not bs or not bs["curvas"]:
+        n = bs["descartadas"] if bs else 0
+        extra = f" ({n} trazas descartadas por truncadas)" if n else ""
+        print(f"\n  (sin datos de frenada: se necesitan 2+ vueltas limpias completas{extra})")
+        return
+    print("\n=== Referencias de frenada (donde empiezas a frenar, y si lo repites) ===")
+    if bs["descartadas"]:
+        print(f"  ojo: {bs['descartadas']} trazas descartadas por truncadas (CPU justa al grabar)")
+    print(f"  {'APEX':>7} {'FRENAS EN':>10} {'SIGMA':>7} {'RANGO':>7}  {'n':>2}   (n = vueltas habituales)")
+    for r in bs["curvas"]:
+        # El corte de 10 m es de trabajo, no medido: a 200 km/h son ~0.18 s de
+        # diferencia entre vueltas, que ya se ve en el cronometro. Recalibrar cuando
+        # haya corpus de alumnos.
+        tag = "" if r["sigma_m"] < 10 else ("  <-- inconsistente" if r["sigma_m"] < 20
+                                            else "  <-- SIN REFERENCIA")
+        fuera = f" (+{r['fuera']} fuera)" if r["fuera"] else ""
+        print(f"  {r['apex']:>6.0f}m {r['media_m']:>9.0f}m {r['sigma_m']:>6.1f}m "
+              f"{r['rango_m']:>6.0f}m  {r['n']:>2}{fuera}{tag}")
+    peor = max(bs["curvas"], key=lambda r: r["sigma_m"])
+    if peor["sigma_m"] >= 10:
+        print(f"\n  La menos repetible es la curva del metro {peor['apex']:.0f}: frenas en un "
+              f"rango de {peor['rango_m']:.0f} m entre vueltas.")
+        print("  Buscar una referencia fija (un cartel, una junta, un cambio de piso) y "
+              "frenar SIEMPRE ahi.")
+
+
 def clean_laps(folder):
     """Vueltas limpias representativas (lap_time <= best*1.03). Devuelve los REGISTROS (no
     solo numeros) para identificar cada vuelta por su traza unica -> no confunde vueltas que
@@ -1424,6 +1541,8 @@ def main():
                     help="gomas (beta): presion termica + camber por rueda sobre las vueltas limpias")
     ap.add_argument("--balance", action="store_true",
                     help="balance sobre/subviraje por curva + momento de inestabilidad (slip por rueda)")
+    ap.add_argument("--frenadas", action="store_true",
+                    help="punto de frenada de cada curva y que tan repetible es (referencias)")
     ap.add_argument("--saturacion", action="store_true",
                     help="que rueda llega antes al limite en cada curva (margen de agarre por rueda)")
     ap.add_argument("--timeline", nargs="?", const="", metavar="FILTRO", default=None,
@@ -1503,6 +1622,8 @@ def main():
         report_tyres(folder)
     elif a.balance:
         report_balance(folder)
+    elif a.frenadas:
+        report_braking(folder)
     elif a.saturacion:
         report_saturation(folder)
     else:
