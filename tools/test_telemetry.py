@@ -29,6 +29,20 @@ class P:
 
 class Snap:
     def __init__(self, laps_completed=0, invalid=False, pit=0, dist=0.0, compound=b"Soft"):
+        # --- contexto de carrera. Valores de "solo en pista, sin novedad": sin nadie
+        # cerca, sin contacto, sin dano, bandera verde. Los tests que ejercitan
+        # racecraft los sobreescriben.
+        self.mSplitTimeAhead = -1.0            # -1 = no hay nadie adelante
+        self.mSplitTimeBehind = -1.0
+        self.mLastOpponentCollisionIndex = -1  # -1 = ningun contacto todavia
+        self.mLastOpponentCollisionMagnitude = 0.0
+        self.mCrashState = 0
+        self.mAeroDamage = 0.0
+        self.mEngineDamage = 0.0
+        self.mHighestFlagColour = 1            # verde
+        self.mYellowFlagState = 0
+        self.mLaunchStage = 0
+        self.mClutchSlipping = False
         self.mVersion = 14
         self.mNumParticipants = 5
         self.mViewedParticipantIndex = 0
@@ -237,6 +251,55 @@ def main():
         r7 = json.loads(sl7[0]) if sl7 else {}
         _ok("corte en S1: se culpa al S1", r7.get("sec_valid") == [False, True, True], r7.get("sec_valid"))
         shutil.rmtree(log7._base, ignore_errors=True)
+
+        # Los canales de carrera existen porque el grabador era ciego a todo lo que
+        # pasaba con los otros autos, y eso dejaba el 20% de racecraft de la escuela
+        # sin una sola medicion objetiva.
+        print("test_canales_de_carrera (contacto, gaps, banderas quedan en la traza):")
+        log8 = T.TelemetryLogger(base_dir=tempfile.mkdtemp(prefix="ams2tel8_"))
+        feed_lap(log8, 0); cross_to(log8, 1)
+        for k in range(260):
+            s8 = Snap(laps_completed=1, dist=k / 260 * 20000.0)
+            s8.mSplitTimeAhead = 0.85          # alguien justo adelante: estela
+            s8.mSplitTimeBehind = 2.40
+            if k >= 100:                        # a mitad de vuelta, un toque
+                s8.mLastOpponentCollisionIndex = 3
+                s8.mLastOpponentCollisionMagnitude = 12.5
+                s8.mAeroDamage = 0.08
+            if 150 <= k < 200:
+                s8.mHighestFlagColour = 3       # bandera
+                s8.mYellowFlagState = 1
+            log8._ingest(s8)
+        cross_to(log8, 2)
+        sd8 = session_dir(log8._base)
+        tr8 = [f for f in os.listdir(sd8) if f.endswith(".csv.gz")] if sd8 else []
+        if tr8:
+            with gzip.open(os.path.join(sd8, tr8[0]), "rt", encoding="utf-8") as f:
+                head8 = f.readline().strip().split(",")
+                filas8 = [r.split(",") for r in f.read().strip().splitlines()]
+            col = {n: i for i, n in enumerate(head8)}
+            _ok("la traza trae los canales de carrera",
+                all(c in col for c in ("split_ahead", "coll_mag", "coll_idx", "flag",
+                                       "yellow", "aero_dmg", "race_pos")), sorted(col)[:3])
+            mags = [float(r[col["coll_mag"]]) for r in filas8]
+            _ok("el contacto queda grabado con su magnitud", max(mags) == 12.5, max(mags))
+            _ok("antes del toque la magnitud es 0", mags[0] == 0.0, mags[0])
+            # La trampa: AMS2 deja el ULTIMO choque publicado, no lo baja. Contar frames
+            # con magnitud > 0 NO cuenta choques -- hay que detectar el cambio de valor.
+            frames_con_mag = sum(1 for m in mags if m > 0)
+            saltos = sum(1 for i in range(1, len(mags)) if mags[i] != mags[i - 1])
+            _ok("coll_mag es estado sostenido, no pulso (por eso se cuentan CAMBIOS)",
+                frames_con_mag > 100 and saltos == 1, (frames_con_mag, saltos))
+            # La PRIMERA fila es la muestra del cruce de meta, que trae los valores
+            # por defecto: la vuelta nueva arranca en ese frame. Por eso se mira el
+            # cuerpo de la vuelta, no la fila 0.
+            gaps = [float(r[col["split_ahead"]]) for r in filas8[1:]]
+            _ok("el gap al de adelante queda grabado", gaps and all(g == 0.85 for g in gaps),
+                sorted(set(gaps))[:3])
+            flags = [int(r[col["flag"]]) for r in filas8]
+            _ok("la bandera queda grabada mientras ondea", 3 in flags and 1 in flags,
+                sorted(set(flags)))
+        shutil.rmtree(log8._base, ignore_errors=True)
 
         # El buffer de la vuelta SOLO se vacia en _begin_lap, que corre al cambiar el
         # contador de vueltas. En el lobby/garage con el reloj corriendo el contador

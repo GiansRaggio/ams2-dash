@@ -87,6 +87,29 @@ _SCALAR = [
     ("ang_vel_y",     lambda d, p, cap: round(d.mAngularVelocity[1], 4)),  # yaw rate (rotacion eje vertical)
     ("ang_vel_z",     lambda d, p, cap: round(d.mAngularVelocity[2], 4)),  # roll rate
     ("abs_active",    lambda d, p, cap: int(d.mAntiLockActive)),           # bool dedicado (mas limpio que el flag)
+    # --- CONTEXTO DE CARRERA (desde 2026-08-20) ---
+    # El grabador era de vuelta propia: media bien la tecnica y no veia NADA de lo que
+    # pasa con los otros autos. Eso dejaba la dimension de racecraft y limpieza -- un
+    # quinto de la evaluacion de la escuela -- entera al ojo del instructor. Estos
+    # canales ya estaban en la shared memory; solo habia que guardarlos.
+    #
+    # OJO al leerlos: `coll_mag` NO es un pulso. AMS2 deja el ULTIMO choque publicado
+    # y ahi se queda, asi que contar frames con coll_mag>0 cuenta cualquier cosa menos
+    # choques. Para contarlos hay que detectar el CAMBIO de valor. Misma trampa que
+    # `mLapInvalidated` (ver docs/ESTADO.md): en esta shared memory conviene asumir
+    # que un campo es estado sostenido y no evento, salvo prueba en contrario.
+    ("race_pos",     lambda d, p, cap: int(p.mRacePosition)),
+    ("split_ahead",  lambda d, p, cap: round(d.mSplitTimeAhead, 3)),   # s al de adelante
+    ("split_behind", lambda d, p, cap: round(d.mSplitTimeBehind, 3)),  # s al de atras
+    ("coll_idx",     lambda d, p, cap: int(d.mLastOpponentCollisionIndex)),   # -1 si nadie
+    ("coll_mag",     lambda d, p, cap: round(d.mLastOpponentCollisionMagnitude, 3)),
+    ("crash_state",  lambda d, p, cap: int(d.mCrashState)),
+    ("aero_dmg",     lambda d, p, cap: round(d.mAeroDamage, 4)),
+    ("engine_dmg",   lambda d, p, cap: round(d.mEngineDamage, 4)),
+    ("flag",         lambda d, p, cap: int(d.mHighestFlagColour)),
+    ("yellow",       lambda d, p, cap: int(d.mYellowFlagState)),
+    ("launch_stage", lambda d, p, cap: int(d.mLaunchStage)),           # calidad de largada
+    ("clutch_slip",  lambda d, p, cap: int(d.mClutchSlipping)),
 ]
 _CORNER = [
     ("tyre_temp",   lambda d, i: round(d.mTyreTemp[i], 1)),
