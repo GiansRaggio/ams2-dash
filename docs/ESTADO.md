@@ -122,6 +122,71 @@ En todos los casos los frames malos son CPU-bound: CPU ~30 ms contra GPU ~5 ms.
 - **El MOZA Pit House muestra el juego como "Ejecutando" después de cerrarlo.** Es
   estado obsoleto de su interfaz, no un proceso vivo: verificar con `tasklist`.
 
+## Intercambio con otros pilotos: el formato `.srt` (2026-08-19)
+
+`ams2_srt.py` lee y escribe el binario propietario de **Sim Racing Telemetry**, la app
+con que graba otro piloto. Sirve para importar sus vueltas a nuestro visor y para
+mandarle las nuestras. Su app **no importa CSV**: por eso rechazaba nuestros archivos,
+no por cómo estaban formateados.
+
+**El formato** (ingeniería inversa verificada byte a byte): contenedor tipo RIFF,
+`<FourCC><u32 tamaño><carga>`, strings con prefijo de largo. `F___<SRT >` con
+hdr/src/sess/trck/veh, un índice de vueltas, y un `Z___` que es zlib (15,7 → 40,2 MB).
+Dentro: 71 canales descritos por chunks `dsdp`, y por vuelta `laph`/`laps`/`lapd`.
+Cada muestra son **624 bytes = `<f32 distancia>` + 155 f32** en el orden de los canales
+(instancias×componentes cada uno: 1 escalares, 3 vectores, 4 por rueda).
+
+**Las trampas, todas medidas — cuatro de las cinco son de UNIDAD O DE EJE:**
+
+- **`world_position` viene como `[x, z, y]`**: el vertical es el componente **2**, al
+  revés de la shared memory de AMS2. Mapearlo a ciegas dibuja un eje horizontal contra
+  el perfil de altura: el trazado sale como garabato y el detector encontraba **32
+  curvas donde hay 10**. Se detecta integrando el largo del trazado: con (0,2) da
+  1952 m y con (0,1) da 4310, contra 4305 de `lap_distance`.
+- **Los vectores de CUERPO van `[longitudinal, lateral, vertical]`** y los nuestros
+  `[lateral, vertical, longitudinal]`. Afecta a `gforce`, `velocity` y `angular_vel`.
+  Mapear por índice idéntico deja **la G de frenado en el canal lateral**, y como
+  `analyze_telemetry` decide con `accel_x` qué rueda carga cada curva, el veredicto
+  sale invertido en toda sesión importada — sin que nada se vea raro. Medido:
+  `gforce[0]` corr −0,669 con (acelerador−freno), `gforce[1]` corr −0,873 con el
+  volante, `angular_vel[2]` corr −0,963 con el volante.
+- **`local_vz` tiene el signo opuesto**: el nuestro es negativo hacia adelante
+  (−63,6..−17,8 m/s avanzando), el suyo positivo. Sin el −1 el export sale en reversa.
+- **`ride_h` está en CENTÍMETROS en el nuestro** (6,7..12,2 en un GT4) y en metros en
+  el suyo (0,04..0,16). Factor 100.
+- `gforce` en **g** (nosotros m/s²) y `tyre_press` en **pascal** (nosotros Bar×100).
+  `tyre_rps` sí comparte signo; `susp_pos`, `susp_vel` y `tyre_slip` comparten unidad.
+
+**El orden de ruedas es FL, FR, RL, RR**: se confirmó porque presiones y temperatura de
+carcasa salen más altas atrás, la firma conocida de ese auto.
+
+**⚠️ La prueba byte a byte NO cubre el mapeo de canales.** Reconstruir el archivo del
+otro y obtener el bloque de datos idéntico (40.241.222 b) valida el contenedor y la
+compresión, pero alimenta floats **crudos** del original y **se saltea el constructor
+entero**. Y el round-trip de export se valida con nuestro propio lector, que comparte
+cualquier convención equivocada del escritor. Dos tests verdes dieron confianza falsa
+mientras tres canales estaban permutados. Lo único que lo delata es la **huella física**:
+`accel_z` debe seguir al pedal y `accel_x` no; `ang_vel_y` debe seguir al volante;
+`local_vz` debe ser del orden de la velocidad y `local_vx` no (5 m/s de lateral, no 65).
+
+**El `.srt` es entrada no confiable** (llega de un tercero). Tenía bomba de
+descompresión —300 KB en disco → 631 MB de RAM, porque se descomprimía todo antes de
+validar— más zlib corrupto y largos de string absurdos escapando como excepciones
+crudas. Ahora se descomprime acotado a lo que el archivo declara, con tope de 512 MB,
+y todo sale como `SrtError`.
+
+**Las sesiones importadas van a `telemetry_importado/`, NO a `telemetry/`**: ese
+directorio es el corpus con el que `tyre_replay` valida los analizadores, y una sesión
+ajena trae canales que no tenemos (van en 0.0, declarados en `canales_ausentes` de
+`session.json`) que lo envenenarían en silencio. Del lado **export** los ceros que se
+leerían como medición se evitan: `tyre_isOnGround` va en 1.0 (cero diría "las 4 ruedas
+en el aire toda la vuelta") y las temperaturas salen del resumen de la vuelta.
+
+De paso, la **curvatura ahora se mide sobre una base física de 12 m** en vez de entre
+puntos adyacentes: su app graba a ~20 Hz contra nuestros ~50, y al llevar sus puntos a
+la grilla de 2 m se interpola y queda una poligonal con codos. Nuestras sesiones no se
+movieron (Watkins Glen sigue 11/11).
+
 ## Trampas del entorno
 
 - **`netstat` NO sirve para saber si el bridge está vivo.** Se puede colgar el event loop
@@ -156,6 +221,16 @@ En todos los casos los frames malos son CPU-bound: CPU ~30 ms contra GPU ~5 ms.
 4. **Consejos de damper inaplicables**: el dash recomienda `fast bump/reb` sin saber si el
    auto los tiene (AMS2 no expone el setup). El piloto decidió filtrarlo él; no se
    construyó el registro de ajustes por auto.
+8. **`.srt`: confirmar la permutación de ejes contra un SEGUNDO archivo.** El orden
+   `[longitudinal, lateral, vertical]` se dedujo de un solo archivo (Alpine A110 GT4 en
+   Spielberg). La evidencia es contundente —correlaciones de 0,87 y 0,96— pero conviene
+   verificarlo con otro auto y otra pista antes de darlo por universal. Entre
+   `velocity[1]` y `[2]` la evidencia es la más débil: se eligió `[1]` como lateral
+   porque es el único que cambia de signo, y una velocidad lateral tiene que cambiarlo.
+9. **`.srt`: canales que exportamos en 0.0.** `world_forward`, `world_right`,
+   `oil_press`, `water_press`, `fuel_press`, `boost_*`, los de daño y `wing_setup` no
+   los grabamos. La mayoría los tiene la shared memory de AMS2 y el recorder
+   simplemente no los guarda: si alguna vez importa, se agregan al recorder primero.
 5. **Dash para Le Mans Ultimate**: evaluado y viable, plan en [LMU-DASH.md](LMU-DASH.md).
    Sin empezar. Lo próximo es la sonda de medio día.
 6. **Stuttering: falta la medición limpia del undervolt.** Tras aplicar Curve Optimizer
