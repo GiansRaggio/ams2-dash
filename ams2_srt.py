@@ -590,10 +590,32 @@ def importar(ruta, destino=None, minimo_s=30.0):
 
 def main():
     import argparse
-    ap = argparse.ArgumentParser()
-    ap.add_argument("archivo")
+    ap = argparse.ArgumentParser(
+        description="Lee un .srt de otro piloto, lo importa, o exporta una sesion nuestra.")
+    ap.add_argument("archivo", help="un .srt para leer/importar, o una carpeta de sesion con --exportar")
     ap.add_argument("--importar", action="store_true")
+    ap.add_argument("--exportar", metavar="DESTINO.srt",
+                    help="convierte la CARPETA de sesion indicada a .srt")
+    ap.add_argument("--piloto", default="Gian")
+    ap.add_argument("--vueltas", type=int, default=None, metavar="N",
+                    help="exportar solo las N mas rapidas")
+    # Los nombres deciden que sesiones considera comparables la app del otro piloto.
+    # Se componen solos desde el meta de la sesion; estos flags existen para las
+    # grabadas antes del 2026-08-20, que no guardaron los nombres traducidos.
+    ap.add_argument("--pista", default=None, metavar='"Circuito (Variante)"')
+    ap.add_argument("--auto", default=None, metavar='"Auto (Clase)"')
     a = ap.parse_args()
+
+    if a.exportar:
+        ruta, n = exportar(a.archivo, a.exportar, piloto=a.piloto,
+                           max_vueltas=a.vueltas, pista=a.pista, auto=a.auto)
+        m = leer(ruta)["meta"]
+        print(f"exportado -> {ruta}\n{n} vueltas")
+        print(f"  pista: {m.get('pista')}\n  auto : {m.get('auto')}\n  piloto: {m.get('piloto')}")
+        print("  (si el otro piloto no ve la sesion como comparable, revisa que esos "
+              "nombres salgan IGUALES a los suyos)")
+        return
+
     s = leer(a.archivo)
     m = s["meta"]
     print(f"{m.get('pista')} · {m.get('auto')} · piloto {m.get('piloto')} "
@@ -610,8 +632,6 @@ def main():
         print(f"\nimportado -> {carpeta}\n{n} vueltas ({ok} limpias)")
 
 
-if __name__ == "__main__":
-    main()
 
 
 # Inverso de _MAPA: como se arma cada canal SRT desde NUESTRA traza.
@@ -708,7 +728,23 @@ def _constructor(d, n, ctes=None):
     return fila
 
 
-def exportar(carpeta, destino, piloto="", max_vueltas=None):
+def _nombre_compuesto(base, sufijo):
+    """AMS2 nombra "Circuito (Variante)" y "Auto (Clase)", y las apps de telemetria
+    de terceros usan ESE string para decidir que sesiones son comparables. Nosotros
+    exportabamos solo la primera mitad, asi que nuestras sesiones no hacian pareja
+    con las de nadie -- se veian como "Spielberg" contra "Spielberg (Spielberg)".
+
+    Si el sufijo falta o ya viene incluido en la base, devuelve la base sola: mejor
+    un nombre corto que uno con un parentesis vacio o repetido.
+    """
+    base = (base or "").replace("_", " ").strip()
+    sufijo = (sufijo or "").replace("_", " ").strip()
+    if not base or not sufijo or sufijo == base or base.endswith(f"({sufijo})"):
+        return base
+    return f"{base} ({sufijo})"
+
+
+def exportar(carpeta, destino, piloto="", max_vueltas=None, pista=None, auto=None):
     """Convierte una sesion NUESTRA a .srt para que la abra otro piloto.
 
     Devuelve (ruta, n_vueltas). Solo exporta vueltas con traza.
@@ -753,9 +789,21 @@ def exportar(carpeta, destino, piloto="", max_vueltas=None):
     meta = {"guid": os.urandom(16), "ts": ms, "ts_sesion": ms,
             "juego": "AMS2v1", "build": str(meta_s.get("build") or "3398"),
             "piloto": piloto or "Gian",
-            "pista": (meta_s.get("track") or "").replace("_", " "),
+            # Preferir los nombres TRADUCIDOS (los que muestra el juego); las sesiones
+            # grabadas antes del 2026-08-20 no los tienen y caen a los crudos, que
+            # pueden diferir (variante cruda "Spielberg_Modern" vs traducida
+            # "Spielberg"). Por eso `pista`/`auto` permiten forzarlos a mano.
+            "pista": pista or _nombre_compuesto(
+                meta_s.get("track_tr") or meta_s.get("track"),
+                meta_s.get("track_variation_tr") or meta_s.get("track_variation")),
             "largo_m": largo,
             "sectores_m": [largo / 3, largo * 2 / 3, largo],
-            "auto": (meta_s.get("car") or "").replace("_", " ")}
+            "auto": auto or _nombre_compuesto(meta_s.get("car"), meta_s.get("car_class"))}
     ruta, _ = escribir(destino, meta, vueltas)
     return ruta, len(vueltas)
+
+
+# Al FINAL a proposito: `exportar` se define mas abajo que `main`, asi que arrancar
+# el modulo antes de llegar aca dejaba la CLI de export con un NameError.
+if __name__ == "__main__":
+    main()

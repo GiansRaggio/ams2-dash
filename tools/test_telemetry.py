@@ -50,6 +50,11 @@ class Snap:
         self.mSessionState = 1       # PRACTICE
         self.mTrackLocation = b"Nordschleife"
         self.mTrackVariation = b"24h"
+        # Los TRADUCIDOS son otra cosa que los crudos, y a proposito distintos en el
+        # mock: es justamente la confusion que dejaba nuestras exportaciones sin
+        # pareja en la app del otro piloto.
+        self.mTranslatedTrackLocation = b"Nordschleife"
+        self.mTranslatedTrackVariation = b"24h Layout"
         self.mCarName = b"Porsche 992 GT3 R"
         self.mCarClassName = b"GT3"
         self.mTrackLength = 20832.0
@@ -300,6 +305,22 @@ def main():
             _ok("la bandera queda grabada mientras ondea", 3 in flags and 1 in flags,
                 sorted(set(flags)))
         shutil.rmtree(log8._base, ignore_errors=True)
+
+        # Las apps de telemetria de terceros deciden que sesiones son comparables por
+        # el NOMBRE, y usan el traducido -- no el crudo. Exportabamos "Spielberg"
+        # donde el resto tiene "Spielberg (Spielberg)", asi que nuestras sesiones no
+        # hacian pareja con ninguna.
+        print("test_nombres_traducidos (para que el .srt matchee con otras apps):")
+        log9 = T.TelemetryLogger(base_dir=tempfile.mkdtemp(prefix="ams2tel9_"))
+        feed_lap(log9, 0); cross_to(log9, 1)
+        sd9 = session_dir(log9._base)
+        mj = json.load(open(os.path.join(sd9, "session.json"), encoding="utf-8")) if sd9 else {}
+        _ok("guarda el nombre de pista traducido", mj.get("track_tr") == "Nordschleife",
+            mj.get("track_tr"))
+        _ok("guarda la variante traducida, distinta de la cruda",
+            mj.get("track_variation_tr") == "24h Layout" and mj.get("track_variation") == "24h",
+            (mj.get("track_variation_tr"), mj.get("track_variation")))
+        shutil.rmtree(log9._base, ignore_errors=True)
 
         # El buffer de la vuelta SOLO se vacia en _begin_lap, que corre al cambiar el
         # contador de vueltas. En el lobby/garage con el reloj corriendo el contador

@@ -142,6 +142,16 @@ _CORNER = [
 HEADER = [n for n, _ in _SCALAR] + [f"{n}_{c}" for n, _ in _CORNER for c in CORNERS]
 
 
+def _txt(b):
+    """Texto de la shared memory tal cual, sin sanear. `_safe` existe para armar
+    nombres de CARPETA (cambia espacios y parentesis); estos campos viajan al .srt y
+    tienen que salir identicos a los que produce el juego."""
+    try:
+        return b.split(b"\x00")[0].decode("utf-8", "replace").strip()
+    except Exception:
+        return ""
+
+
 def _row(d, p, cap):
     r = [fn(d, p, cap) for _, fn in _SCALAR]
     for _, fn in _CORNER:
@@ -435,6 +445,14 @@ class TelemetryLogger:
                 "track_variation": _safe(bytes(d.mTrackVariation)),
                 "car": _safe(bytes(d.mCarName)),
                 "car_class": _safe(bytes(d.mCarClassName)),
+                # Nombres TRADUCIDOS: son los que el juego muestra en pantalla y los que
+                # usan las apps de telemetria de terceros para decidir que sesiones son
+                # comparables entre si. No son iguales a los crudos -- la variante cruda
+                # de Spielberg es "Spielberg_Modern" y la traducida es "Spielberg" --
+                # asi que exportar con la cruda deja nuestras sesiones sin pareja.
+                # Se guardan SIN sanear: tienen que salir tal cual para que matcheen.
+                "track_tr": _txt(bytes(d.mTranslatedTrackLocation)),
+                "track_variation_tr": _txt(bytes(d.mTranslatedTrackVariation)),
                 "session": label,
                 "track_length_m": round(d.mTrackLength, 1),
                 "started": datetime.now().isoformat(timespec="seconds"),
