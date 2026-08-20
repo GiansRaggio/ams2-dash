@@ -282,10 +282,17 @@ class TelemetryLogger:
             if d.mCurrentSector2Time > 0.1:
                 self._sectimes[1] = round(d.mCurrentSector2Time, 3)
             if bool(d.mLapInvalidated):
+                # SOLO en el flanco de subida. mLapInvalidated no es un pulso: una vez
+                # que AMS2 lo levanta queda alto hasta meta, asi que re-evaluar el
+                # sector en curso en cada frame terminaba marcando SIEMPRE el ultimo
+                # (medido en el corpus: 134 de 134 vueltas sucias culpaban al S3, y
+                # 128 culpaban SOLO al S3). Eso envenenaba el rescate de sectores
+                # limpios: un S1 cortado entraba al ranking como si fuera bueno.
+                if not self._invalid:
+                    # atribuir la invalidacion al sector EN CURSO; los previos quedan limpios
+                    cs = 0 if self._sectimes[0] <= 0.1 else (1 if self._sectimes[1] <= 0.1 else 2)
+                    self._sec_invalid[cs] = True
                 self._invalid = True
-                # atribuir la invalidacion al sector EN CURSO; los previos quedan limpios
-                cs = 0 if self._sectimes[0] <= 0.1 else (1 if self._sectimes[1] <= 0.1 else 2)
-                self._sec_invalid[cs] = True
             if self._mode == "off":
                 self._recording = False
                 self._in_pit_prev = in_pit    # sembrar el estado de boxes: al reactivar (off->full)

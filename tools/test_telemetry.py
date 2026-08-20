@@ -210,6 +210,34 @@ def main():
             _ok("invalida: sec_valid marca >=1 sector sucio", r2["sec_valid"].count(False) >= 1, r2["sec_valid"])
         shutil.rmtree(log2._base, ignore_errors=True)
 
+        # mLapInvalidated NO es un pulso: AMS2 lo levanta al pisar el limite y lo
+        # deja alto hasta meta. Atribuir el sector en cada frame con el flag alto
+        # terminaba culpando SIEMPRE al ultimo sector poblado -> en el corpus real
+        # 134 de 134 vueltas sucias marcaban el S3. El test viejo no lo pillaba
+        # porque el mock trae los sector times ya poblados desde el frame 0.
+        print("test_sector_invalido_en_el_flanco (corte en S1 -> se culpa a S1, no a S3):")
+        log7 = T.TelemetryLogger(base_dir=tempfile.mkdtemp(prefix="ams2tel7_"))
+        feed_lap(log7, 0)
+        cruce = Snap(laps_completed=1, dist=0.0)   # AMS2 resetea los sectores al cruzar
+        cruce.mCurrentSector1Time = 0.0
+        cruce.mCurrentSector2Time = 0.0
+        log7._ingest(cruce)
+        for k in range(260):
+            s = Snap(laps_completed=1, dist=k / 260 * 20000.0)
+            s.mLapInvalidated = k >= 10          # se ensucia temprano y NO se baja
+            if k < 60:                            # todavia en el S1: nada poblado
+                s.mCurrentSector1Time = 0.0
+                s.mCurrentSector2Time = 0.0
+            elif k < 150:                         # ya cerro el S1, corriendo el S2
+                s.mCurrentSector2Time = 0.0
+            log7._ingest(s)
+        cross_to(log7, 2)
+        sd7 = session_dir(log7._base)
+        sl7 = open(os.path.join(sd7, "sectors.jsonl"), encoding="utf-8").read().strip().splitlines() if sd7 else []
+        r7 = json.loads(sl7[0]) if sl7 else {}
+        _ok("corte en S1: se culpa al S1", r7.get("sec_valid") == [False, True, True], r7.get("sec_valid"))
+        shutil.rmtree(log7._base, ignore_errors=True)
+
         # El buffer de la vuelta SOLO se vacia en _begin_lap, que corre al cambiar el
         # contador de vueltas. En el lobby/garage con el reloj corriendo el contador
         # NO avanza, asi que si se acumulara ahi la lista creceria a 50 filas/s para

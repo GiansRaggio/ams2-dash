@@ -43,6 +43,16 @@ Al tocar algo nuevo por rueda: preguntarse **cuál rueda mide** antes de escribi
   centrales**. Rápido = las **colas** desde ±62.5. El `low%/alta%` de la cabecera ES esa
   partición.
 
+- **`mLapInvalidated` NO es un pulso: queda alto hasta meta.** Por eso la atribución del
+  sector sucio, que se re-evaluaba en cada frame con el flag arriba, terminaba culpando
+  siempre al último sector poblado: en el corpus, **134 de 134 vueltas invalidadas marcan
+  el S3**, y 128 marcan SÓLO el S3. Físicamente imposible. Arreglado el 2026-08-20
+  atribuyendo sólo en el flanco de subida (`ams2_telemetry.py:284`), con test de regresión.
+  ⚠️ **El `sectors.jsonl` grabado ANTES de esa fecha está contaminado**: no rescatar de ahí
+  sectores "limpios" de vueltas sucias para rankings ni para la vuelta ideal. Lo que separó
+  esta causa de la otra hipótesis (arrastre de `_sectimes` entre vueltas) fueron las 6
+  vueltas que marcan DOS sectores: el arrastre habría dado siempre el mismo patrón.
+
 ## Hechos del visor de telemetría (`ams2_analysis.py` + `analisis.html`)
 
 - **La traza NO llega a meta.** AMS2 congela la shared memory al cruzar y el recorder
