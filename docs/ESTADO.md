@@ -221,16 +221,6 @@ movieron (Watkins Glen sigue 11/11).
 4. **Consejos de damper inaplicables**: el dash recomienda `fast bump/reb` sin saber si el
    auto los tiene (AMS2 no expone el setup). El piloto decidió filtrarlo él; no se
    construyó el registro de ajustes por auto.
-8. **`.srt`: confirmar la permutación de ejes contra un SEGUNDO archivo.** El orden
-   `[longitudinal, lateral, vertical]` se dedujo de un solo archivo (Alpine A110 GT4 en
-   Spielberg). La evidencia es contundente —correlaciones de 0,87 y 0,96— pero conviene
-   verificarlo con otro auto y otra pista antes de darlo por universal. Entre
-   `velocity[1]` y `[2]` la evidencia es la más débil: se eligió `[1]` como lateral
-   porque es el único que cambia de signo, y una velocidad lateral tiene que cambiarlo.
-9. **`.srt`: canales que exportamos en 0.0.** `world_forward`, `world_right`,
-   `oil_press`, `water_press`, `fuel_press`, `boost_*`, los de daño y `wing_setup` no
-   los grabamos. La mayoría los tiene la shared memory de AMS2 y el recorder
-   simplemente no los guarda: si alguna vez importa, se agregan al recorder primero.
 5. **Dash para Le Mans Ultimate**: evaluado y viable, plan en [LMU-DASH.md](LMU-DASH.md).
    Sin empezar. Lo próximo es la sonda de medio día.
 6. **Stuttering: falta la medición limpia del undervolt.** Tras aplicar Curve Optimizer
@@ -245,6 +235,17 @@ movieron (Watkins Glen sigue 11/11).
    la muestra de sonido de fricción de goma del auto. Test barato: cambiar de auto, y
    comparar el ritmo del ruido contra el de las curvas (en Road America, 12 curvas en
    133 s = una cada 11 s).
+
+8. **`.srt`: confirmar la permutación de ejes contra un SEGUNDO archivo.** El orden
+   `[longitudinal, lateral, vertical]` se dedujo de un solo archivo (Alpine A110 GT4 en
+   Spielberg). La evidencia es contundente —correlaciones de 0,87 y 0,96— pero conviene
+   verificarlo con otro auto y otra pista antes de darlo por universal. Entre
+   `velocity[1]` y `[2]` la evidencia es la más débil: se eligió `[1]` como lateral
+   porque es el único que cambia de signo, y una velocidad lateral tiene que cambiarlo.
+9. **`.srt`: canales que exportamos en 0.0.** `world_forward`, `world_right`,
+   `oil_press`, `water_press`, `fuel_press`, `boost_*`, los de daño y `wing_setup` no
+   los grabamos. La mayoría los tiene la shared memory de AMS2 y el recorder
+   simplemente no los guarda: si alguna vez importa, se agregan al recorder primero.
 
 ## Corpus
 
