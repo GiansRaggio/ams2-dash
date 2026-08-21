@@ -1127,6 +1127,29 @@ def tasa_invalidacion(folder):
             "pct": round(100.0 * len(malas) / len(de_pista), 1)}
 
 
+def tanda(folder, n=8):
+    """Los REGISTROS de las primeras n vueltas cronometradas: la tanda que califica.
+
+    Mismo recorte que `consistency_struct`, y a proposito: los dos ejes de la rubrica
+    tienen que salir de la misma muestra o el informe muestra dos "mejor vuelta"
+    distintas y ninguna es explicable.
+    """
+    _, laps = _load(folder)
+    return [l for l in laps if l.get("lap_time")][:n]
+
+
+def mejor_de_la_tanda(folder, n=8):
+    """El registro mas rapido de las primeras n cronometradas. None si no hay.
+
+    NO es `clean_laps()["best_lap_time"]`, que es la mejor de TODA la sesion. La
+    diferencia no es cosmetica: docs/evaluacion.md fija el numero de vueltas de
+    antemano justo porque el minimo de una muestra mejora solo por tener mas
+    intentos, y medir el gap contra la mejor de 20 premia al que giro mas.
+    """
+    t = tanda(folder, n)
+    return min(t, key=lambda l: l["lap_time"]) if t else None
+
+
 def evaluar(folder, pauta=None):
     """Nota de una sesion, con lo medible calculado y lo no medible declarado.
 
@@ -1155,11 +1178,12 @@ def evaluar(folder, pauta=None):
 
     # --- TECNICA 25%: gap% contra la referencia guardada
     ref = load_reference(folder)
-    cl = clean_laps(folder)
-    if ref and ref.get("lap_time") and cl.get("best_lap_time"):
-        gap = 100.0 * (cl["best_lap_time"] - ref["lap_time"]) / ref["lap_time"]
+    mejor = mejor_de_la_tanda(folder)
+    if ref and ref.get("lap_time") and mejor:
+        tuyo = mejor["lap_time"]
+        gap = 100.0 * (tuyo - ref["lap_time"]) / ref["lap_time"]
         d = {"metrica": "gap%", "valor": round(gap, 2), "nota": _nota(max(gap, 0.0), _ESCALA_GAP),
-             "peso": 0.25, "ref_s": ref["lap_time"], "tuyo_s": round(cl["best_lap_time"], 3)}
+             "peso": 0.25, "ref_s": ref["lap_time"], "tuyo_s": round(tuyo, 3)}
         rc = ref.get("cond")
         if rc and dom and any(rc.get(k) != dom.get(k) for k in ("mojado", "tc", "abs", "compuesto")
                               if rc.get(k) is not None and dom.get(k) is not None):
