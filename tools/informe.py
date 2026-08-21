@@ -623,6 +623,7 @@ section{margin:0 0 26px}
 .ojo b{color:var(--acento);font-weight:600}
 
 .dos{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}
+.dos>*{min-width:0}          /* que una caja larga no ensanche su columna */
 .caja{background:var(--tarjeta);border:1px solid var(--linea);border-radius:3px;padding:16px 18px}
 .caja .que{font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--tinta2)}
 .caja .cifra{font-size:42px;font-weight:700;line-height:1.05;margin:6px 0 2px;
@@ -710,7 +711,10 @@ footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--linea);
   align-items:flex-start}header .sello{text-align:left}}
 @media print{
   body{background:#fff}
-  .hoja{max-width:none;padding:0}
+  /* 3px de aire a los lados: sin eso el borde derecho de la caja cae JUSTO sobre el
+     limite de la pagina y el rasterizador lo pierde -- el texto sale entero y la
+     tarjeta aparece sin un lado, que se lee como un error de maquetacion. */
+  .hoja{max-width:none;padding:0 3px}
   section,figure,.cosa,ol.tramos li{break-inside:avoid}
 }
 """
