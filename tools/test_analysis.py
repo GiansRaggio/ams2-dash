@@ -290,6 +290,64 @@ def main():
     finally:
         shutil.rmtree(_b, ignore_errors=True)
 
+    print("\ntest comparabilidad (que dos vueltas se puedan comparar de verdad):")
+    _bc = tempfile.mkdtemp(prefix="anacmp_")
+    try:
+        def _ses(nombre, filas, meta=None):
+            d = os.path.join(_bc, nombre)
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, "summary.jsonl"), "w", encoding="utf-8") as f:
+                for i, r in enumerate(filas):
+                    base = {"lap": i + 1, "lap_time": 90.0 + i * 0.05, "valid": True,
+                            "rain": 0.0, "tc_setting": 2, "abs_setting": 3, "compound": "Soft"}
+                    base.update(r)
+                    f.write(json.dumps(base) + "\n")
+            if meta:
+                with open(os.path.join(d, "session.json"), "w", encoding="utf-8") as f:
+                    json.dump(meta, f)
+            return d
+
+        ok = _ses("OK__Auto__practice__20260101_000000", [{}] * 8)
+        dom, av = A.comparabilidad(ok)
+        _ok("condiciones estables: sin avisos de cambio",
+            not any("CAMBIO" in a for a in av), av)
+        _ok("detecta que estuvo seco", dom and dom["mojado"] is False, dom)
+
+        # goma cambiada a mitad: el caso real de Buenos Aires
+        mix = _ses("MIX__Auto__race__20260101_000000",
+                   [{}] * 4 + [{"compound": "Wet", "rain": 0.4}] * 4)
+        _, av2 = A.comparabilidad(mix)
+        _ok("cambio de compuesto: lo detecta", any("compuesto CAMBIO" in a for a in av2), av2)
+        _ok("cambio de estado de pista: lo detecta",
+            any("estado de la pista CAMBIO" in a for a in av2), av2)
+
+        # y lo importante: el CV de esa sesion NO puede salir con veredicto bueno
+        c = A.consistency_struct(mix)
+        _ok("sesion mezclada: no califica", c and not c["califica"], c and c["veredicto"])
+        _ok("sesion mezclada: queda marcada en el DATO, no solo en el texto",
+            c and c["mezclada"] is True, c and c.get("mezclada"))
+
+        # ayudas cambiadas
+        _, av3 = A.comparabilidad(_ses("TC__Auto__race__20260101_000000",
+                                       [{}] * 4 + [{"tc_setting": 5}] * 4))
+        _ok("cambio de TC: lo detecta", any("TC CAMBIO" in a for a in av3), av3)
+
+        # -1 = no poblado, NO "apagado": confundirlos haria comparables a un alumno
+        # con TC 8 y a uno sin TC
+        _ok("ayuda en -1 se lee como desconocida, no como 0",
+            A._cond({"tc_setting": -1})["tc"] is None, A._cond({"tc_setting": -1}))
+        _ok("ayuda en 0 se lee como 0", A._cond({"tc_setting": 0})["tc"] == 0)
+
+        # nombre de referencia: la variante es parte de la identidad de la pista
+        n1 = A._ref_nombre({"car": "GT3", "track": "Silverstone", "track_variation": "GP"})
+        n2 = A._ref_nombre({"car": "GT3", "track": "Silverstone", "track_variation": "National"})
+        _ok("dos variantes NO comparten archivo de referencia", n1 != n2, (n1, n2))
+        _ok("sin variante util no ensucia el nombre",
+            A._ref_nombre({"car": "GT3", "track": "Monza", "track_variation": "Monza"})
+            == "GT3__Monza")
+    finally:
+        shutil.rmtree(_bc, ignore_errors=True)
+
     print("\ntest vuelta ideal: NO se rescatan sectores de vueltas sucias:")
     _b = tempfile.mkdtemp(prefix="anaideal_")
     try:

@@ -771,7 +771,15 @@ def consistency_struct(folder, n=8, minimo=6):
     # ademas mejora un poco quedaria sin nota sin motivo.
     aprendiendo = deriva_pct <= -0.15 and cv_dest < cv * 0.6
     degradando = deriva_pct >= 0.15
-    if aprendiendo:
+    # Si la sesion mezcla condiciones, el CV sale igual y sale PLAUSIBLE -- medido en
+    # Buenos Aires: cambio de lisos a lluvia y TC de 0 a 3 a mitad de sesion, y el CV
+    # daba 0.22% "excelente". Por eso la marca va en el DATO y no solo en el texto
+    # del reporte: un veredicto que hay que acordarse de ignorar no es un gate.
+    dom, _av = comparabilidad(folder)
+    mezclada = bool(dom and dom.get("_mezclada"))
+    if mezclada:
+        veredicto = "sin veredicto: la sesion mezcla condiciones"
+    elif aprendiendo:
         veredicto = "sin veredicto: todavia aprendiendo el circuito"
     else:
         veredicto = ("excelente" if cv <= 0.3 else "buena" if cv <= 0.7
@@ -780,7 +788,8 @@ def consistency_struct(folder, n=8, minimo=6):
             "cv_pct": round(cv, 3), "cv_destendenciado_pct": round(cv_dest, 3),
             "deriva_s_vuelta": round(b, 3), "deriva_pct_vuelta": round(deriva_pct, 3),
             "aprendiendo": aprendiendo, "degradando": degradando,
-            "califica": not aprendiendo, "mediana_s": round(med, 3),
+            "mezclada": mezclada, "califica": not aprendiendo and not mezclada,
+            "mediana_s": round(med, 3),
             "mejor_s": round(min(buenas), 3),
             "tiempos": [round(x, 3) for x in t],
             "veredicto": veredicto}
@@ -793,6 +802,15 @@ def report_consistency(folder):
         print("\n  (sin datos de consistencia: se necesitan 6+ vueltas cronometradas)")
         return
     print("\n=== Consistencia (que tan parejas son tus vueltas) ===")
+    dom, avisos = comparabilidad(folder)
+    duros = [a for a in avisos if "CAMBIO" in a]
+    if duros:
+        print("  !! ESTA SESION NO SIRVE PARA CALIFICAR CONSISTENCIA:")
+        for a in duros:
+            print(f"     - {a}")
+        print("     (se estan mezclando vueltas que no comparten condiciones)")
+    elif dom:
+        print(f"  condiciones: {_cond_texto(dom)}")
     print(f"  CV {c['cv_pct']:.2f}%  ->  {c['veredicto']}"
           f"   (sobre {c['n']} vueltas, mediana {_fmt_t(c['mediana_s']).strip()})")
     if c["incidentes"]:
@@ -801,7 +819,9 @@ def report_consistency(folder):
     if abs(dp) >= 0.05:
         que = "te vas cayendo" if d > 0 else "vas bajando tiempos"
         print(f"  tendencia {d:+.2f} s/vuelta ({dp:+.2f}%/vuelta): {que}")
-    if not c["califica"]:
+    if c.get("mezclada"):
+        pass                                  # ya se aviso arriba, con el detalle
+    elif not c["califica"]:
         print(f"  NO CALIFICA como consistencia: sin la tendencia el CV baja a "
               f"{c['cv_destendenciado_pct']:.2f}%.")
         print("  Estas mejorando dentro de la tanda, o sea todavia aprendiendo el")
@@ -912,14 +932,95 @@ def coasting_struct(folder, rec):
     return out
 
 
-def load_reference(folder):
-    """Referencia guardada (mejor vuelta) del auto+pista de esta sesion, o None."""
-    meta, _ = _load(folder)
+def _cond(l):
+    """Condiciones de una vuelta que deciden si es comparable con otra.
+
+    `-1` en las ayudas significa "no poblado", no "apagado": tratarlo como 0 haria
+    parecer comparables a un alumno con TC 8 y a uno sin TC. Se devuelve None y el
+    que compara decide -- pero se entera.
+    """
+    def ayuda(v):
+        return None if v is None or v < 0 else int(v)
+    r = l.get("rain")
+    return {"mojado": None if r is None else bool(r > 0.05),
+            "tc": ayuda(l.get("tc_setting")), "abs": ayuda(l.get("abs_setting")),
+            "compuesto": (l.get("compound") or "").strip() or None}
+
+
+def _cond_texto(c):
+    p = []
+    if c.get("mojado") is not None:
+        p.append("mojado" if c["mojado"] else "seco")
+    if c.get("compuesto"):
+        p.append(c["compuesto"])
+    p.append(f"TC {c['tc']}" if c.get("tc") is not None else "TC ?")
+    p.append(f"ABS {c['abs']}" if c.get("abs") is not None else "ABS ?")
+    return " · ".join(p)
+
+
+def comparabilidad(folder):
+    """Avisos si dentro de la sesion cambiaron las condiciones a mitad de camino.
+
+    Sin esto, "higiene de datos" depende de que una persona se acuerde de mirar, y
+    el error es silencioso: se promedian vueltas en seco con vueltas en mojado y el
+    numero sale plausible. Devuelve (condiciones_dominantes, avisos).
+    """
+    _, laps = _load(folder)
+    timed = [l for l in laps if l.get("lap_time")]
+    if not timed:
+        return None, []
+    conds = [_cond(l) for l in timed]
+    avisos = []
+    for k, etiqueta in (("mojado", "el estado de la pista"), ("tc", "el TC"),
+                        ("abs", "el ABS"), ("compuesto", "el compuesto")):
+        vistos = [c[k] for c in conds if c[k] is not None]
+        distintos = sorted(set(vistos), key=str)
+        if len(distintos) > 1:
+            avisos.append(f"{etiqueta} CAMBIO en la sesion ({', '.join(str(x) for x in distintos)}): "
+                          f"esas vueltas no son comparables entre si")
+        if not vistos and k in ("tc", "abs"):
+            # Medido: pasa en ~55 de las sesiones del corpus. Lo mas probable es que
+            # el auto simplemente NO TENGA esa ayuda (un Formula Vee no tiene ABS), y
+            # eso es informacion, no un fallo de lectura. Dentro de la sesion no hay
+            # problema -- todas las vueltas comparten la misma ausencia. Solo importa
+            # al comparar CONTRA OTRA sesion, y por eso el aviso es aparte.
+            avisos.append(f"{etiqueta} no viene poblado (puede ser que el auto no la tenga): "
+                          f"no se puede verificar contra otra sesion")
+    dom = {}
+    for k in ("mojado", "tc", "abs", "compuesto"):
+        vistos = [c[k] for c in conds if c[k] is not None]
+        dom[k] = max(set(vistos), key=vistos.count) if vistos else None
+    dom["_mezclada"] = any("CAMBIO" in a for a in avisos)
+    return dom, avisos
+
+
+def _ref_nombre(meta):
+    """Identidad FISICA del combo: auto + pista + variante.
+
+    La variante iba solo dentro del JSON y no en el nombre, asi que dos trazados
+    del mismo circuito (GP y National, por ejemplo) se pisaban el archivo entre
+    ellos y el segundo borraba la referencia del primero sin avisar.
+    """
     car, track = meta.get("car"), meta.get("track")
     if not car or not track:
         return None
-    p = os.path.join(REFDIR, f"{car}__{track}.json")
-    return json.load(open(p, encoding="utf-8")) if os.path.exists(p) else None
+    var = (meta.get("track_variation") or "").strip()
+    return f"{car}__{track}" + (f"__{var}" if var and var != track else "")
+
+
+def load_reference(folder):
+    """Referencia guardada (mejor vuelta) del auto+pista de esta sesion, o None."""
+    meta, _ = _load(folder)
+    nom = _ref_nombre(meta)
+    if not nom:
+        return None
+    # el nombre viejo (sin variante) como respaldo: las referencias guardadas antes
+    # del 2026-08-20 estan con ese nombre y seguir leyendolas no cuesta nada
+    for cand in (nom, f"{meta.get('car')}__{meta.get('track')}"):
+        p = os.path.join(REFDIR, f"{cand}.json")
+        if os.path.exists(p):
+            return json.load(open(p, encoding="utf-8"))
+    return None
 
 
 def load_reference_trace(folder):
@@ -953,16 +1054,23 @@ def save_reference(folder, lap=None, force=False):
     sec = next((r["sectors"] for r in _load_sectors(folder)
                 if r["lap"] == rec["lap"] and abs((r.get("lap_time") or 0) - lt) < 0.01), None) or _lap_sectors(rec)
     os.makedirs(REFDIR, exist_ok=True)
-    name = f"{car}__{track}"
+    name = _ref_nombre(meta)
+    # Las condiciones viajan CON la referencia. Sin ellas, una vuelta hecha en seco
+    # con TC 8 quedaba como la vara de todos, y el gap% de los demas salia inflado
+    # sin que nadie pudiera notarlo mirando el archivo.
     data = {"car": car, "track": track, "track_variation": meta.get("track_variation"),
-            "lap": rec["lap"], "lap_time": round(lt, 3), "sectors": sec, "session": os.path.basename(folder)}
+            "lap": rec["lap"], "lap_time": round(lt, 3), "sectors": sec,
+            "session": os.path.basename(folder), "cond": _cond(rec)}
     src = os.path.join(folder, rec.get("trace", "") or "")
     if rec.get("trace") and os.path.exists(src):
         shutil.copy(src, os.path.join(REFDIR, name + ".csv.gz"))
         data["trace"] = name + ".csv.gz"
     with open(os.path.join(REFDIR, name + ".json"), "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-    return f"referencia guardada: {car} @ {track} = {lt:.3f}s (vuelta {rec['lap']})"
+    return (f"referencia guardada: {car} @ {track} = {lt:.3f}s (vuelta {rec['lap']})"
+            f"\n  condiciones: {_cond_texto(_cond(rec))}"
+            f"\n  (el gap% de todos se mide contra esta vuelta: si se corrio en"
+            f" condiciones facilotas, infla el gap de los demas)")
 
 
 def reference_struct(folder):
