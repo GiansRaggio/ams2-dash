@@ -173,6 +173,11 @@ fullscreen como una app.
 - `index.html` — el dashboard estilo display GT3, servido al celular.
 - `index-v1-backup.html` — la versión anterior, por si quieres volver.
 - `tools/analyze_telemetry.py` — analizador offline de lo grabado en `telemetry/`.
+- `tools/informe.py` — genera el **informe de una página** del alumno a partir de
+  una carpeta de sesión (ver más abajo). Usado por la Escuela de Conducción
+  Deportiva AMS2 Chile.
+- `entrega.py` — cliente de entrega del alumno: valida la sesión, la empaqueta y
+  la sube al servicio de la escuela.
 - `tools/fake_telemetry.py` — emite paquetes UDP sintéticos a :5606 para iterar
   la UI de la variante UDP sin estar en pista.
 - `bridge.py` — variante **UDP** (protocolo Project CARS 2, puerto 5606), la
@@ -199,6 +204,40 @@ para abrirla en Excel o donde quieras.
 Si usas la app **Sim Racing Telemetry**, `ams2_srt.py` convierte en ambos
 sentidos: `python ams2_srt.py <archivo.srt> --importar` trae vueltas ajenas al
 visor, y `ams2_srt.exportar(...)` genera un `.srt` que esa app abre.
+
+## Informe de una página (`tools/informe.py`)
+
+Convierte una carpeta de sesión en un HTML autocontenido para entregarle al
+alumno. Es la herramienta de coaching de la escuela, no un dump de datos:
+
+```bash
+python tools/informe.py telemetry/<carpeta> --alumno "Nombre" --nivel 2 --abrir
+```
+
+Sale en `informes/` (gitignoreado: el informe lleva el nombre del alumno y sus
+números, que son dato personal de un tercero).
+
+Las cinco secciones, en este orden: **tus dos números** con su escala dibujada al
+lado (gap% contra la referencia del combo y CV% de dispersión), **dónde se te va
+el tiempo** por distancia en metros con la causa medida y la acción que la
+corrige, **el mapa** de tu vuelta con la referencia encima y los tramos marcados,
+**una sola cosa** para trabajar, y **tu nivel** expresado en permisos.
+
+Lo que el informe **no** hace, a propósito:
+
+- **No inventa.** Sin la referencia guardada del combo, el gap% sale como "sin
+  dato todavía" y dice por qué; nunca se rellena con otra cosa.
+- **No lista un tramo sin causa identificable.** Una brecha sin ruta de acción es
+  la forma de feedback que peor mide.
+- **No deduce el nivel de los números.** `--nivel` lo pone el instructor: el nivel
+  es un permiso que abren la limpieza, la percepción del entorno y una evaluación
+  en vivo — no el cronómetro.
+- **No compara al alumno con nadie más.**
+- **No numera las curvas**: las dos herramientas del dash las numeran distinto
+  entre sí, así que todo se ubica por distancia en metros.
+
+Si la sesión mezcló condiciones a mitad de tanda (pista, compuesto, ayudas), no
+emite ningún número y lo dice: cualquier cifra saldría creíble y equivocada.
 
 ## Variante UDP (Linux, o si de verdad la necesitas en Windows): `bridge.py`
 
@@ -280,6 +319,13 @@ Los canales se **midieron en pista** con `tools/tyre_probe.py` y después se
   las sesiones** — pegado al ambiente con la carcasa a 75-130 °C, por sesión y no
   por auto — así que el bridge lo detecta en vivo (`surf_dead`) y emite esos canales
   en null en vez de mostrar basura.
+  **Ese ~10% no está repartido al azar**: las 6 sesiones muertas del corpus son las 6
+  sesiones de **lluvia** (bulk en 30-36 °C con la carcasa en 110-131), o sea 6 de las
+  10 sesiones con goma de agua. Justo donde vive el semáforo de cruce lluvia→lisos,
+  que leía ese canal. Por eso el bridge le pasa `surf_alive` al director de estrategia
+  y la señal de "wets recalentando" **no opina** cuando el canal está muerto: el panel
+  muestra `wets sin señal` en vez de inventar una goma helada. Se verifica con
+  `tools/crossover_replay.py` (replay del semáforo contra las sesiones de lluvia reales).
 - **No existe ventana térmica absoluta que generalice.** Las medianas de carcasa van
   de 52 °C (Formula Vee) a 143 °C (protos): cualquier umbral fijo dispara "hot" o
   "cold" en conducción normal según el auto. Por eso el color y el veredicto son
