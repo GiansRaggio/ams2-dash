@@ -488,21 +488,29 @@ def logros(folder, per, num):
 def mapa(folder, per, ancho=680, alto=340, margen=18):
     """SVG del trazado con tu vuelta, la referencia encima y los tramos marcados.
 
-    None si la sesion no trae posicion util (pasa con sesiones importadas de otros
-    pilotos, que rellenan los canales con ceros).
+    None SOLO si la sesion no trae posicion util (pasa con sesiones importadas de
+    otros pilotos, que rellenan los canales con ceros).
+
+    El mapa no depende de que haya con que comparar: dibujar donde giro es util
+    igual, y medido sobre el corpus, 238 de 338 sesiones no juntan las 3 vueltas
+    que pide la comparacion -- se quedaban sin imagen teniendo la traza entera.
+    Sin comparacion sale el trazado solo, sin tramos marcados y sin referencia.
     """
     par = par_trazas(folder)
-    if not par:
-        return None
-    ta, tb, _etq, es_ref = par
-    if not _tiene_posicion(ta):
+    if par:
+        ta, tb, _etq, es_ref = par
+    else:
+        rec = A.mejor_de_la_tanda(folder)
+        ta = A._lap_trace(folder, rec) if rec else None
+        tb, es_ref = None, False
+    if not ta or not _tiene_posicion(ta):
         return None
     d, x, z = A._mono(ta["lap_dist"], ta["pos_x"], ta["pos_z"])
     if len(d) < 50:
         return None
 
     xs, zs = list(x), list(z)
-    superpone = es_ref and _mismo_marco(ta, tb)
+    superpone = bool(es_ref and tb and _mismo_marco(ta, tb))
     d2 = x2 = z2 = None
     if superpone:
         d2, x2, z2 = A._mono(tb["lap_dist"], tb["pos_x"], tb["pos_z"])

@@ -317,8 +317,16 @@ def test_pocas_vueltas(base):
     cosa = I.una_cosa(d, per, num)
     _ok("la 'una cosa' pasa a ser juntar la tanda", "8 vueltas" in cosa["titulo"],
         cosa["titulo"])
+    # el mapa NO depende de tener con que comparar: medido sobre el corpus, 238 de
+    # 338 sesiones no juntan las 3 vueltas de la comparacion y se quedaban sin
+    # imagen teniendo la traza completa guardada.
+    mp = I.mapa(d, per)
+    _ok("igual dibuja el mapa (la traza existe)", mp is not None and "polyline" in mp["svg"])
+    _ok("pero sin referencia superpuesta ni tramos marcados",
+        mp and not mp["superpone"] and 'class="pin"' not in mp["svg"])
     h = I.render(I.armar(d, nivel=1))
     _ok("y el informe se genera igual", h.startswith("<!doctype") and "Tu nivel" in h)
+    _ok("con la seccion del mapa incluida", "El mapa de tu vuelta" in h)
 
 
 def test_frenada_dispersa(base):
