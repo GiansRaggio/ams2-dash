@@ -352,9 +352,13 @@ def test_calibrating():
     _ok("calibrando con <2 vueltas verdes", o["calibrating"], o.get("green_laps"))
 
 
-def feed_wet(e, rains, tracks, wet_temps, lap_times=None, laps_in_event=30, cap=100.0):
+def feed_wet(e, rains, tracks, wet_temps, lap_times=None, laps_in_event=30, cap=100.0,
+             surf_alive=True):
     """Carrera con goma de AGUA y condiciones que evolucionan (listas paralelas,
-    una entrada por update; la 1ra inicializa, el resto cruzan meta)."""
+    una entrada por update; la 1ra inicializa, el resto cruzan meta).
+
+    surf_alive=False simula el bug de AMS2 que deja mTyreTemp pegado al ambiente: es
+    el estado REAL de 6 de las 10 sesiones de lluvia grabadas (ver crossover_replay)."""
     n = len(rains)
     lap_times = lap_times or [120.0] * n
     fuel = 90.0
@@ -365,7 +369,7 @@ def feed_wet(e, rains, tracks, wet_temps, lap_times=None, laps_in_event=30, cap=
                  mRainDensity=rains[i], mTrackTemperature=tracks[i],
                  mTyreTemp=[wet_temps[i]] * 4)
         s._p = P(laps_completed=i, current_lap=i + 1)
-        e.update(s)
+        e.update(s, surf_alive=surf_alive)
         fuel -= 2.8
     return e.payload()
 
@@ -404,6 +408,56 @@ def test_crossover_drying_alerts():
         "gomas de lluvia recalentando" in (cx.get("signals") or []), cx.get("signals"))
     keys = [a["key"] for a in o.get("alerts", [])]
     _ok("dispara alerta de voz", "cross_red" in keys or "cross_amber" in keys, keys)
+
+
+def test_crossover_surf_dead():
+    print("test_crossover_surf_dead (bulk muerto -> ni señal C ni temperatura inventada):")
+    # MISMO secado que test_crossover_drying_alerts, pero con el modelo de banda muerto:
+    # AMS2 deja mTyreTemp en ~33 C con la carcasa en 110-130. Sin el gate, esos 33 se
+    # leian como "wets frias" y ademas se pintaban en el dash como dato real.
+    e = S.StrategyEngine()
+    o = feed_wet(e, rains=[0.30, 0.25, 0.18, 0.12, 0.09, 0.07],
+                 tracks=[22.0, 22.4, 22.8, 23.2, 23.6, 24.0],
+                 wet_temps=[33, 34, 32, 35, 33, 34],
+                 lap_times=[120.0, 120.0, 120.3, 120.5, 121.0, 121.2],
+                 surf_alive=False)
+    cx = o.get("crossover") or {}
+    _ok("marca el canal muerto", cx.get("wet_dead") is True, cx.get("wet_dead"))
+    _ok("NO emite temperatura inventada", cx.get("wet_temp") is None, cx.get("wet_temp"))
+    _ok("sin señal de wets recalentando",
+        "gomas de lluvia recalentando" not in (cx.get("signals") or []), cx.get("signals"))
+    _ok("el semáforo sigue vivo con las otras señales",
+        cx.get("state") in ("green", "amber", "red"), cx.get("state"))
+    print(f"    -> estado={cx.get('state')} señales={cx.get('signals')}")
+
+    # Contraparte: el MISMO secado con el canal vivo si tiene que ver las wets.
+    e2 = S.StrategyEngine()
+    o2 = feed_wet(e2, rains=[0.30, 0.25, 0.18, 0.12, 0.09, 0.07],
+                  tracks=[22.0, 22.4, 22.8, 23.2, 23.6, 24.0],
+                  wet_temps=[60, 64, 68, 72, 75, 77],
+                  lap_times=[120.0, 120.0, 120.3, 120.5, 121.0, 121.2])
+    cx2 = o2.get("crossover") or {}
+    _ok("con el canal vivo SÍ ve las wets",
+        "gomas de lluvia recalentando" in (cx2.get("signals") or []), cx2.get("signals"))
+    _ok("y emite la temperatura", cx2.get("wet_temp") is not None, cx2.get("wet_temp"))
+
+
+def test_crossover_warmup_not_drying():
+    print("test_crossover_warmup_not_drying (wets calentando con lluvia firme != secado):")
+    # Firma medida en Buenos Aires 21/06 vueltas 2-7: la lluvia CLAVADA en 0.200 y la
+    # wet subiendo de 67 a 77 porque recien entra en temperatura. Antes esto encendia
+    # amber en plena lluvia; el crossover no puede confundir warm-up con pista seca.
+    e = S.StrategyEngine()
+    o = feed_wet(e, rains=[0.200] * 6, tracks=[24.9, 24.9, 25.0, 25.0, 25.1, 25.1],
+                 wet_temps=[67, 70, 73, 73, 77, 77],
+                 lap_times=[132.6, 132.5, 132.8, 132.0, 132.4, 132.3])
+    cx = o.get("crossover") or {}
+    _ok("green con la lluvia firme pese a wets calientes", cx.get("state") == "green",
+        cx.get("state"))
+    _ok("no acusa wets recalentando",
+        "gomas de lluvia recalentando" not in (cx.get("signals") or []), cx.get("signals"))
+    keys = [a["key"] for a in o.get("alerts", [])]
+    _ok("sin alerta de cruce", "cross_amber" not in keys and "cross_red" not in keys, keys)
 
 
 def test_crossover_calibrating():
@@ -472,7 +526,8 @@ if __name__ == "__main__":
               test_planning_practice, test_live_overrides_plan,
               test_all_laps_toggle, test_no_false_fumes, test_calibrating,
               test_crossover_dry_none, test_crossover_green_raining,
-              test_crossover_drying_alerts, test_crossover_calibrating,
+              test_crossover_drying_alerts, test_crossover_surf_dead,
+              test_crossover_warmup_not_drying, test_crossover_calibrating,
               test_player_index, test_speech_server):
         t()
         print()

@@ -78,7 +78,25 @@ PIT_WINDOW = 3               # +/- vueltas alrededor del objetivo de parada
 # ams2_shm.py / header CREST2 v14): el unico canal de lluvia es mRainDensity =
 # precipitacion CAYENDO, no agua en superficie. Por eso el secado se INFIERE de
 # proxies: lluvia baja y cayendo + pista calentando + gomas de lluvia recalentando
-# (la wet se refrigera con el agua; sin agua sobrecalienta -> senal mas confiable).
+# (la wet se refrigera con el agua; sin agua sobrecalienta).
+#
+# La senal de las gomas (C) lee mTyreTemp (bulk) y por eso NO siempre existe: el
+# modelo termico de banda de AMS2 se muere por sesion (bug del juego) y el canal se
+# queda pegado al ambiente. Medido sobre el archivo grabado (tools/crossover_replay.py):
+# las 6 sesiones con el modelo muerto del corpus son las 6 SESIONES DE LLUVIA -- o
+# sea el bug se concentra justo donde vive este detector: 6 de las 10 sesiones con
+# goma de agua tienen el bulk muerto (30-36 C con la carcasa en 110-131). Leido
+# crudo eso es "wets heladas, aguanta" con un numero inventado en pantalla. De ahi
+# el gate de liveness: la senal C solo existe si TyreAnalyzer declara vivo el modelo
+# (surf_alive, ver ams2_tyres._surf_check); si no, C no opina y wet_temp sale null.
+#
+# La CARCASA se evaluo como reemplazo (esta viva en el 100% de las sesiones) y se
+# DESCARTO con datos: su pendiente por vuelta no distingue los dos escenarios del
+# archivo -- en la carrera que seco (Buenos Aires 21/06) cae -0.66 C/vuelta y en la
+# que se mojaba cada vez mas (Kansai 12/07) cae -0.55 C/vuelta, practicamente lo
+# mismo. Y su nivel absoluto no generaliza entre autos (medianas 52-143), que es
+# exactamente el motivo por el que la ventana fija 70-100 se elimino de la pagina
+# GOMAS. Un umbral de carcasa daria una senal SIEMPRE disponible y siempre falsa.
 RAIN_DRY_THR = 0.13          # densidad de lluvia bajo la cual cuenta como "dejo de llover"
 TRACK_WARM_SLOPE = 0.15      # +C/vuelta sostenido => pista calentando/secando
 WET_OVERHEAT = 72.0          # temp (C) de gomas de lluvia que delata pista sin agua
@@ -147,6 +165,7 @@ class StrategyEngine:
         self._rain_hist = []           # densidad de lluvia por vuelta (tendencia de secado)
         self._track_hist = []          # temp de pista por vuelta
         self._wet_temp_hist = []       # peor temp de neumatico por vuelta (wets recalentando)
+        self._surf_alive = True        # modelo termico de banda vivo? (lo dicta el bridge)
         self._cross_state = "green"    # estado del semaforo (histeresis asimetrica)
         self._last = {"calibrating": True, "live": False, "mode": "none"}
 
@@ -171,11 +190,22 @@ class StrategyEngine:
         self._use_all_laps = bool(on)
 
     # ---------------- ingestion ----------------
-    def update(self, d):
-        """Procesa un snapshot. El resultado se lee con payload()."""
+    def update(self, d, surf_alive=None):
+        """Procesa un snapshot. El resultado se lee con payload().
+
+        `surf_alive` = el modelo termico de banda de AMS2 (mTyreTemp y compania) esta
+        vivo en esta sesion? Lo mide TyreAnalyzer._surf_check y se lo pasa el bridge;
+        aca NO se re-implementa esa deteccion (misma politica que wear_vec/eol_vec en
+        la direccion contraria: una sola verdad, un solo lugar donde se mide).
+        None = sin informacion -> se asume vivo, que es el comportamiento historico
+        para los llamadores que no lo pasan (tools/test_strategy.py, eval_strategy.py).
+        Solo lo usa el detector de crossover, unico consumidor de mTyreTemp aca.
+        """
         # Guard de corrupcion (AMS2 comparte el nombre de mapeo con PCARS2).
         if d.mVersion != ams2_shm.SHARED_MEMORY_VERSION or d.mNumParticipants <= 0:
             return
+        if surf_alive is not None:
+            self._surf_alive = bool(surf_alive)
         v = ams2_shm.player_index(d, self._player_name)   # TU auto, no el que mira la camara (bug MP)
         if not (0 <= v < ams2_shm.STORED_PARTICIPANTS_MAX):
             return
@@ -330,8 +360,15 @@ class StrategyEngine:
         del self._rain_hist[:-GREEN_KEEP]
         self._track_hist.append(d.mTrackTemperature)
         del self._track_hist[:-GREEN_KEEP]
-        self._wet_temp_hist.append(max(d.mTyreTemp[i] for i in range(4)))
-        del self._wet_temp_hist[:-GREEN_KEEP]
+        # La temp de goma SOLO se muestrea con el modelo de banda vivo. Con el bug de
+        # AMS2 el bulk se queda en 30-36 C y la tendencia que saldria de ahi seria la
+        # del canal roto, no la de la goma. Se BORRA la historia en vez de arrastrarla:
+        # si el canal resucita, la pendiente no puede mezclar muestras de los dos lados.
+        if self._surf_alive:
+            self._wet_temp_hist.append(max(d.mTyreTemp[i] for i in range(4)))
+            del self._wet_temp_hist[:-GREEN_KEEP]
+        else:
+            self._wet_temp_hist = []
 
         # --- neumaticos: delta de desgaste por rueda al cruzar meta ---
         wear_now = self._wear_vec(d)
@@ -412,8 +449,14 @@ class StrategyEngine:
             return None
         rain = d.mRainDensity
         track_t = d.mTrackTemperature
-        wet_t = max(d.mTyreTemp[i] for i in range(4))
-        base = {"rain": round(rain, 3), "track_t": round(track_t, 1), "wet_temp": round(wet_t)}
+        # Canal muerto -> NO se emite temperatura: un 32 junto a una carcasa de 130 no
+        # es un dato frio, es el bug. Se manda null + wet_dead para que el dash diga
+        # "sin senal" en vez de pintar una goma helada que no existe.
+        alive = self._surf_alive
+        wet_t = max(d.mTyreTemp[i] for i in range(4)) if alive else None
+        base = {"rain": round(rain, 3), "track_t": round(track_t, 1),
+                "wet_temp": round(wet_t) if wet_t is not None else None,
+                "wet_dead": not alive}
         if len(self._rain_hist) < 3:            # aun sin tendencia confiable
             base.update(state="calibrando", n_signals=0, signals=[])
             return base
@@ -423,7 +466,18 @@ class StrategyEngine:
         wet_sl = self._slope(self._wet_temp_hist)
         A = rain < RAIN_DRY_THR and rain_sl is not None and rain_sl < 0
         B = track_sl is not None and track_sl >= TRACK_WARM_SLOPE
-        C = wet_t >= WET_OVERHEAT and wet_sl is not None and wet_sl > 0
+        # C exige TRES cosas ademas de la temperatura, y las tres salieron del archivo:
+        #  - canal vivo (arriba): sin eso la senal es del bug, no de la goma.
+        #  - stint pasado el warm-up: una wet subiendo de 67 a 78 en las primeras
+        #    vueltas es la goma entrando en temperatura, no la pista secandose. En la
+        #    unica carrera que seco de verdad (Buenos Aires 21/06) esto es lo que
+        #    encendia el amber en las vueltas 4-7, con la lluvia CLAVADA en 0.200.
+        #  - lluvia no arreciando: una wet caliente con lluvia estable o en aumento no
+        #    dice nada de la pista. Es el mismo motivo, visto desde el otro canal.
+        C = (alive and wet_t >= WET_OVERHEAT
+             and wet_sl is not None and wet_sl > 0
+             and self._stint_lap > TYRE_WARMUP_LAPS
+             and rain_sl is not None and rain_sl < 0)
         n = int(A) + int(B) + int(C)
         # lap-stall: ya no bajas tiempos pese a pista mejor -> refuerza el ROJO
         lt_sl = self._slope(self._lap_times) if len(self._lap_times) >= 3 else None

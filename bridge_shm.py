@@ -379,8 +379,12 @@ def update_state(d):
 
     # Director de estrategia: se alimenta del snapshot crudo (tiene su propio
     # estado por vuelta para fuel/gomas/paradas) y publica su payload.
+    # surf_alive va en la direccion contraria a wear_vec/eol_vec (abajo): el detector
+    # de crossover lee mTyreTemp, que AMS2 deja muerto en la mayoria de las sesiones de
+    # lluvia, y quien mide eso es TyreAnalyzer. Se pasa el valor del frame ANTERIOR
+    # (tyres.update corre despues); da igual, es un detector de 60-120 s.
     try:
-        strategy.update(d)
+        strategy.update(d, surf_alive=tyres.surf_alive())
         state["strategy"] = strategy.payload()
     except Exception:
         pass   # nunca tumbar el broadcast por un error del analizador de estrategia
