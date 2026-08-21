@@ -67,13 +67,16 @@ class _Servidor(BaseHTTPRequestHandler):
             self.wfile.write(b"caido")
             return
         sha = self.headers.get("X-Sesion-Sha256", "")
-        if _Servidor.duplicado or any(r["sha"] == sha for r in _Servidor.recibido):
+        # Deduplica por X-Sesion-Id (contenido), NO por el sha del zip. El servidor
+        # real hace lo mismo: usar el del zip fue el bug que duplico en produccion.
+        sid = self.headers.get("X-Sesion-Id", "")
+        if _Servidor.duplicado or any(r["id"] == sid for r in _Servidor.recibido):
             self.send_response(409)
             self.end_headers()
             self.wfile.write(b"ya existe")
             return
         _Servidor.recibido.append({
-            "sha": sha, "bytes": len(cuerpo),
+            "sha": sha, "id": sid, "bytes": len(cuerpo),
             "auth": self.headers.get("Authorization", ""),
             "carpeta": self.headers.get("X-Sesion-Carpeta", ""), "cuerpo": cuerpo})
         self.send_response(201)
@@ -113,7 +116,7 @@ def main():
         _ok("sin metadatos de auto/pista: BLOQUEA", any("auto/pista" in x for x in p5), p5)
 
         print("\ntest empaquetado:")
-        datos, sha, man = E.empaquetar(d, "Gian")
+        datos, sha, id_sesion, man = E.empaquetar(d, "Gian")
         z = zipfile.ZipFile(io.BytesIO(datos))
         _ok("el zip lleva manifiesto", "manifiesto.json" in z.namelist())
         _ok("el zip lleva las trazas y el resumen",
@@ -121,10 +124,23 @@ def main():
         m = json.loads(z.read("manifiesto.json"))
         _ok("el manifiesto identifica al alumno", m["alumno"] == "Gian", m["alumno"])
         _ok("el manifiesto trae el combo", m["auto"] == "GT4" and m["vueltas"] == 8, m)
-        # el sha tiene que ser estable: si cambia solo, la deteccion de duplicado no sirve
-        datos_b, sha_b, _ = E.empaquetar(d, "Gian")
-        _ok("el contenido se empaqueta igual dos veces", len(datos) == len(datos_b),
-            (len(datos), len(datos_b)))
+        # ESTE test existia y comparaba el LARGO de los dos zips, que da igual porque
+        # el timestamp del manifiesto ocupa los mismos caracteres. Paso en verde
+        # mientras el sistema duplicaba sesiones en produccion. Ahora compara lo que
+        # de verdad decide la deduplicacion.
+        import time as _t
+        _t.sleep(1.1)                                  # que cambie el timestamp
+        datos_b, sha_b, id_b, _ = E.empaquetar(d, "Gian")
+        _ok("el sha del ZIP cambia entre empaquetados (por el timestamp)", sha != sha_b,
+            (sha[:12], sha_b[:12]))
+        _ok("la HUELLA de la sesion NO cambia: es la que deduplica", id_sesion == id_b,
+            (id_sesion[:12], id_b[:12]))
+        _ok("la huella depende del contenido, no del nombre de la carpeta",
+            E.huella(d) == E.huella(d))
+        # tocar un archivo tiene que cambiarla, o dos sesiones distintas colisionarian
+        with open(os.path.join(d, "summary.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps({"lap": 99, "lap_time": 91.0, "valid": True}) + chr(10))
+        _ok("si cambia el contenido, cambia la huella", E.huella(d) != id_sesion)
 
         print("\ntest subida:")
         _Servidor.recibido = []
@@ -133,30 +149,34 @@ def main():
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         cfg = {"url": f"http://127.0.0.1:{srv.server_port}", "token": "tok-123", "alumno": "Gian"}
 
-        ok, msg = E.subir(datos, sha, cfg, man)
+        ok, msg = E.subir(datos, sha, cfg, man, id_sesion)
         _ok("sube y el servidor la recibe", ok and len(_Servidor.recibido) == 1, msg)
         rec = _Servidor.recibido[0]
         _ok("manda el token en el header", rec["auth"] == "Bearer tok-123", rec["auth"])
-        _ok("manda el sha para deduplicar", rec["sha"] == sha, rec["sha"][:16])
+        _ok("manda el sha del zip (integridad)", rec["sha"] == sha, rec["sha"][:16])
+        _ok("manda la huella de sesion (identidad)", rec["id"] == id_sesion, rec["id"][:16])
         _ok("lo que llego es el zip completo", rec["bytes"] == len(datos), rec["bytes"])
         _ok("el servidor puede abrir lo que llego",
             zipfile.ZipFile(io.BytesIO(rec["cuerpo"])).testzip() is None)
 
-        # entregar dos veces no puede duplicar ni contar como falla
-        ok2, msg2 = E.subir(datos, sha, cfg, man)
-        _ok("entregar dos veces: se resuelve como exito, sin duplicar",
+        # Entregar dos veces no puede duplicar ni contar como falla. Y se prueba con
+        # el zip REEMPAQUETADO (datos_b), que es lo que pasa de verdad cuando el
+        # alumno reintenta: bytes distintos, misma sesion. Con el zip identico el
+        # test pasaba y el sistema duplicaba igual.
+        ok2, msg2 = E.subir(datos_b, sha_b, cfg, man, id_b)
+        _ok("reentrega con el zip reempaquetado: no duplica",
             ok2 and len(_Servidor.recibido) == 1, msg2)
 
         # el servidor caido no puede hacer que el alumno pierda la sesion
         E.REINTENTOS = 3
         _Servidor.fallar_veces = 2
         _Servidor.recibido = []
-        ok3, msg3 = E.subir(datos, sha + "x", cfg, man)
+        ok3, msg3 = E.subir(datos, sha, cfg, man, id_sesion[:-1] + "0")
         _ok("servidor intermitente: reintenta y termina entregando",
             ok3 and len(_Servidor.recibido) == 1, msg3)
 
         _Servidor.fallar_veces = 99
-        ok4, msg4 = E.subir(datos, sha + "y", cfg, man)
+        ok4, msg4 = E.subir(datos, sha, cfg, man, id_sesion[:-1] + "1")
         _ok("servidor caido del todo: falla claro, no en silencio",
             not ok4 and "intentos" in msg4, msg4)
         srv.shutdown()
@@ -170,7 +190,7 @@ def main():
         srv2 = HTTPServer(("127.0.0.1", 0), _Auth)
         threading.Thread(target=srv2.serve_forever, daemon=True).start()
         cfg2 = dict(cfg, url=f"http://127.0.0.1:{srv2.server_port}")
-        ok5, msg5 = E.subir(datos, sha, cfg2, man)
+        ok5, msg5 = E.subir(datos, sha, cfg2, man, id_sesion)
         _ok("token malo: no reintenta 4 veces, y dice como arreglarlo",
             not ok5 and "configurar" in msg5, msg5)
         srv2.shutdown()

@@ -145,11 +145,33 @@ def revisar(carpeta):
 
 
 # ---------------------------------------------------------------- empaquetado
-def empaquetar(carpeta, alumno=""):
-    """Zip en memoria con la sesion + un manifiesto. Devuelve (bytes, sha256, manifiesto).
+def huella(carpeta):
+    """Identidad de la SESION: hash de los archivos que la componen.
 
-    El manifiesto va DENTRO del zip a proposito: el servidor lo lee al desempaquetar
-    y no hay dos fuentes de verdad que se puedan contradecir.
+    No se usa el hash del zip para esto. El manifiesto lleva la hora de
+    empaquetado, asi que el zip sale distinto cada vez que se genera -- y el
+    servidor veia cada reintento como una sesion nueva y la duplicaba. Esto pasó
+    en produccion con un test en verde: el test comparaba el LARGO de los dos zips
+    (identico, porque el timestamp ocupa los mismos caracteres) en vez del hash.
+    """
+    h = hashlib.sha256()
+    for nombre in sorted(os.listdir(carpeta)):
+        ruta = os.path.join(carpeta, nombre)
+        if not os.path.isfile(ruta):
+            continue
+        h.update(nombre.encode("utf-8"))
+        with open(ruta, "rb") as f:
+            for bloque in iter(lambda: f.read(1 << 20), b""):
+                h.update(bloque)
+    return h.hexdigest()
+
+
+def empaquetar(carpeta, alumno=""):
+    """Zip en memoria con la sesion + un manifiesto.
+
+    Devuelve (bytes, sha_zip, id_sesion, manifiesto). El manifiesto va DENTRO del
+    zip a proposito: el servidor lo lee al desempaquetar y no hay dos fuentes de
+    verdad que se puedan contradecir.
     """
     _, _, resumen = revisar(carpeta)
     manifiesto = {
@@ -157,6 +179,7 @@ def empaquetar(carpeta, alumno=""):
         "alumno": alumno,
         "carpeta": os.path.basename(os.path.normpath(carpeta)),
         "generado": datetime.now().isoformat(timespec="seconds"),
+        "id_sesion": huella(carpeta),
         **resumen,
     }
     buf = io.BytesIO()
@@ -167,7 +190,7 @@ def empaquetar(carpeta, alumno=""):
             if os.path.isfile(ruta):
                 z.write(ruta, arcname=nombre)
     datos = buf.getvalue()
-    return datos, hashlib.sha256(datos).hexdigest(), manifiesto
+    return datos, hashlib.sha256(datos).hexdigest(), huella(carpeta), manifiesto
 
 
 # ---------------------------------------------------------------- registro local
@@ -182,6 +205,8 @@ def _registro():
 
 
 def _anotar(carpeta, sha, respuesta):
+    """El registro local guarda la HUELLA, no el sha del zip: si el alumno vuelve a
+    entregar la misma sesion tiene que reconocerse, aunque el zip salga distinto."""
     reg = _registro()
     reg[os.path.basename(os.path.normpath(carpeta))] = {
         "sha256": sha, "cuando": datetime.now().isoformat(timespec="seconds"),
@@ -194,11 +219,12 @@ def _anotar(carpeta, sha, respuesta):
 
 
 # ---------------------------------------------------------------- subida
-def subir(datos, sha, cfg, manifiesto):
+def subir(datos, sha, cfg, manifiesto, id_sesion=None):
     """POST con reintento y espera creciente. Devuelve (ok, mensaje).
 
-    El servidor responde 409 si ya tiene ese sha: entregar dos veces la misma sesion
-    no puede duplicarla ni contar como falla.
+    Manda DOS hashes: el del zip para que el servidor verifique que llego completo,
+    y el de la sesion para que sepa si ya la tiene. El servidor responde 409 si ya
+    la tenia: entregar dos veces no puede duplicarla ni contar como falla.
     """
     url = f"{cfg['url']}/v1/sesiones"
     espera = 2
@@ -208,6 +234,7 @@ def subir(datos, sha, cfg, manifiesto):
         req.add_header("Authorization", f"Bearer {cfg['token']}")
         req.add_header("Content-Type", "application/zip")
         req.add_header("X-Sesion-Sha256", sha)
+        req.add_header("X-Sesion-Id", id_sesion or manifiesto.get("id_sesion", ""))
         req.add_header("X-Sesion-Carpeta", manifiesto["carpeta"])
         try:
             ctx = ssl.create_default_context()
@@ -303,11 +330,11 @@ def main():
             continue
         if a.revisar:
             continue
-        datos, sha, manifiesto = empaquetar(carpeta, cfg.get("alumno", ""))
+        datos, sha, id_sesion, manifiesto = empaquetar(carpeta, cfg.get("alumno", ""))
         print(f"  subiendo {len(datos)/1024/1024:.1f} MB...")
-        ok, msg = subir(datos, sha, cfg, manifiesto)
+        ok, msg = subir(datos, sha, cfg, manifiesto, id_sesion)
         if ok:
-            _anotar(carpeta, sha, msg)
+            _anotar(carpeta, id_sesion, msg)
             print(f"  --> entregada: {msg}")
         else:
             print(f"  --> NO se pudo entregar: {msg}")
