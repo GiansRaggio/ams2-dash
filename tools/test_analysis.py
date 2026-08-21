@@ -290,6 +290,92 @@ def main():
     finally:
         shutil.rmtree(_b, ignore_errors=True)
 
+    print("\ntest evaluacion (del archivo crudo a la nota):")
+    _be = tempfile.mkdtemp(prefix="anaeval_")
+    _refdir_orig = A.REFDIR
+    try:
+        A.REFDIR = os.path.join(_be, "refs")          # no tocar las referencias reales
+        d = os.path.join(_be, "EV__Auto__practice__20260101_000000")
+        os.makedirs(d, exist_ok=True)
+        # el meta sale de session.json, no del nombre de la carpeta
+        with open(os.path.join(d, "session.json"), "w", encoding="utf-8") as f:
+            json.dump({"car": "Auto", "track": "EV", "track_variation": "EV"}, f)
+        tiempos = [90.0, 90.1, 89.95, 90.05, 90.0, 89.9, 90.1, 90.0]
+        with open(os.path.join(d, "summary.jsonl"), "w", encoding="utf-8") as f:
+            for i, t in enumerate(tiempos):
+                f.write(json.dumps({"lap": i + 1, "lap_time": t, "valid": True, "rain": 0.0,
+                                    "tc_setting": 2, "abs_setting": 3, "compound": "Soft",
+                                    "sectors": [30.0, 30.0, t - 60.0]}) + "\n")
+        with open(os.path.join(d, "timeline.jsonl"), "w", encoding="utf-8") as f:
+            for i in range(10):                        # 10 de pista, 2 invalidadas -> 20%
+                k = "invalid" if i < 2 else "flying"
+                f.write(json.dumps({"type": "lap", "lap": i + 1, "kind": k}) + "\n")
+
+        _ok("tasa de invalidacion sale del TIMELINE, no del summary",
+            A.tasa_invalidacion(d) and A.tasa_invalidacion(d)["pct"] == 20.0,
+            A.tasa_invalidacion(d))
+
+        # sin referencia ni pauta: no hay nota, y dice por que
+        e = A.evaluar(d)
+        _ok("sin lo que falta: NO inventa nota total", e["nota"] is None, e["nota"])
+        _ok("sin referencia: lo declara", any("tecnica" in x for x in e["faltantes"]),
+            e["faltantes"])
+        _ok("no normaliza sobre lo disponible", e.get("peso_cubierto", 0) < 1.0,
+            e.get("peso_cubierto"))
+
+        # con referencia guardada + pauta completa: nota entera
+        os.makedirs(A.REFDIR, exist_ok=True)
+        with open(os.path.join(A.REFDIR, "Auto__EV.json"), "w", encoding="utf-8") as f:
+            json.dump({"car": "Auto", "track": "EV", "lap": 1, "lap_time": 88.2,
+                       "sectors": [29.4, 29.4, 29.4],
+                       "cond": {"mojado": False, "tc": 2, "abs": 3, "compuesto": "Soft"}}, f)
+        e2 = A.evaluar(d, pauta={"racecraft": 80, "gestion": 70, "progreso": 60})
+        _ok("con todo: emite nota total", e2["nota"] is not None, e2["nota"])
+        _ok("con todo: cubre el 100% del peso", not e2["faltantes"], e2["faltantes"])
+        gap = e2["dimensiones"]["tecnica"]["valor"]
+        _ok("gap% contra la referencia", abs(gap - 100.0 * (89.9 - 88.2) / 88.2) < 0.05, gap)
+
+        # LA PRUEBA QUE IMPORTA: misma carpeta -> misma nota. Si dos instructores
+        # sacan numeros distintos con el mismo archivo, el instrumento no sirve.
+        e3 = A.evaluar(d, pauta={"racecraft": 80, "gestion": 70, "progreso": 60})
+        _ok("determinista: la misma sesion da la misma nota", e2["nota"] == e3["nota"],
+            (e2["nota"], e3["nota"]))
+
+        # referencia hecha en otras condiciones -> avisa que el gap no es limpio
+        with open(os.path.join(A.REFDIR, "Auto__EV.json"), "w", encoding="utf-8") as f:
+            json.dump({"car": "Auto", "track": "EV", "lap": 1, "lap_time": 88.2,
+                       "sectors": [29.4, 29.4, 29.4],
+                       "cond": {"mojado": False, "tc": 8, "abs": 8, "compuesto": "Soft"}}, f)
+        e4 = A.evaluar(d, pauta={"racecraft": 80, "gestion": 70, "progreso": 60})
+        _ok("referencia con otras ayudas: avisa que el gap no es limpio",
+            "aviso" in e4["dimensiones"]["tecnica"], e4["dimensiones"]["tecnica"])
+
+        # sesion que mezcla condiciones: se corta antes de calificar nada
+        d2 = os.path.join(_be, "MX__Auto__race__20260101_000000")
+        os.makedirs(d2, exist_ok=True)
+        with open(os.path.join(d2, "session.json"), "w", encoding="utf-8") as f:
+            json.dump({"car": "Auto", "track": "MX"}, f)
+        with open(os.path.join(d2, "summary.jsonl"), "w", encoding="utf-8") as f:
+            for i, t in enumerate(tiempos):
+                f.write(json.dumps({"lap": i + 1, "lap_time": t, "valid": True,
+                                    "rain": 0.0 if i < 4 else 0.5, "tc_setting": 2,
+                                    "abs_setting": 3,
+                                    "compound": "Soft" if i < 4 else "Wet"}) + "\n")
+        e5 = A.evaluar(d2, pauta={"racecraft": 80, "gestion": 70, "progreso": 60})
+        _ok("sesion mezclada: no califica ninguna dimension", not e5["dimensiones"],
+            list(e5["dimensiones"]))
+        _ok("sesion mezclada: sin nota", e5["nota"] is None)
+
+        # la escala no puede dar sorpresas en los bordes
+        _ok("nota: gap 0% -> 100", A._nota(0.0, A._ESCALA_GAP) == 100.0)
+        _ok("nota: gap enorme se ancla, no se va a negativo",
+            A._nota(50.0, A._ESCALA_GAP) == 20.0, A._nota(50.0, A._ESCALA_GAP))
+        _ok("nota: interpola entre cortes", 85.0 > A._nota(2.75, A._ESCALA_GAP) > 70.0,
+            A._nota(2.75, A._ESCALA_GAP))
+    finally:
+        A.REFDIR = _refdir_orig
+        shutil.rmtree(_be, ignore_errors=True)
+
     print("\ntest comparabilidad (que dos vueltas se puedan comparar de verdad):")
     _bc = tempfile.mkdtemp(prefix="anacmp_")
     try:

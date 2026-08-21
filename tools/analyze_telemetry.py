@@ -1087,6 +1087,161 @@ def reference_struct(folder):
             "your_lap": ss["best_lap_time"], "sector_deltas": [round(your[i] - rsec[i], 2) for i in range(3)]}
 
 
+# --- Del archivo crudo a la nota -------------------------------------------------
+# La prueba de que esto esta terminado no es que corra: es que cinco instructores
+# distintos, con la misma carpeta, saquen la MISMA nota. Por eso todo lo que se
+# puede medir se mide aca y lo que no, se declara faltante -- nunca se rellena.
+
+# Escalas: valor de la metrica -> nota 0..100, interpolando entre los cortes que
+# fija docs/evaluacion.md. Los cortes son provisionales (salen del corpus de un
+# solo piloto rapido), y por eso viven en UN lugar y no repartidos por el codigo.
+_ESCALA_GAP = [(0.0, 100.0), (2.0, 85.0), (3.5, 70.0), (5.0, 55.0), (8.0, 20.0)]
+_ESCALA_CV = [(0.0, 100.0), (0.3, 85.0), (0.7, 70.0), (1.5, 55.0), (3.0, 20.0)]
+_ESCALA_INVAL = [(0.0, 100.0), (5.0, 85.0), (15.0, 60.0), (30.0, 30.0), (50.0, 0.0)]
+
+
+def _nota(valor, escala):
+    """Interpola linealmente entre los cortes. Fuera de rango, se ancla al extremo."""
+    if valor is None:
+        return None
+    if valor <= escala[0][0]:
+        return escala[0][1]
+    for (x0, y0), (x1, y1) in zip(escala, escala[1:]):
+        if valor <= x1:
+            t = (valor - x0) / (x1 - x0) if x1 > x0 else 0.0
+            return round(y0 + t * (y1 - y0), 1)
+    return escala[-1][1]
+
+
+def tasa_invalidacion(folder):
+    """% de vueltas de pista que se invalidaron por limites. La UNICA metrica
+    objetiva de limpieza que existe hoy -- y hay que leerla del timeline, porque el
+    summary.jsonl excluye las vueltas sucias y ahi la tasa daria 0% siempre."""
+    tl = _load_timeline(folder)
+    de_pista = [r for r in tl if r.get("type") == "lap"
+                and r.get("kind") in ("flying", "invalid", "out", "short")]
+    if not de_pista:
+        return None
+    malas = [r for r in de_pista if r.get("kind") == "invalid"]
+    return {"n": len(de_pista), "invalidas": len(malas),
+            "pct": round(100.0 * len(malas) / len(de_pista), 1)}
+
+
+def evaluar(folder, pauta=None):
+    """Nota de una sesion, con lo medible calculado y lo no medible declarado.
+
+    `pauta` son los puntajes 0-100 que pone el instructor donde la telemetria no
+    llega (racecraft observado, decision estrategica). Sin ellos la nota total NO
+    se emite: normalizar sobre las dimensiones disponibles seria repartir en
+    silencio el peso de lo que falta, y dos instructores sacarian numeros
+    distintos sin darse cuenta.
+    """
+    pauta = pauta or {}
+    # `nota` se inicializa aca a proposito: hay caminos que retornan temprano (la
+    # sesion mezcla condiciones) y sin esto el dict salia a veces con la clave y a
+    # veces sin ella. Un consumidor que haga e["nota"] revienta en el caso raro,
+    # que es justo el que menos se prueba a mano.
+    out = {"sesion": os.path.basename(folder), "dimensiones": {}, "faltantes": [],
+           "nota": None, "peso_cubierto": 0.0}
+
+    # --- comparabilidad primero: si la sesion mezcla condiciones, no se califica
+    dom, avisos = comparabilidad(folder)
+    duros = [a for a in avisos if "CAMBIO" in a]
+    out["condiciones"] = _cond_texto(dom) if dom else None
+    if duros:
+        out["faltantes"].append("la sesion mezcla condiciones y no es calificable: "
+                                + "; ".join(duros))
+        return out
+
+    # --- TECNICA 25%: gap% contra la referencia guardada
+    ref = load_reference(folder)
+    cl = clean_laps(folder)
+    if ref and ref.get("lap_time") and cl.get("best_lap_time"):
+        gap = 100.0 * (cl["best_lap_time"] - ref["lap_time"]) / ref["lap_time"]
+        d = {"metrica": "gap%", "valor": round(gap, 2), "nota": _nota(max(gap, 0.0), _ESCALA_GAP),
+             "peso": 0.25, "ref_s": ref["lap_time"], "tuyo_s": round(cl["best_lap_time"], 3)}
+        rc = ref.get("cond")
+        if rc and dom and any(rc.get(k) != dom.get(k) for k in ("mojado", "tc", "abs", "compuesto")
+                              if rc.get(k) is not None and dom.get(k) is not None):
+            d["aviso"] = (f"la referencia se corrio en otras condiciones "
+                          f"({_cond_texto(rc)}): el gap no es limpio")
+        out["dimensiones"]["tecnica"] = d
+    else:
+        out["faltantes"].append("tecnica: falta la referencia guardada de este combo "
+                                "(sin referencia no hay gap%)")
+
+    # --- CONSISTENCIA 20%: CV%
+    c = consistency_struct(folder)
+    if c and c["califica"]:
+        out["dimensiones"]["consistencia"] = {
+            "metrica": "CV%", "valor": c["cv_pct"], "nota": _nota(c["cv_pct"], _ESCALA_CV),
+            "peso": 0.20, "incidentes": c["incidentes"]}
+    else:
+        out["faltantes"].append("consistencia: " + (c["veredicto"] if c else
+                                "no hay vueltas cronometradas suficientes"))
+
+    # --- RACECRAFT 20%: 25% medido (invalidacion) + 75% pauta del instructor
+    inv = tasa_invalidacion(folder)
+    obs = pauta.get("racecraft")
+    if inv is not None and obs is not None:
+        n_inv = _nota(inv["pct"], _ESCALA_INVAL)
+        out["dimensiones"]["racecraft"] = {
+            "metrica": "invalidacion% (25%) + pauta (75%)",
+            "valor": inv["pct"], "nota": round(0.25 * n_inv + 0.75 * float(obs), 1),
+            "peso": 0.20, "nota_medida": n_inv, "nota_pauta": float(obs)}
+    else:
+        que = []
+        if inv is None:
+            que.append("no hay linea de tiempo para contar vueltas invalidadas")
+        if obs is None:
+            que.append("falta el puntaje observado por el instructor (pauta['racecraft'])")
+        out["faltantes"].append("racecraft: " + " y ".join(que))
+
+    # --- GESTION 15% y PROGRESO 20%: hoy no salen de una sola sesion
+    if pauta.get("gestion") is not None:
+        out["dimensiones"]["gestion"] = {"metrica": "pauta", "valor": None,
+                                         "nota": float(pauta["gestion"]), "peso": 0.15}
+    else:
+        out["faltantes"].append("gestion: falta el puntaje del instructor "
+                                "(la decision estrategica no se puede contrastar contra un optimo)")
+    if pauta.get("progreso") is not None:
+        out["dimensiones"]["progreso"] = {"metrica": "combo ancla", "valor": None,
+                                          "nota": float(pauta["progreso"]), "peso": 0.20}
+    else:
+        out["faltantes"].append("progreso: se mide entre sesiones del combo ancla, "
+                                "no dentro de una sola")
+
+    # --- total: SOLO si estan las cinco. Nada de normalizar sobre lo disponible.
+    pesos = sum(d["peso"] for d in out["dimensiones"].values())
+    if abs(pesos - 1.0) < 1e-6:
+        out["nota"] = round(sum(d["nota"] * d["peso"] for d in out["dimensiones"].values()), 1)
+    else:
+        out["nota"] = None
+        out["peso_cubierto"] = round(pesos, 2)
+    return out
+
+
+def report_evaluacion(folder, pauta=None):
+    """Imprime la nota, y sobre todo QUE FALTA para poder darla."""
+    e = evaluar(folder, pauta)
+    print(f"\n=== Evaluacion · {e['sesion']} ===")
+    if e.get("condiciones"):
+        print(f"  condiciones: {e['condiciones']}")
+    for nombre, d in e["dimensiones"].items():
+        v = f"{d['valor']}" if d.get("valor") is not None else "-"
+        print(f"  {nombre:<13} {d['metrica']:<32} {v:>8}   nota {d['nota']:>5.1f}  (peso {d['peso']:.0%})")
+        if d.get("aviso"):
+            print(f"                 !! {d['aviso']}")
+    if e["nota"] is not None:
+        print(f"\n  NOTA: {e['nota']:.1f} / 100")
+    else:
+        print(f"\n  SIN NOTA TOTAL — cubierto {e.get('peso_cubierto', 0):.0%} del peso.")
+        print("  No se normaliza sobre lo disponible: repartir en silencio el peso de")
+        print("  lo que falta hace que dos instructores saquen numeros distintos.")
+    for f in e["faltantes"]:
+        print(f"    falta -> {f}")
+
+
 def _sector_bounds(folder):
     """Distancia donde terminan S1 y S2, desde la vuelta de referencia (sus sector times)."""
     rec = clean_laps(folder)["ref"]
@@ -1777,6 +1932,8 @@ def main():
                     help="gomas (beta): presion termica + camber por rueda sobre las vueltas limpias")
     ap.add_argument("--balance", action="store_true",
                     help="balance sobre/subviraje por curva + momento de inestabilidad (slip por rueda)")
+    ap.add_argument("--evaluar", action="store_true",
+                    help="nota de la sesion, y que falta para poder darla")
     ap.add_argument("--consistencia", action="store_true",
                     help="CV%% de la tanda: la metrica con la que se califica consistencia")
     ap.add_argument("--frenadas", action="store_true",
@@ -1860,6 +2017,8 @@ def main():
         report_tyres(folder)
     elif a.balance:
         report_balance(folder)
+    elif a.evaluar:
+        report_evaluacion(folder)
     elif a.consistencia:
         report_consistency(folder)
     elif a.frenadas:
