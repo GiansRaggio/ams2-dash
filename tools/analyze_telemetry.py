@@ -686,6 +686,134 @@ def report_braking(folder):
               "frenar SIEMPRE ahi.")
 
 
+def _slope_robusta(ys):
+    """Pendiente por Theil-Sen: la MEDIANA de las pendientes entre todos los pares.
+
+    `_slope` (minimos cuadrados) sirve para una tendencia limpia, pero acá se usa
+    para destendenciar antes de medir dispersion, y ahi un incidente la arruina:
+    medido en Taruma, dos vueltas con problema (85.1 y 84.9 contra un ritmo de 80.4)
+    le metian una pendiente falsa de -0.43 s/vuelta, los residuos contra esa recta
+    explotaban, y el filtro de anomalias dejaba de verlas porque la recta pasaba
+    cerca de ellas. Es el mismo patron que ya documentamos para el sigma: el outlier
+    no puede definir la escala con la que se lo detecta.
+    """
+    n = len(ys)
+    if n < 2:
+        return 0.0
+    ps = [(ys[j] - ys[i]) / (j - i) for i in range(n) for j in range(i + 1, n)]
+    return st.median(ps) if ps else 0.0
+
+
+def _mad(v):
+    """Desviacion robusta: 1.4826 * MAD. El factor la deja comparable con el sigma
+    de una normal, pero sin que un solo incidente defina la escala."""
+    if len(v) < 2:
+        return 0.0
+    med = st.median(v)
+    return 1.4826 * st.median([abs(x - med) for x in v])
+
+
+def consistency_struct(folder, n=8, minimo=6):
+    """CONSISTENCIA como coeficiente de variacion, que es lo que se califica.
+
+    NO es el sigma en segundos de `report_session`: 0.5 s en un circuito de 1:15 es
+    otra cosa que 0.5 s en uno de 3:30, asi que el sigma no compara entre pistas y
+    el CV si. La escuela evalua alumnos en combos distintos -> tiene que ser
+    adimensional o no significa nada.
+
+    Reglas, y cada una tiene su porque:
+      - Las PRIMERAS `n` vueltas cronometradas, en orden. No las mas rapidas: el
+        minimo de una muestra mejora solo por tener mas intentos, asi que elegir
+        despues de ver los numeros premia al que giro mas.
+      - El filtro de anomalias va sobre los RESIDUOS de la recta, no sobre los
+        tiempos crudos. Filtrar en crudo se come la deriva legitima (gomas,
+        combustible, cansancio) tratandola como error, y mejora el CV solo.
+      - PROHIBIDO el filtro `best * 1.03` de clean_laps(): acota la dispersion por
+        construccion. Medido en el corpus, baja el CV p90 de 2.47% a 0.92%.
+      - Bajo `minimo` vueltas no se califica. Con 4 puntos el MAD no distingue nada.
+
+    Devuelve None si no hay dato suficiente.
+    """
+    _, laps = _load(folder)
+    t = [l["lap_time"] for l in laps if l.get("lap_time")][:n]
+    if len(t) < minimo:
+        return None
+    idx = list(range(len(t)))
+    b = _slope_robusta(t)                          # s por vuelta, inmune a incidentes
+    # intercepto tambien robusto: mediana de los residuos parciales, no la media
+    a = st.median([t[i] - b * i for i in idx])
+    res = [t[i] - (a + b * i) for i in idx]
+    # anomalias por residuo: un incidente se aparta de la TENDENCIA, no de la media
+    sr = _mad(res)
+    fuera = [i for i in idx if sr > 0 and abs(res[i]) > 5.0 * sr]
+    buenas = [t[i] for i in idx if i not in fuera]
+    if len(buenas) < minimo:
+        buenas, fuera = t, []
+    med = st.median(buenas)
+    if med <= 0:
+        return None
+    cv = 100.0 * _mad(buenas) / med
+    # el mismo CV pero alrededor de la recta: si cae mucho, el problema es
+    # degradacion (se va cayendo), no falta de repetibilidad.
+    res_b = [res[i] for i in idx if i not in fuera]
+    cv_dest = 100.0 * _mad(res_b) / med
+    # Deriva RELATIVA: -1.2 s/vuelta es enorme en un circuito de 1:36 y despreciable
+    # en uno de 6:30. Igual que con el CV, en segundos no compara entre pistas.
+    deriva_pct = 100.0 * b / med
+    # Una tanda con deriva fuerte NO mide consistencia, y el signo importa:
+    #   mejora fuerte  -> el alumno todavia esta aprendiendo el circuito. Marcarlo
+    #                     "disperso" es juzgarlo por estar haciendo justo lo que
+    #                     queremos. La tanda no sirve para calificar: se pide otra.
+    #   caida fuerte   -> degradacion (gomas, combustible, cansancio). Es un problema
+    #                     real pero distinto, y se trabaja distinto.
+    # "Aprendiendo" = baja tiempos de forma sostenida Y esa tendencia explica buena
+    # parte de su dispersion. Las dos condiciones juntas, o un alumno consistente que
+    # ademas mejora un poco quedaria sin nota sin motivo.
+    aprendiendo = deriva_pct <= -0.15 and cv_dest < cv * 0.6
+    degradando = deriva_pct >= 0.15
+    if aprendiendo:
+        veredicto = "sin veredicto: todavia aprendiendo el circuito"
+    else:
+        veredicto = ("excelente" if cv <= 0.3 else "buena" if cv <= 0.7
+                     else "en desarrollo" if cv <= 1.5 else "dispersa")
+    return {"n": len(buenas), "n_pedidas": n, "incidentes": len(fuera),
+            "cv_pct": round(cv, 3), "cv_destendenciado_pct": round(cv_dest, 3),
+            "deriva_s_vuelta": round(b, 3), "deriva_pct_vuelta": round(deriva_pct, 3),
+            "aprendiendo": aprendiendo, "degradando": degradando,
+            "califica": not aprendiendo, "mediana_s": round(med, 3),
+            "mejor_s": round(min(buenas), 3),
+            "tiempos": [round(x, 3) for x in t],
+            "veredicto": veredicto}
+
+
+def report_consistency(folder):
+    """Imprime el CV de la tanda y separa dispersion de degradacion."""
+    c = consistency_struct(folder)
+    if not c:
+        print("\n  (sin datos de consistencia: se necesitan 6+ vueltas cronometradas)")
+        return
+    print("\n=== Consistencia (que tan parejas son tus vueltas) ===")
+    print(f"  CV {c['cv_pct']:.2f}%  ->  {c['veredicto']}"
+          f"   (sobre {c['n']} vueltas, mediana {_fmt_t(c['mediana_s']).strip()})")
+    if c["incidentes"]:
+        print(f"  {c['incidentes']} vuelta(s) apartada(s) como incidente: se reportan, no promedian")
+    d, dp = c["deriva_s_vuelta"], c["deriva_pct_vuelta"]
+    if abs(dp) >= 0.05:
+        que = "te vas cayendo" if d > 0 else "vas bajando tiempos"
+        print(f"  tendencia {d:+.2f} s/vuelta ({dp:+.2f}%/vuelta): {que}")
+    if not c["califica"]:
+        print(f"  NO CALIFICA como consistencia: sin la tendencia el CV baja a "
+              f"{c['cv_destendenciado_pct']:.2f}%.")
+        print("  Estas mejorando dentro de la tanda, o sea todavia aprendiendo el")
+        print("  circuito. Repite la tanda cuando el ritmo se estabilice.")
+    elif c["degradando"] and c["cv_destendenciado_pct"] < c["cv_pct"] * 0.6:
+        print(f"  ojo: sin la tendencia el CV baja a {c['cv_destendenciado_pct']:.2f}% "
+              f"-> el problema es DEGRADACION, no falta de repetibilidad.")
+        print("  (gomas, combustible o cansancio. Se trabaja distinto que la consistencia.)")
+    print("  escala:  <=0.3 excelente · 0.3-0.7 buena · 0.7-1.5 en desarrollo · >1.5 dispersa")
+    print("  (el CV es adimensional a proposito: el sigma en segundos no compara entre pistas)")
+
+
 def clean_laps(folder):
     """Vueltas limpias representativas (lap_time <= best*1.03). Devuelve los REGISTROS (no
     solo numeros) para identificar cada vuelta por su traza unica -> no confunde vueltas que
@@ -1541,6 +1669,8 @@ def main():
                     help="gomas (beta): presion termica + camber por rueda sobre las vueltas limpias")
     ap.add_argument("--balance", action="store_true",
                     help="balance sobre/subviraje por curva + momento de inestabilidad (slip por rueda)")
+    ap.add_argument("--consistencia", action="store_true",
+                    help="CV%% de la tanda: la metrica con la que se califica consistencia")
     ap.add_argument("--frenadas", action="store_true",
                     help="punto de frenada de cada curva y que tan repetible es (referencias)")
     ap.add_argument("--saturacion", action="store_true",
@@ -1622,6 +1752,8 @@ def main():
         report_tyres(folder)
     elif a.balance:
         report_balance(folder)
+    elif a.consistencia:
+        report_consistency(folder)
     elif a.frenadas:
         report_braking(folder)
     elif a.saturacion:

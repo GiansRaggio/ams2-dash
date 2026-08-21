@@ -232,6 +232,64 @@ def main():
     _ok("None si falta lap_time", A._lap_sectors({"sectors": [10, 10, 10]}) is None)
     _ok("None si S1 recuperado da <=0", A._lap_sectors({"lap_time": 50.0, "sectors": [0.02, 30.0, 30.0]}) is None)
 
+    print("\ntest consistencia (CV%, la metrica con la que se califica):")
+
+    def _sesion_cv(base, tiempos):
+        """Sesion minima: solo summary.jsonl, que es de donde sale el CV."""
+        d = os.path.join(base, "CV__Auto__practice__20260101_000000")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "summary.jsonl"), "w", encoding="utf-8") as f:
+            for i, t in enumerate(tiempos):
+                f.write(json.dumps({"lap": i + 1, "lap_time": t, "valid": True}) + "\n")
+        return d
+
+    _b = tempfile.mkdtemp(prefix="anacv_")
+    try:
+        # 1) Ritmo parejo con DOS incidentes al principio. Es el caso real de Taruma:
+        #    el MAD ignora bien los outliers, pero una pendiente por minimos cuadrados
+        #    se deja arrastrar por ellos, inventa una tendencia y arruina el resto.
+        c = A.consistency_struct(_sesion_cv(_b, [80.4, 85.1, 84.9, 80.4, 80.1, 80.5, 80.6, 80.4]))
+        _ok("incidentes: los aparta en vez de promediarlos", c and c["incidentes"] == 2,
+            c and c["incidentes"])
+        _ok("incidentes: el CV queda bajo (ritmo real parejo)", c and c["cv_pct"] < 0.5,
+            c and c["cv_pct"])
+        _ok("incidentes: NO inventa tendencia", c and abs(c["deriva_pct_vuelta"]) < 0.15,
+            c and c["deriva_pct_vuelta"])
+        _ok("incidentes: califica igual", c and c["califica"], c and c["veredicto"])
+
+        # 2) Mejora sostenida: no es dispersion, es que todavia esta aprendiendo el
+        #    circuito. Marcarlo "disperso" seria penalizarlo por mejorar.
+        c2 = A.consistency_struct(_sesion_cv(_b, [105.0, 104.0, 103.0, 102.0, 101.0,
+                                                  100.0, 99.0, 98.0]))
+        _ok("mejorando: no califica como consistencia", c2 and not c2["califica"],
+            c2 and c2["veredicto"])
+        _ok("mejorando: lo detecta por el signo", c2 and c2["deriva_pct_vuelta"] < 0,
+            c2 and c2["deriva_pct_vuelta"])
+
+        # 3) Degradacion: SI califica, pero avisa que el problema es otro.
+        c3 = A.consistency_struct(_sesion_cv(_b, [98.0, 99.0, 100.0, 101.0, 102.0,
+                                                  103.0, 104.0, 105.0]))
+        _ok("degradando: califica", c3 and c3["califica"], c3 and c3["veredicto"])
+        _ok("degradando: lo marca", c3 and c3["degradando"], c3 and c3["deriva_pct_vuelta"])
+
+        # 4) Consistente de verdad
+        c4 = A.consistency_struct(_sesion_cv(_b, [90.0, 90.1, 89.9, 90.05, 90.0,
+                                                  89.95, 90.1, 90.0]))
+        _ok("parejo: CV bajo y veredicto excelente",
+            c4 and c4["cv_pct"] < 0.3 and c4["veredicto"] == "excelente",
+            c4 and (c4["cv_pct"], c4["veredicto"]))
+
+        # 5) Muestra corta: sin veredicto, no un numero inventado
+        _ok("bajo 6 vueltas: None", A.consistency_struct(_sesion_cv(_b, [90.0, 90.1, 89.9])) is None)
+
+        # 6) La pendiente robusta es el nucleo del arreglo
+        _ok("Theil-Sen ignora el outlier", abs(A._slope_robusta([10, 10, 10, 99, 10, 10])) < 0.6,
+            A._slope_robusta([10, 10, 10, 99, 10, 10]))
+        _ok("Theil-Sen ve la tendencia real", abs(A._slope_robusta([10, 11, 12, 13, 14]) - 1.0) < 0.01,
+            A._slope_robusta([10, 11, 12, 13, 14]))
+    finally:
+        shutil.rmtree(_b, ignore_errors=True)
+
     print("\ntest vuelta ideal: NO se rescatan sectores de vueltas sucias:")
     _b = tempfile.mkdtemp(prefix="anaideal_")
     try:
