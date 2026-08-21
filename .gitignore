@@ -10,3 +10,7 @@ telemetry_importado/
 references/
 player.txt
 tyre_targets.json
+
+# Config de entrega del alumno: lleva su TOKEN personal. Nunca al repo.
+entrega.json
+telemetry/.entregado.json
