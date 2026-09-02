@@ -175,13 +175,19 @@ def _label(b):
 class TelemetryLogger:
     """Graba la traza completa de cada vuelta valida en disco (CSV gz + resumen)."""
 
-    def __init__(self, base_dir=TELEM_DIR, rate_hz=RATE_HZ):
+    def __init__(self, base_dir=TELEM_DIR, rate_hz=RATE_HZ, on_close=None):
         self._lock = threading.Lock()
         self._stop = False
         self._thread = None
         self._mode = "full"       # "off" | "summary" (liviano) | "full" (traza completa)
         self._base = base_dir
         self._period = 1.0 / rate_hz
+        # Aviso de "esta carpeta ya se cerro": lo consume la bandeja de entrega. Se
+        # anota dentro del lock al rotar y se DRENA en _run fuera del lock, porque
+        # _ingest tiene un return temprano dentro del lock y un callback al final del
+        # metodo se saltaria. Ademas asi el callback nunca corre con el lock tomado.
+        self._on_close = on_close
+        self._cerrada = None
         # stats expuestas al frontend
         self._laps_logged = 0
         self._last_file = None
@@ -229,6 +235,29 @@ class TelemetryLogger:
     def set_enabled(self, on):
         self.set_mode("full" if on else "off")   # compat con el toggle viejo
 
+    def set_on_close(self, cb):
+        """Registra quien recibe la carpeta cerrada. Setter y no solo argumento del
+        constructor porque la bandeja necesita a su vez `sess_dir()` de este objeto:
+        el cableado es circular y alguien tiene que ir segundo."""
+        with self._lock:
+            self._on_close = cb
+
+    def sess_dir(self):
+        """Carpeta de la sesion EN CURSO (o None). La bandeja la usa para no empaquetar
+        jamas la carpeta que todavia se esta escribiendo."""
+        with self._lock:
+            return self._sess_dir
+
+    def _drenar_cerrada(self):
+        with self._lock:
+            carpeta, self._cerrada = self._cerrada, None
+            cb = self._on_close
+        if carpeta and cb:
+            try:
+                cb(carpeta)               # solo encola: el trabajo pesado es del otro hilo
+            except Exception:
+                pass                      # un fallo de la bandeja no puede tocar al grabador
+
     def status(self):
         with self._lock:
             return {
@@ -266,6 +295,7 @@ class TelemetryLogger:
                 self._ingest(d)
             except Exception:
                 pass                      # nunca tumbar el hilo por un error de I/O
+            self._drenar_cerrada()        # fuera del lock, y aunque _ingest haya retornado antes
             time.sleep(self._period if mode == "full" else 0.1)   # full 50Hz, summary ~10Hz
 
     def _ingest(self, d):
@@ -288,6 +318,11 @@ class TelemetryLogger:
             sig = (bytes(d.mTrackLocation), bytes(d.mCarName), int(d.mSessionState))
             if sig != self._sig:
                 self._write_rivals()      # cerrar el registro de la sesion que se va
+                # Este es el UNICO punto donde una carpeta esta demostrablemente cerrada:
+                # nada mas le va a entrar. Por eso la bandeja se engancha aca y no en un
+                # timer -- una sesion que se sube mientras crece se duplica en el servidor.
+                if self._sess_dir:
+                    self._cerrada = self._sess_dir
                 self._rotate_session(d, sig)
             self._track_rivals(d, v)      # acumula en memoria; se escribe al cerrar vuelta
 

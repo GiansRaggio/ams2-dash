@@ -44,6 +44,14 @@ except Exception as _e:                              # noqa: BLE001
     ams2_analysis = None
     _ANALISIS_ERR = _e
 
+# La bandeja de entrega (subir sesiones a la escuela) es igual de accesoria: si el
+# modulo falta o revienta al importar, el dash sigue y el estado dice "off".
+try:
+    import entrega_cola
+except Exception as _e:                              # noqa: BLE001
+    entrega_cola = None
+    _ENTREGA_ERR = _e
+
 WS_PORT = 8765
 HTTP_PORT = 8080
 
@@ -164,6 +172,7 @@ state = {
     "leaderboard": [],   # [{pos, name, best, last, lap, me}] top-N por posicion
     "strategy": {"calibrating": True, "live": False, "mode": "none"},   # director de estrategia
     "tyres": {"live": False, "corners": []},   # gomas: temps por zona, presion, desgaste
+    "entrega": {"estado": "off"},   # bandeja de entrega a la escuela; "off" = modulo ausente
 }
 
 # Director de estrategia (combustible/neumaticos/paradas). Se alimenta del mismo
@@ -176,6 +185,13 @@ tyres = ams2_tyres.TyreAnalyzer()
 
 # Logger de telemetria por vuelta (corre su propio hilo+reader; se crea en main()).
 telemetry = None
+
+# Bandeja de entrega (hilo propio; se crea en main() si el modulo cargo y hay logger).
+cola = None
+# El jugador esta manejando ahora mismo. Lo lee la bandeja para NO empaquetar ni subir
+# con el auto en pista: el zip+sha256 es CPU en Python y se lleva el GIL, y esta medido
+# que la presion del dash tira el juego de 160 a 60 fps (ver ams2_telemetry).
+_EN_PISTA = False
 
 # Anclaje al auto del JUGADOR (mismo helper que recorder/estrategia): en MP la camara
 # (mViewedParticipantIndex) sigue a otros autos, no a ti. Se lee una vez al arrancar.
@@ -294,7 +310,7 @@ def _frame_ok(d):
 
 def update_state(d):
     """Vuelca un snapshot de shared memory (d) al dict global `state`."""
-    global _last_seq, _last_seq_change
+    global _last_seq, _last_seq_change, _EN_PISTA
     now = time.monotonic()
     if not _frame_ok(d):                         # frame corrupto -> conservar ultimo bueno
         state["connected"] = False
@@ -305,6 +321,7 @@ def update_state(d):
         _last_seq_change = now
     fresh = (now - _last_seq_change) < 1.5
     state["connected"] = bool(fresh and d.mGameState in _LIVE_STATES)
+    _EN_PISTA = bool(fresh and d.mGameState == ams2_shm.GAME_INGAME_PLAYING)
 
     cap = d.mFuelCapacity
     state["speed_kmh"] = round(d.mSpeed * 3.6)
@@ -407,6 +424,11 @@ def update_state(d):
             state["telemetry"] = telemetry.status()
         except Exception:
             pass
+    if cola is not None:
+        try:
+            state["entrega"] = cola.status()     # copia precomputada: cero I/O a 30 Hz
+        except Exception:
+            pass   # nunca tumbar el broadcast por la bandeja
 
 
 # ---------------- WebSocket + HTTP ----------------
@@ -452,6 +474,27 @@ async def ws_handler(ws):
                         telemetry.set_mode(m)
                     else:
                         telemetry.set_enabled(bool(msg.get("on", True)))
+            # Bandeja de entrega. Los tres comandos solo ENCOLAN o cambian config: el
+            # trabajo pesado lo hace el hilo de la bandeja, nunca este handler (que vive
+            # en el event loop y no puede bloquearse sin que el watchdog reinicie todo).
+            elif cmd == "entregar":
+                if cola is not None:
+                    try:
+                        cola.entregar_ahora(msg.get("carpeta") or None)
+                    except Exception as e:
+                        log(f"[entrega] entregar: {e}")
+            elif cmd == "set_entrega_auto":
+                if cola is not None:
+                    try:
+                        cola.set_auto(bool(msg.get("on", False)))
+                    except Exception as e:
+                        log(f"[entrega] set_auto: {e}")
+            elif cmd == "entrega_recargar":
+                if cola is not None:
+                    try:
+                        cola.recargar_config()
+                    except Exception as e:
+                        log(f"[entrega] recargar: {e}")
     finally:
         CLIENTS.discard(ws)
 
@@ -645,9 +688,27 @@ def serve_http():
 
 
 async def main():
-    global analyzer, telemetry
+    global analyzer, telemetry, cola
     analyzer = ams2_dampers.DamperAnalyzer().start()
     telemetry = ams2_telemetry.TelemetryLogger().start()
+    # Bandeja de entrega: el grabador le avisa cada carpeta que cierra (set_on_close) y
+    # ella le pregunta cual es la sesion en curso (sess_dir) para no tocarla jamas. Si
+    # algo de esto falla, `cola` queda en None y el dash publica entrega "off".
+    if entrega_cola is not None:
+        try:
+            cola = entrega_cola.ColaEntrega(
+                base_dir=ams2_telemetry.TELEM_DIR,
+                sess_dir_actual=telemetry.sess_dir,
+                en_pista=lambda: _EN_PISTA,
+                log=log)
+            telemetry.set_on_close(cola.encolar)
+            cola.start()
+            log("[entrega] bandeja activa")
+        except Exception as e:
+            cola = None
+            log(f"[entrega] bandeja desactivada: {e}")
+    else:
+        log(f"[entrega] modulo ausente: {_ENTREGA_ERR}")
     threading.Thread(target=serve_http, daemon=True).start()
     # Vigilante del event loop: hilo del SO aparte, para que siga corriendo aunque el
     # loop se cuelgue (que es justo el modo de falla que hay que cazar).

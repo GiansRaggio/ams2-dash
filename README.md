@@ -192,9 +192,22 @@ fullscreen como una app.
 Cada sesión queda **autocontenida** en una carpeta
 `telemetry/<pista>__<auto>__<sesión>__<fecha>/`: metadatos (`session.json`),
 resumen por vuelta (`summary.jsonl`), línea de tiempo (`timeline.jsonl`) y una
-traza completa por vuelta (`L###_<tiempo>s.csv.gz`, ~95 canales a 50 Hz; las
-vueltas invalidadas van como `X###`). Para enviarla, **comprime la carpeta
-completa y mándala** — el coach la deja en su `telemetry/` y la ve en el visor
+traza completa por vuelta (`L###_<tiempo>s.csv.gz`, 107 canales a 50 Hz; las
+vueltas invalidadas van como `X###`).
+
+**Si eres alumno de la escuela, la entrega va desde el dash.** Una vez (con la
+credencial que te dio tu instructor): `python entrega.py --configurar`. Desde
+ahí, cada sesión que cierras queda **lista en la bandeja**: en el dash, en ⚙,
+aparece "1 lista para entregar" y un botón **Entregar**. La tocas, confirmas, y
+listo — el dash empaqueta, sube, reintenta si no hay internet, y marca
+"✓ entregada". Nunca sube la sesión en curso, y nunca sube nada que tú no
+hayas tocado. Si prefieres que suba sola todo lo que cierres, prende el switch
+**auto** en la misma fila (viene apagado a propósito: el dash también graba tus
+carreras que no son de la escuela). Lo mismo por línea de comando, si lo
+prefieres: `python entrega.py` entrega la última sesión.
+
+**Para compartir con otro piloto** (no con la escuela): comprime la carpeta y
+mándala — la deja en su `telemetry/` y la ve en el visor
 (`http://<su-ip>:8080/analisis.html`) con mapa de pista, curvas numeradas,
 comparación entre vueltas y delta de tiempo.
 

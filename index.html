@@ -427,6 +427,33 @@
   .rcfgtellbl{font-size:clamp(11px,1.8vh,16px);color:var(--dim);letter-spacing:.06em}
   .rcfgteltabs .rcfgtab{font-size:clamp(11px,1.9vh,16px);padding:.7vh 3vw}
 
+  /* ---- fila de ENTREGA a la escuela (bandeja) ----
+     Vive dentro de #racecfg, no en #ctrlbar: el telefono va montado en el volante
+     y esto sube archivos a un servidor externo (ver comentario de la l. 132). */
+  #racecfg .modalbox{max-height:92vh;overflow-y:auto}   /* la fila nueva no empuja Guardar fuera de pantalla */
+  #entest{font-size:clamp(11px,1.9vh,16px);line-height:1.35;max-width:80vw;color:var(--txt)}
+  #entest.dim{color:var(--dim)}
+  #entest.ok{color:var(--green)}
+  #entest.err{color:var(--red)}
+  #entest.busy{color:var(--amber)}
+  #entdetalle{font-size:clamp(10px,1.6vh,14px);color:var(--dim);line-height:1.3;
+              max-width:80vw;white-space:pre-line}
+  #entdetalle:empty{display:none}
+  .enthead{display:flex;align-items:baseline;justify-content:center;gap:2vw;flex-wrap:wrap}
+  .entrow{display:flex;align-items:center;justify-content:center;gap:2.5vw;flex-wrap:wrap}
+  .entrow .btn{font-size:clamp(12px,2.1vh,18px);padding:.7vh 3vw}
+  .entrow .btn[disabled]{opacity:.35}
+  .entrow .rcfgchk{min-height:44px;color:var(--txt)}
+  .entrow .rcfgchk input{width:22px;height:22px}
+  #entreload{font-size:clamp(10px,1.6vh,14px);padding:.5vh 2.5vw;color:var(--dim)}
+  #entresumen{white-space:pre-line}
+  /* badge de pendientes sobre el boton de configuracion: ambar = aviso, no control */
+  #btnracecfg{position:relative;overflow:visible}
+  #entbadge{position:absolute;top:-5px;right:-5px;min-width:16px;height:16px;padding:0 3px;
+            border-radius:9px;background:var(--amber);color:#04060a;font-size:11px;
+            font-weight:800;line-height:16px;text-align:center;pointer-events:none}
+  #entbadge.hidden{display:none}
+
   /* ================= PÁGINA ESTRATEGIA ================= */
   #strategyview{padding:1vh 1.4vw;gap:1vh}
   #sbar{flex:none;display:flex;align-items:center;justify-content:space-between;gap:1vw}
@@ -650,10 +677,45 @@
           <button class="btn rcfgtab on" id="rctel_full">Completa</button>
         </div>
       </div>
+      <!-- Entrega a la escuela: es el downstream literal de "Telemetria a disco".
+           Estado inicial = "no disponible"/deshabilitado; si el bridge no manda
+           state.entrega (version vieja), la fila se queda asi y nada se rompe. -->
+      <div class="rcfgtelrow" id="entregarow">
+        <div class="enthead">
+          <span class="rcfgtellbl">Entrega a la escuela</span>
+          <span id="entest" class="dim">entrega no disponible</span>
+        </div>
+        <span id="entdetalle"></span>
+        <div class="entrow">
+          <button class="btn" id="entbtn" disabled>Entregar</button>
+          <label class="rcfgchk"><input type="checkbox" id="entauto" disabled> auto</label>
+          <button class="btn" id="entreload" disabled title="Releer entrega.json">↻ config</button>
+        </div>
+      </div>
       <div class="modalbtns">
         <button class="btn" id="rcfgclear">Quitar</button>
         <button class="btn go" id="rcfgsave">Guardar</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Confirmacion de entrega, calcada de #stopconfirm: manda archivos a un servidor
+       externo, asi que nunca dispara al primer toque. Va DESPUES de #racecfg en el
+       DOM para pintarse encima (comparten z-index 60). -->
+  <div id="entconfirm" class="modal hidden">
+    <div class="modalbox">
+      <div class="modaltitle" id="enttitle">Entregar a la escuela</div>
+      <div class="modalsub" id="entresumen">-</div>
+      <div class="modalbtns">
+        <button class="btn" id="entcancel">Cancelar</button>
+        <button class="btn go" id="entok">Entregar</button>
+      </div>
+    </div>
+  </div>
+  <div id="entsent" class="modal hidden">
+    <div class="modalbox">
+      <div class="modaltitle">Entrega en camino</div>
+      <div class="modalsub">Se sube en segundo plano. El resultado queda en <b>&#9881; &rarr; Entrega a la escuela</b>.</div>
     </div>
   </div>
 
@@ -813,7 +875,7 @@
       <button class="btn" id="btnbacks">◂ DASH</button>
       <span class="stitle"><b>ESTRATEGIA</b> <span id="sinfo">—</span> <span id="srec"></span></span>
       <span class="sbtns">
-        <button class="btn" id="btnracecfg" title="Configurar carrera">⚙</button>
+        <button class="btn" id="btnracecfg" title="Configurar carrera">⚙<span id="entbadge" class="hidden"></span></button>
         <button class="btn" id="btnfs4" title="Pantalla completa">⛶</button>
       </span>
     </div>
@@ -1551,6 +1613,7 @@ function connect(){
     if(m.strategy) renderStrategy(m.strategy);
     if(m.tyres) renderTyres(m.tyres);
     if(m.telemetry) updateRec(m.telemetry);
+    if(m.entrega) updateEntrega(m.entrega);
   };
   ws.onclose = () => {
     if(sock !== ws) return;                         // ya reconectó el watchdog: onclose del socket viejo
@@ -1673,6 +1736,75 @@ function updateRec(t){
                    + (t.laps_logged ? " · " + t.laps_logged + "v" : "");
   } else { el.className = ""; el.textContent = ""; }
 }
+
+/* ---- entrega de telemetria a la escuela (bandeja) ----
+   El bridge manda state.entrega DENTRO del state a 30 Hz (nunca como mensaje aparte:
+   ws.onmessage trata todo lo que no traiga .dampers como estado completo). Aca solo se
+   toca textContent/className/disabled, por eso no necesita guard de firma como lastTyreSig. */
+let lastEntrega = null, entAutoUntil = 0;
+const entListas = e => (e && Array.isArray(e.listas)) ? e.listas : [];
+const entResumen = s => "· " + (s.resumen || s.carpeta || "sesion");
+function entHora(iso){
+  const d = new Date(iso || "");
+  return isNaN(d.getTime()) ? "" : String(d.getHours()).padStart(2,"0") + ":" + String(d.getMinutes()).padStart(2,"0");
+}
+function updateEntrega(e){
+  const est = $("entest"); if(!est) return;
+  lastEntrega = e || null;
+  const st = (e && e.estado) || "off";
+  const n = (e && typeof e.pendientes === "number") ? e.pendientes : entListas(e).length;
+  const u = e && e.ultima;
+  let txt = "entrega no disponible", cls = "dim", puedo = false;
+  if(st === "sin_config"){ txt = "sin configurar (pega tu credencial en entrega.json)"; }
+  else if(st === "token"){ txt = "credencial rechazada — revisa entrega.json"; cls = "err"; }
+  else if(st === "subiendo"){ txt = "subiendo " + ((e.subiendo && e.subiendo.carpeta) || "") + "…"; cls = "busy"; }
+  else if(st === "listas"){ txt = n + (n === 1 ? " lista para entregar" : " listas para entregar"); cls = ""; puedo = n > 0; }
+  else if(st === "idle"){
+    if(u && u.ok){ txt = "✓ entregada " + entHora(u.cuando); cls = "ok"; }
+    else if(u && u.ok === false){ txt = "error: " + (u.msg || "no se pudo entregar"); cls = "err"; }
+    else { txt = "nada pendiente"; }
+  }
+  est.textContent = txt; est.className = cls;
+  /* detalle en gris: que hay listo, el ultimo error si ya no estamos en idle, y lo
+     invalido con su motivo (esas no se reintentan: el alumno tiene que saber por que) */
+  const det = [];
+  if(st === "listas") for(const s of entListas(e).slice(0,4)) det.push(entResumen(s));
+  if(st !== "idle" && u && u.ok === false) det.push("último error: " + (u.msg || ""));
+  if(e && Array.isArray(e.invalidas))
+    for(const s of e.invalidas.slice(0,3)) det.push("✕ " + (s.carpeta || "") + ": " + (s.motivo || ""));
+  $("entdetalle").textContent = det.join("\n");
+  $("entbtn").disabled = !puedo;
+  $("entreload").disabled = (st === "off");
+  const chk = $("entauto");
+  chk.disabled = (st === "off");
+  if(performance.now() > entAutoUntil) chk.checked = !!(e && e.auto);   // ventana anti-rebote del switch
+  const b = $("entbadge");
+  b.textContent = n > 9 ? "9+" : String(n);
+  b.classList.toggle("hidden", !(st !== "off" && n > 0));
+}
+$("entbtn").addEventListener("click", () => {
+  const l = entListas(lastEntrega);
+  const n = l.length || (lastEntrega && lastEntrega.pendientes) || 0;
+  $("enttitle").textContent = "¿Entregar " + n + (n === 1 ? " sesión" : " sesiones") + " a la escuela?";
+  $("entresumen").textContent = l.length ? l.map(entResumen).join("\n")
+                                         : "Se entrega todo lo que esté listo en la bandeja.";
+  $("entconfirm").classList.remove("hidden");
+});
+$("entcancel").addEventListener("click", () => $("entconfirm").classList.add("hidden"));
+$("entok").addEventListener("click", () => {
+  try{ if(sock && sock.readyState === 1) sock.send(JSON.stringify({cmd:"entregar"})); }catch(e){}
+  $("entconfirm").classList.add("hidden");
+  $("entsent").classList.remove("hidden");
+  setTimeout(() => $("entsent").classList.add("hidden"), 2000);
+});
+$("entauto").addEventListener("change", () => {
+  const on = $("entauto").checked;
+  entAutoUntil = performance.now() + 3000;
+  try{ if(sock && sock.readyState === 1) sock.send(JSON.stringify({cmd:"set_entrega_auto", on})); }catch(e){}
+});
+$("entreload").addEventListener("click", () => {
+  try{ if(sock && sock.readyState === 1) sock.send(JSON.stringify({cmd:"entrega_recargar"})); }catch(e){}
+});
 function setRcfgMode(m){
   rcfgMode = m;
   $("rcfgtimed").classList.toggle("on", m==="timed");
