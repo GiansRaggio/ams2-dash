@@ -50,6 +50,27 @@ TOPE_BARRIDO = 20          # ni encola mas que esto en la primera pasada
 NOMBRE_LOCK = ".entrega.lock"
 
 
+def _tiene_vueltas(ruta):
+    """Hay al menos una vuelta cronometrada en summary.jsonl. Chequeo barato (el
+    archivo son unas lineas) para que las carpetas vacias del garage no cuenten
+    para el tope del barrido. Cualquier error -> False: no se encola lo que no se
+    puede leer."""
+    try:
+        with open(os.path.join(ruta, "summary.jsonl"), encoding="utf-8") as f:
+            for linea in f:
+                linea = linea.strip()
+                if not linea:
+                    continue
+                try:
+                    if json.loads(linea).get("lap_time"):
+                        return True
+                except ValueError:
+                    continue
+    except OSError:
+        pass
+    return False
+
+
 def _norm(p):
     return os.path.normcase(os.path.abspath(p)) if p else None
 
@@ -470,6 +491,14 @@ class ColaEntrega:
             if mt < corte or (desde is not None and mt < desde):
                 continue
             if not self._quieta(ruta):
+                continue
+            # Las carpetas SIN vueltas no cuentan para el tope. Medido en pista
+            # (2026-09-05): cambiar de auto en el garage rota la sesion por cada auto y
+            # deja una carpeta vacia por segundo; 19 de esas, todas mas nuevas, se
+            # comieron el tope de 20 y las 10 sesiones reales de la noche quedaron
+            # fuera EN SILENCIO. Se saltan aca (chequeo barato sobre summary.jsonl),
+            # sin pasar por revisar(), que descomprime trazas.
+            if not _tiene_vueltas(ruta):
                 continue
             cand.append(ruta)
         cand = cand[-self.tope_barrido:]        # sesiones() ordena por mtime asc

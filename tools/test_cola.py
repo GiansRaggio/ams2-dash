@@ -381,6 +381,35 @@ def test_barrido_filtros(base, url):
             _ok("el barrido tiene tope duro", c3.status()["pendientes"] <= 3, c3.status())
         finally:
             c3.stop()
+
+        # Carpetas VACIAS mas nuevas que las reales no pueden comerse el tope. Medido
+        # en pista: cambiar de auto en el garage rota la sesion por cada auto y deja
+        # una carpeta sin vueltas por segundo; 19 de esas dejaron fuera, en silencio,
+        # a las 10 sesiones reales de la noche.
+        sub2 = tempfile.mkdtemp(prefix="vacias_")
+        try:
+            real = _sesion(sub2, "REAL__GT4__race__20260101_200000", n_vueltas=4)
+            _envejecer(real, 7200)                      # la real es la MAS VIEJA
+            for i in range(8):
+                v = _sesion(sub2, f"GARAGE{i}__GT4__qualify__20260101_23000{i}", n_vueltas=0)
+                _envejecer(v, 3600 - i)                 # todas mas nuevas que la real
+            _Srv.recibido = []
+            c4 = _cola(sub2, _cfg(sub2, url, auto=False, desde="2020-01-01T00:00:00"))
+            c4.tope_barrido = 3
+            c4.start()
+            try:
+                _esperar(lambda: c4.status()["listas"] or c4.status()["invalidas"])
+                time.sleep(0.6)
+                listas = [x["carpeta"] for x in c4.status()["listas"]]
+                _ok("las carpetas sin vueltas no cuentan para el tope: la real entra igual",
+                    listas == ["REAL__GT4__race__20260101_200000"], listas)
+                _ok("y las vacias ni siquiera se encolan",
+                    c4.status()["pendientes"] == 1 and not c4.status()["invalidas"],
+                    (c4.status()["pendientes"], len(c4.status()["invalidas"])))
+            finally:
+                c4.stop()
+        finally:
+            shutil.rmtree(sub2, ignore_errors=True)
     finally:
         shutil.rmtree(sub, ignore_errors=True)
 
