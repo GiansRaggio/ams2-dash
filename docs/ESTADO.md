@@ -290,3 +290,7 @@ movieron (Watkins Glen sigue 11/11).
 ~190 sesiones en `telemetry/`. `tools/tyre_replay.py` es el guardián: replay del analizador
 REAL contra todas, falla si el camber deja de opinar, si no hay pistas direccionales o si la
 referencia no llega al disco. Correr después de CUALQUIER cambio de umbral o de lógica.
+
+## Bordes aprendidos de la pista (2026-09-10)
+
+AMS2 no entrega la geometria de la pista (ni la shared memory ni los archivos, que van cifrados). Lo que si entrega es `mTerrain` por rueda, y el visor lo usa para APRENDER los bordes (`ams2_analysis.bordes`, `/api/bordes`): suma todas las vueltas grabadas en esa pista y variante (limpias y anuladas, de cualquier sesion), pone cada rueda en el mundo (media via 0.85 m, medio eje 1.35 m, rumbo desde las posiciones del auto) y anota por metro de la linea de referencia hasta donde hubo asfalto y donde hubo piano. Codigos del enum TerrainMaterials de PCARS2 verificados contra el corpus: 0 asfalto en toda la recta, 10 y 41 solo en pianos, 46 escapes (Mosport), 7 pasto, 49 linea blanca ilegal (Cordoba). Medido: el corredor es lo que cubrieron las ruedas -- 4 vueltas de Cordoba = 2.7 m de mediana, 83 de Mosport = 7.9 m, 154 de Road Atlanta = 9.8 m. Cache en `telemetry/_cache/bordes__<pista>.json` con firma (n trazas, mtime); Road Atlanta tarda 6.5 s la primera vez. Las importaciones .srt NO entran: traen el terreno en 0.0 y dirian que todo es asfalto.

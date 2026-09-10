@@ -609,6 +609,249 @@ def mapa(folder: str, nombre: str | None = None) -> dict:
     }
 
 
+# -------------------------------------------------- bordes aprendidos ---
+# El juego NO entrega la geometria de la pista: la shared memory no trae bordes
+# ni ancho, y los archivos de pista van cifrados. Lo que SI trae es `mTerrain`
+# por rueda -- que superficie hay debajo de CADA neumatico, a 50 Hz. Con eso los
+# bordes se APRENDEN: cada vuelta grabada en esa pista (limpia o anulada, de
+# cualquier sesion) deja cuatro puntos por muestra que dicen "aca habia asfalto",
+# "aca habia piano" o "aca habia pasto". Sumando todas las vueltas sale hasta
+# donde llega el asfalto a cada lado y donde estan los pianos: no es el mapa del
+# juego, es la pista tal como la vieron las ruedas, y con pocas vueltas es un
+# corredor angosto que se ensancha solo a medida que se gira.
+#
+# Codigos del enum TerrainMaterials del SDK de Project CARS 2 (AMS2 lo hereda).
+# No se pudo abrir el header hoy; los valores se VERIFICARON contra el corpus:
+# 0 en toda la recta, 10 y 41 solo en pianos, 46 en los escapes de Mosport, 7 en
+# el pasto, 49 en la linea blanca de fuera de pista en Cordoba.
+TERRENO_ASFALTO = {0, 1, 2, 3, 4, 21, 29, 35, 36, 37, 45, 48, 50}
+TERRENO_PIANO = {10, 25, 40, 41}
+TERRENO_FUERA = {5, 6, 7, 8, 9, 15, 16, 17, 18, 19, 20, 22, 24, 26, 27, 28,
+                 30, 31, 32, 33, 34, 42, 43, 46, 47, 49}
+# Geometria del auto, que la traza no trae: medio ancho de via y media distancia
+# entre ejes. Un GT3 mide ~1.0 / 1.35 m, un F-Inter ~0.8 / 1.4. El error de usar
+# un valor unico es de decimas de metro sobre un borde que se lee a metros.
+VIA_2 = 0.85
+EJE_2 = 1.35
+BORDE_MAX_M = 15.0        # mas lejos que esto del trazado no es pista, es un trompo
+RELLENO_MAX_M = 40.0      # hueco sin dato que se rellena interpolando; mas, se estima
+
+
+def _leer_columnas(ruta, columnas):
+    """Solo las columnas pedidas de una traza .csv.gz, como listas de float.
+
+    `_read_trace` convierte las 107 columnas y para los bordes hay que leer TODAS
+    las vueltas de una pista (Road Atlanta: 154). Con 7 columnas de 107 son 15
+    veces menos conversiones, y es la diferencia entre 5 s y mas de un minuto.
+    """
+    import csv
+    import gzip
+    out = {c: [] for c in columnas}
+    try:
+        with gzip.open(ruta, "rt", encoding="utf-8") as f:
+            r = csv.reader(f)
+            cab = next(r)
+            idx = [(c, cab.index(c)) for c in columnas if c in cab]
+            if len(idx) != len(columnas):
+                return None
+            for fila in r:
+                for c, i in idx:
+                    try:
+                        out[c].append(float(fila[i]))
+                    except (ValueError, IndexError):
+                        out[c].append(0.0)
+    except (OSError, EOFError, StopIteration):
+        return None
+    return out
+
+
+def _centro_ref(folder):
+    """Linea de referencia de la sesion (la vuelta mas rapida con traza), a PASO_M."""
+    vs = [v for v in _vueltas(folder) if v.get("traza")]
+    if not vs:
+        raise ValueError("la sesion no tiene ninguna traza guardada")
+    elegida = min(vs, key=lambda v: v.get("tiempo") or 9e9)
+    data = AT._read_trace(os.path.join(folder, elegida["traza"]))
+    largo = _meta(folder).get("track_length_m")
+    xs_m, (px, pz) = _rejilla(data["lap_dist"], [data["pos_x"], data["pos_z"]], PASO_M, largo)
+    return xs_m, px, pz
+
+
+def _acumular_bordes(cx, cz, paso, trazas):
+    """Extension del asfalto y puntos de piano/fuera por metro de la referencia.
+
+    `trazas` es un iterable de dicts con lap_dist, pos_x, pos_z y terrain_FL/FR/
+    RL/RR. Funcion PURA (sin disco) para poder probarla con una pista sintetica
+    donde el borde se conoce exacto.
+
+    Devuelve (izq, der, pianos, fuera, n): `izq[i]`/`der[i]` son el maximo y el
+    minimo desplazamiento lateral (m, signo de la normal izquierda del trazado)
+    con asfalto bajo una rueda en el metro i, None donde ninguna rueda paso;
+    `pianos`/`fuera` son listas de (i, d) ya adelgazadas a 0.5 m.
+    """
+    n = len(cx)
+    # tangente y normal del trazado en cada metro
+    tx, tz = [0.0] * n, [0.0] * n
+    for i in range(n):
+        a, b = max(0, i - 1), min(n - 1, i + 1)
+        dx, dz = cx[b] - cx[a], cz[b] - cz[a]
+        L = math.hypot(dx, dz) or 1.0
+        tx[i], tz[i] = dx / L, dz / L
+    izq, der = [None] * n, [None] * n
+    pianos, fuera = set(), set()
+    vueltas = 0
+    ruedas = (("terrain_FL", EJE_2, VIA_2), ("terrain_FR", EJE_2, -VIA_2),
+              ("terrain_RL", -EJE_2, VIA_2), ("terrain_RR", -EJE_2, -VIA_2))
+    for d in trazas:
+        if not d or len(d.get("lap_dist", ())) < 3:
+            continue
+        vueltas += 1
+        ld, px, pz = d["lap_dist"], d["pos_x"], d["pos_z"]
+        ter = [d[c] for c, _, _ in ruedas]
+        m = len(ld)
+        for k in range(m):
+            i = int(round(ld[k] / paso))
+            if i < 0 or i >= n:
+                continue
+            # rumbo del auto desde sus propias posiciones (no el del trazado:
+            # en un trompo o un contravolante no coinciden)
+            a, b = max(0, k - 1), min(m - 1, k + 1)
+            hx, hz = px[b] - px[a], pz[b] - pz[a]
+            L = math.hypot(hx, hz)
+            if L < 0.2:
+                hx, hz = tx[i], tz[i]
+            else:
+                hx, hz = hx / L, hz / L
+            lx, lz = -hz, hx                    # izquierda del auto
+            for w, (col, ade, lat) in enumerate(ruedas):
+                wx = px[k] + hx * ade + lx * lat
+                wz = pz[k] + hz * ade + lz * lat
+                # proyeccion sobre el trazado: adelante/atras corrige el indice,
+                # el lateral es el dato
+                rx, rz = wx - cx[i], wz - cz[i]
+                j = i + int(round((rx * tx[i] + rz * tz[i]) / paso))
+                j = 0 if j < 0 else (n - 1 if j >= n else j)
+                lat_m = (wx - cx[j]) * -tz[j] + (wz - cz[j]) * tx[j]
+                if abs(lat_m) > BORDE_MAX_M:
+                    continue
+                code = int(ter[w][k])
+                if code in TERRENO_ASFALTO:
+                    if izq[j] is None or lat_m > izq[j]:
+                        izq[j] = lat_m
+                    if der[j] is None or lat_m < der[j]:
+                        der[j] = lat_m
+                elif code in TERRENO_PIANO:
+                    pianos.add((j, round(lat_m * 2) / 2))
+                elif code in TERRENO_FUERA:
+                    fuera.add((j, round(lat_m * 2) / 2))
+    return izq, der, sorted(pianos), sorted(fuera), vueltas
+
+
+def _rellenar(serie, paso, defecto):
+    """Interpola huecos cortos (< RELLENO_MAX_M) y estima los largos con `defecto`.
+    Devuelve (serie completa, [bool] estimado por metro)."""
+    n = len(serie)
+    out, est = list(serie), [False] * n
+    i = 0
+    while i < n:
+        if out[i] is not None:
+            i += 1
+            continue
+        j = i
+        while j < n and out[j] is None:
+            j += 1
+        a = out[i - 1] if i > 0 else None
+        b = out[j] if j < n else None
+        largo = (j - i) * paso
+        for k in range(i, j):
+            if a is not None and b is not None and largo <= RELLENO_MAX_M:
+                out[k] = a + (b - a) * (k - i + 1) / (j - i + 1)
+            elif a is not None and b is None and largo <= RELLENO_MAX_M:
+                out[k] = a
+            elif b is not None and a is None and largo <= RELLENO_MAX_M:
+                out[k] = b
+            else:
+                out[k] = defecto
+                est[k] = True
+        i = j
+    return out, est
+
+
+def bordes(folder: str) -> dict:
+    """Los bordes aprendidos de la pista de esta sesion, para dibujar debajo de
+    las trazadas. Se calculan con TODAS las vueltas grabadas en esa pista y
+    variante (propias, de cualquier sesion) y se cachean en telemetry/_cache.
+    """
+    meta = _meta(folder)
+    clave = (meta.get("track"), meta.get("track_variation"))
+    if not clave[0]:
+        raise ValueError("la sesion no dice en que pista es")
+    # todas las trazas de esa pista, en el corpus propio (las importadas de .srt
+    # traen el terreno en 0.0 y dirian que todo es asfalto)
+    archivos = []
+    if os.path.isdir(TELEM):
+        for d in os.listdir(TELEM):
+            ruta = os.path.join(TELEM, d)
+            if not os.path.isdir(ruta) or d.startswith("_"):
+                continue
+            m = _meta(ruta)
+            if (m.get("track"), m.get("track_variation")) != clave:
+                continue
+            for f in os.listdir(ruta):
+                if f.endswith(".csv.gz") and f[:1] in "LX":
+                    archivos.append(os.path.join(ruta, f))
+    firma = [len(archivos), max((os.path.getmtime(f) for f in archivos), default=0)]
+    limpio = "".join(c if c.isalnum() else "_" for c in f"{clave[0]}__{clave[1]}")
+    cache_dir = os.path.join(TELEM, "_cache")
+    cache = os.path.join(cache_dir, f"bordes__{limpio}.json")
+    try:
+        with open(cache, encoding="utf-8") as f:
+            j = json.load(f)
+        if j.get("firma") == firma and j.get("ref") == os.path.basename(folder):
+            return j
+    except (OSError, ValueError):
+        pass
+
+    xs_m, cx, cz = _centro_ref(folder)
+    cols = ("lap_dist", "pos_x", "pos_z", "terrain_FL", "terrain_FR", "terrain_RL", "terrain_RR")
+    izq, der, pianos, fuera, n_v = _acumular_bordes(
+        cx, cz, PASO_M, (_leer_columnas(f, cols) for f in archivos))
+    medidos = [v for v in izq if v is not None]
+    med_i = sorted(medidos)[len(medidos) // 2] if medidos else 5.0
+    medidos = [v for v in der if v is not None]
+    med_d = sorted(medidos)[len(medidos) // 2] if medidos else -5.0
+    izq, est_i = _rellenar(izq, PASO_M, med_i)
+    der, est_d = _rellenar(der, PASO_M, med_d)
+    n = len(cx)
+
+    def punto(i, d):
+        a, b = max(0, i - 1), min(n - 1, i + 1)
+        dx, dz = cx[b] - cx[a], cz[b] - cz[a]
+        L = math.hypot(dx, dz) or 1.0
+        return [round(cx[i] - dz / L * d, 1), round(cz[i] + dx / L * d, 1)]
+
+    out = {
+        "ref": os.path.basename(folder), "firma": firma,
+        "pista": clave[0], "variante": clave[1],
+        "n_vueltas": n_v, "n_sesiones": len({os.path.dirname(f) for f in archivos}),
+        "paso_m": PASO_M,
+        "metros": [round(x, 1) for x in xs_m],
+        "bi": [punto(i, izq[i]) for i in range(n)],      # borde izquierdo (x, z)
+        "bd": [punto(i, der[i]) for i in range(n)],      # borde derecho
+        "estimado": [bool(a or b) for a, b in zip(est_i, est_d)],
+        "pianos": [punto(i, d) for i, d in pianos],
+        "fuera": [punto(i, d) for i, d in fuera],
+        "medido_pct": round(100 * (1 - sum(1 for a, b in zip(est_i, est_d) if a or b) / max(n, 1))),
+    }
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+        with open(cache, "w", encoding="utf-8") as f:
+            json.dump(out, f)
+    except OSError:
+        pass
+    return out
+
+
 # ------------------------------------------------------------ export CSV ---
 def stint_csv(folder: str, n: int, solo_validas: bool = False):
     """Genera el CSV de una tanda completa, vuelta por vuelta, para abrirlo en

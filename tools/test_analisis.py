@@ -9,6 +9,7 @@ diria que si a cualquier cosa.
 Correr:  .venv\\Scripts\\python.exe tools/test_analisis.py
 """
 import json
+import math
 import os
 import sys
 import threading
@@ -443,6 +444,74 @@ def test_api():
         srv.shutdown()
 
 
+def test_bordes():
+    """Bordes aprendidos sobre una recta sintetica donde se sabe donde esta cada
+    rueda: dos vueltas a +2 y -2 m del centro, la de +2 con las ruedas
+    izquierdas sobre piano. El asfalto tiene que llegar hasta la rueda mas
+    exterior con asfalto y el piano quedar donde estaba la rueda."""
+    print("\nbordes aprendidos (sintetico):")
+    paso, n = 2.0, 101                          # recta de 200 m sobre +x
+    cx = [i * paso for i in range(n)]
+    cz = [0.0] * n
+
+    def vuelta(z, piano_izq=False, hasta=200.0):
+        xs = [x * 1.0 for x in range(0, int(hasta) + 1, 2)]
+        m = len(xs)
+        d = {"lap_dist": xs, "pos_x": xs, "pos_z": [z] * m,
+             "terrain_FL": [10.0 if piano_izq else 0.0] * m,
+             "terrain_RL": [10.0 if piano_izq else 0.0] * m,
+             "terrain_FR": [0.0] * m, "terrain_RR": [0.0] * m}
+        return d
+
+    izq, der, pianos, fuera, nv = A._acumular_bordes(cx, cz, paso, [vuelta(2.0, True), vuelta(-2.0)])
+    ok("cuenta las 2 vueltas", nv == 2)
+    # rumbo +x: la izquierda del auto es +z. Asfalto: ruedas derechas de la vuelta
+    # +2 (z=1.15) y ruedas derechas de la vuelta -2 (z=-2.85); las izquierdas de
+    # la -2 (z=-1.15) tambien son asfalto pero no son el extremo.
+    mitad = [v for v in izq[5:-5] if v is not None]
+    ok("borde izquierdo del asfalto = rueda derecha de la vuelta +2 (1.15 m)",
+       mitad and abs(max(mitad) - (2.0 - A.VIA_2)) < 0.05, f"{max(mitad) if mitad else None:.2f}")
+    mitad = [v for v in der[5:-5] if v is not None]
+    ok("borde derecho del asfalto = rueda derecha de la vuelta -2 (-2.85 m)",
+       mitad and abs(min(mitad) - (-2.0 - A.VIA_2)) < 0.05, f"{min(mitad) if mitad else None:.2f}")
+    lat = sorted({d for _, d in pianos})
+    ok("el piano queda donde estaba la rueda izquierda de la vuelta +2 (~2.85 m)",
+       lat and all(abs(d - 2.85) <= 0.25 for d in lat), lat)
+    ok("nada 'fuera' de pista en una recta de asfalto", not fuera)
+
+    # relleno: una vuelta que solo cubre los primeros 100 m deja hueco largo
+    izq2, der2, _, _, _ = A._acumular_bordes(cx, cz, paso, [vuelta(1.0, hasta=100.0)])
+    lleno, est = A._rellenar(izq2, paso, 5.0)
+    ok("el hueco largo se estima con el valor por defecto y se marca",
+       lleno[-1] == 5.0 and est[-1] and not est[10], f"{lleno[-1]} est={est[-1]}")
+    # hueco corto (10 m) en medio: se interpola, no se estima
+    serie = [1.0] * 40 + [None] * 5 + [2.0] * 40
+    lleno, est = A._rellenar(serie, paso, 9.0)
+    ok("un hueco de 10 m se interpola entre vecinos", abs(lleno[42] - 1.5) < 0.2 and not est[42],
+       f"{lleno[42]:.2f}")
+
+    if _hay_corpus():
+        d = _sesion_con_tandas()
+        if d:
+            import time
+            t0 = time.time()
+            b = A.bordes(d)
+            t1 = time.time() - t0
+            b2 = A.bordes(d)
+            t2 = time.time() - t0 - t1
+            ok("bordes de una sesion real: bordes izq/der del largo del trazado",
+               len(b["bi"]) == len(b["metros"]) == len(b["bd"]),
+               f"{os.path.basename(d)} · {b['n_vueltas']} vueltas de {b['n_sesiones']} sesiones · "
+               f"medido {b['medido_pct']}% · {len(b['pianos'])} puntos de piano · {t1:.1f}s")
+            ok("la segunda llamada sale del cache", t2 < 0.5, f"{t2:.2f}s")
+            anchos = [math.hypot(bi[0]-bd[0], bi[1]-bd[1]) for bi, bd in zip(b["bi"], b["bd"])]
+            med = sorted(anchos)[len(anchos)//2]
+            # el corredor es lo que cubrieron las ruedas: con 4 vueltas de una
+            # sesion son ~3 m, con 154 de Road Atlanta ~10 (medido 2026-09-10).
+            # Lo que se protege es que no sea absurdo (0 o un trompo de 30 m).
+            ok("ancho del corredor plausible (1.5-25 m)", 1.5 <= med <= 25, f"mediana {med:.1f} m")
+
+
 def main():
     print("=== tests del visor de telemetria ===")
     if _hay_corpus():
@@ -455,6 +524,7 @@ def main():
         print("(sin telemetry/ grabado -- normal en un clon fresco: se saltan los")
         print(" tests que comparan contra el corpus y corren los independientes)")
     test_eventos()
+    test_bordes()
     test_tanda_de_verdad()
     test_frontera()
     test_api()

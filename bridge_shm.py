@@ -651,6 +651,8 @@ class _NoCacheHandler(http.server.SimpleHTTPRequestHandler):
                 })
             if ruta == "mapa":
                 return self._json(ams2_analysis.mapa(carpeta, q.get("t")))
+            if ruta == "bordes":
+                return self._json(ams2_analysis.bordes(carpeta))
             if ruta == "traza":
                 return self._json(ams2_analysis.traza(
                     carpeta, q.get("t", ""), paso=float(q.get("paso", ams2_analysis.PASO_M))))

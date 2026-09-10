@@ -60,7 +60,10 @@
 
   /* ---------- mapa ---------- */
   #mapwrap{position:relative}
+  /* con zoom el arrastre desplaza: la manito lo anuncia antes de que lo intenten */
   #mapa{width:100%;display:block;touch-action:none}
+  #mapa.pan{cursor:grab}
+  #mapa.pan.mueve{cursor:grabbing}
   #leyenda{position:absolute;right:8px;top:8px;display:flex;flex-direction:column;gap:3px;
            font-size:max(9px,1.1vh);color:var(--dim);text-align:right;pointer-events:none}
   #leyenda i{display:inline-block;width:14px;height:3px;vertical-align:middle;margin-right:5px}
@@ -79,6 +82,7 @@
   #eventos td.t{text-align:left;color:var(--dim);font-weight:700}
   #eventos td.a{color:var(--cyan)}
   #eventos td.b{color:var(--red)}
+  #eventos td.c{color:var(--amber)}
   #eventos tbody tr{cursor:pointer}
   #eventos tbody tr.aqui{background:#141d29}
   #eventos tbody tr.aqui td.t{color:var(--txt)}
@@ -95,16 +99,20 @@
           background:var(--panel2);color:var(--dim);font-weight:700;font-size:max(11px,1.3vh)}
   .v .sel.on.a{border-color:var(--cyan);color:#04060a;background:var(--cyan)}
   .v .sel.on.b{border-color:var(--red);color:#fff;background:var(--red)}
+  .v .sel.on.c{border-color:var(--amber);color:#04060a;background:var(--amber)}
   .v.notrace .t{color:var(--dim);font-weight:400}
   .v.notrace .sel{opacity:.25}
 
   /* ---------- cursor / lectura ---------- */
   #lectura{position:sticky;bottom:0;z-index:15;background:linear-gradient(0deg,#0b1018 78%,#0b101800);
            padding:8px 10px 10px;font-size:max(11px,1.4vh)}
-  #lectura .fila{display:grid;grid-template-columns:5.5em 1fr 1fr;gap:6px;align-items:baseline}
+  /* --nv = cuantas vueltas hay puestas (1..3); lo fija pintarLectura */
+  #lectura .fila{display:grid;grid-template-columns:5.5em repeat(var(--nv,2),1fr);
+                 gap:6px;align-items:baseline}
   #lectura .k{color:var(--dim)}
   #lectura .a{color:var(--cyan);font-variant-numeric:tabular-nums;font-weight:700}
   #lectura .b{color:var(--red);font-variant-numeric:tabular-nums;font-weight:700}
+  #lectura .c{color:var(--amber);font-variant-numeric:tabular-nums;font-weight:700}
   #curva{font-weight:800;font-size:max(15px,2vh);letter-spacing:.05em}
 
   /* ---------- graficos ---------- */
@@ -141,7 +149,7 @@
     <div id="eventos"></div>
 
     <div>
-      <div class="label" style="padding:0 2px 4px">vueltas de la tanda · A para ver · B para comparar</div>
+      <div class="label" style="padding:0 2px 4px">vueltas de la tanda · A para ver · B y C para comparar</div>
       <div id="vueltas"></div>
     </div>
 
@@ -160,8 +168,9 @@
 
 <div id="lectura" style="display:none">
   <div class="fila"><span id="curva" style="grid-column:1/2">—</span>
-    <span class="a" id="lecA" style="grid-column:2/3"></span>
-    <span class="b" id="lecB" style="grid-column:3/4"></span></div>
+    <span class="a" id="lecA"></span>
+    <span class="b" id="lecB"></span>
+    <span class="c" id="lecC"></span></div>
   <div id="lecfilas"></div>
 </div>
 
@@ -178,16 +187,30 @@ const api = (r, q) => fetch("/api/" + r + "?" + new URLSearchParams(q)).then(asy
 const S = {
   sesion: null, meta: null, tandas: [], tanda: 0,
   mapa: null, trazas: new Map(),      // nombre de archivo -> traza remuestreada
-  A: null, B: null,                   // nombres de archivo de las vueltas elegidas
+  A: null, B: null, C: null,          // nombres de archivo de las vueltas elegidas
   cursor: null,                       // indice en la grilla de metros
   vista: null,                        // {cx,cz,k} en coords de mundo; null = pista completa
   curvaZoom: null,                    // n de la curva a la que se entro (para resaltarla)
   lienzoMapa: null,                   // {w,h,kFit} del ultimo pintado (lo usan los chips)
   rotulos: [],                        // rotulos Tn dibujados, para poder tocarlos
   pinch: null,                        // distancia entre los dos dedos del pellizco
+  medio: null,                        // punto medio del pellizco (para desplazar con dos dedos)
 };
 
 const K_MAX = 25;                     // px/m: mas zoom que esto y no cabe una curva entera
+
+// Hasta TRES vueltas a la vez. Con dos se compara "esta contra la buena"; con
+// tres se ve si la vuelta rara es la buena o si la trazada nueva se repite --
+// que es la pregunta real cuando se corrige a un alumno. Mas de tres y el mapa
+// se vuelve un plato de tallarines.
+// El orden de esta lista es el de LECTURA (A, B, C); el de DIBUJO es el inverso,
+// para que A --la vuelta que se esta mirando-- quede siempre encima.
+const VUELTAS = [["A","#27e0ff"],["B","#ff2e4d"],["C","#ffb020"]];
+
+// [cual, color, traza] de las vueltas elegidas Y ya cargadas, en orden A,B,C.
+const trazasSel = () => VUELTAS
+  .map(([cual, col]) => [cual, col, S[cual] ? S.trazas.get(S[cual]) : null])
+  .filter(x => x[2]);
 
 const CANALES = [
   {k:"speed_kmh", tit:"velocidad", u:"km/h", alto:96, dec:0},
@@ -249,6 +272,7 @@ async function cargarSesiones(){
 
 async function cargarSesion(carpeta, mantenerTanda){
   S.sesion = carpeta;
+  try { history.replaceState(null, "", "?s=" + encodeURIComponent(carpeta) + location.hash); } catch(e){}
   const j = await api("sesion", {s: carpeta});
   S.meta = j.meta; S.tandas = j.tandas;
   const conTraza = S.tandas.map((t,i) => [i, t.con_traza]).filter(x => x[1] > 0);
@@ -263,10 +287,17 @@ async function cargarSesion(carpeta, mantenerTanda){
     : "";
   pintarTandas();
   // otra pista, otras coordenadas de mundo: el zoom guardado no significa nada
-  S.mapa = null; S.vista = null; S.curvaZoom = null;
+  S.mapa = null; S.bordes = null; S.vista = null; S.curvaZoom = null;
   sigChips = ""; sigEventos = "";
   if (S.tandas.some(t => t.con_traza > 0)){
     try { S.mapa = await api("mapa", {s: carpeta}); } catch(e){}
+    // Los bordes aprendidos leen TODAS las vueltas de esa pista (Road Atlanta:
+    // 154, ~6 s la primera vez; despues salen del cache). No se espera: el mapa
+    // sale con la banda nominal y se repinta solo cuando llegan, si el usuario
+    // sigue en la misma sesion.
+    api("bordes", {s: carpeta}).then(b => {
+      if (S.sesion === carpeta){ S.bordes = b; pintarMapa(); }
+    }).catch(() => {});
   }
   await cargarTanda();
 }
@@ -277,7 +308,7 @@ function pintarTandas(){
     const d = document.createElement("div");
     d.className = "tanda" + (i === S.tanda ? " sel" : "");
     d.innerHTML = `T${t.n} <small>${t.con_traza}/${t.n_vueltas}v · ${t.mejor ? t2s(t.mejor) : "—"}</small>`;
-    d.onclick = () => { S.tanda = i; S.A = S.B = null; pintarTandas(); cargarTanda(); };
+    d.onclick = () => { S.tanda = i; S.A = S.B = S.C = null; pintarTandas(); cargarTanda(); };
     c.appendChild(d);
   });
 }
@@ -295,10 +326,14 @@ async function cargarTanda(){
       : "Esta sesión no tiene tandas.";
     return;
   }
-  // por defecto: la mas rapida como A, la segunda como B (la comparacion util de entrada)
+  // por defecto: la mas rapida como A, la segunda como B (la comparacion util de
+  // entrada). C arranca vacia a proposito: la tercera vuelta se elige a mano,
+  // porque el sentido de meterla lo pone el que mira (la de la trazada nueva, la
+  // que se salio, la del alumno), no el crono.
   const orden = [...conTraza].sort((a,b) => (a.tiempo||9e9) - (b.tiempo||9e9));
   if (!S.A || !conTraza.some(v => v.traza === S.A)) S.A = orden[0].traza;
   if (!S.B || !conTraza.some(v => v.traza === S.B)) S.B = orden[1] ? orden[1].traza : null;
+  if (S.C && !conTraza.some(v => v.traza === S.C)) S.C = null;
   pintarVueltas();
   await asegurarTrazas();
   S.cursor = null;
@@ -316,7 +351,7 @@ function pintarVueltas(){
     d.innerHTML = `<span class="n">L${v.vuelta}</span>
       <span class="t">${v.tiempo ? t2s(v.tiempo) : "—"}</span>
       <span class="d">${dif || (v.traza ? "" : (v.tipo === "out" ? "salida" : v.tipo === "invalid" ? "invalidada" : v.tipo))}</span>`;
-    for (const cual of ["A","B"]){
+    for (const [cual] of VUELTAS){
       const b = document.createElement("button");
       b.className = "sel " + cual.toLowerCase() + (S[cual] === v.traza ? " on" : "");
       b.textContent = cual;
@@ -324,8 +359,10 @@ function pintarVueltas(){
       b.onclick = async () => {
         if (!v.traza) return;
         S[cual] = (S[cual] === v.traza) ? null : v.traza;
-        if (cual === "A" && S.A === S.B) S.B = null;
-        if (cual === "B" && S.B === S.A) S.A = null;
+        // una vuelta no puede estar en dos letras a la vez: compararla consigo
+        // misma da un delta plano en cero y dos lineas superpuestas
+        if (S[cual]) for (const [otra] of VUELTAS)
+          if (otra !== cual && S[otra] === S[cual]) S[otra] = null;
         pintarVueltas(); await asegurarTrazas(); pintarTodo();
       };
       d.appendChild(b);
@@ -335,13 +372,14 @@ function pintarVueltas(){
 }
 
 async function asegurarTrazas(){
-  for (const n of [S.A, S.B]){
+  for (const [cual] of VUELTAS){
+    const n = S[cual];
     if (n && !S.trazas.has(n))
       S.trazas.set(n, await api("traza", {s: S.sesion, t: n}));
   }
-  const a = S.A && S.trazas.get(S.A), b = S.B && S.trazas.get(S.B);
   const av = [];
-  for (const [tr, cual] of [[a,"A"],[b,"B"]]){
+  for (const [cual] of VUELTAS){
+    const tr = S[cual] && S.trazas.get(S[cual]);
     if (tr && tr.cierre_s > 0.05)
       av.push(`⚠ la traza de la vuelta ${cual} termina ${(tr.cierre_s*1000).toFixed(0)} ms antes de meta ` +
               `(la grabación se quedó corta); ese tramo se completó con el cronómetro.`);
@@ -355,15 +393,16 @@ function serie(nombre, canal){
   return tr && tr.canales[canal] ? tr.canales[canal] : null;
 }
 
+// El largo comun es el MINIMO de las elegidas: leer un indice que una de las
+// trazas no tiene devuelve undefined y ensucia todos los graficos de golpe.
 function nPuntos(){
-  const a = S.A && S.trazas.get(S.A), b = S.B && S.trazas.get(S.B);
-  const la = a ? a.metros.length : 0, lb = b ? b.metros.length : 0;
-  return (la && lb) ? Math.min(la, lb) : (la || lb);
+  const ls = trazasSel().map(([,,tr]) => tr.metros.length);
+  return ls.length ? Math.min(...ls) : 0;
 }
 
 function metros(){
-  const a = S.A && S.trazas.get(S.A) || S.B && S.trazas.get(S.B);
-  return a ? a.metros : [];
+  const sel = trazasSel();
+  return sel.length ? sel[0][2].metros : [];
 }
 
 function pintarTodo(){
@@ -389,20 +428,22 @@ function pintarTodo(){
    crono -- ocupa medio pixel. Invisible. Entrando a una curva se llega a 10-25
    px/m y la misma diferencia se ve del ancho de un dedo.
 
-   Lo unico DECORATIVO es la banda oscura de fondo: 12 m de ancho nominal
-   alrededor de la linea de referencia. El juego NO entrega el ancho de pista,
-   asi que esa banda no mide nada. Esta para que las trazadas se lean contra
-   "asfalto" y para que se note de una cuando una vuelta va por afuera de la
-   otra.
+   El "asfalto" de fondo son los BORDES APRENDIDOS (`/api/bordes`): el juego
+   no entrega la geometria de la pista, pero si que superficie hay bajo cada
+   rueda, asi que el backend suma todas las vueltas grabadas en esa pista y
+   saca hasta donde llego el asfalto a cada lado y donde estan los pianos. Es
+   la pista tal como la vieron las ruedas: con 4 vueltas es un corredor de ~3 m
+   (lo que cubrieron esas ruedas) y con 150 son ~10 m, casi el ancho real. Los
+   tramos sin dato van punteados. Mientras no llegan (o si fallan) se dibuja la
+   banda nominal de 12 m, que es decorativa y no mide nada.
 
-   El arrastre de UN puntero sigue siendo el CURSOR de lectura, que es la
-   interaccion principal del visor. No hay pan por arrastre a proposito: para
-   moverse estan los chips de curva, la rueda del mouse y el pellizco.
+   Y por eso ARRASTRAR MUEVE el mapa (ver el bloque de interaccion mas abajo):
+   con zoom en una curva, sin pan quedabas encerrado ahi.
    =========================================================================== */
 
-const LEYENDA = [
-  ["<i style='background:#27e0ff'></i>", "vuelta A"],
-  ["<i style='background:#ff2e4d'></i>", "vuelta B"],
+// La parte de la leyenda que no depende de que vueltas esten puestas; las
+// vueltas se anteponen en pintarMapa, con su color y solo las elegidas.
+const LEYENDA_FIJA = [
   ["<i style='background:#8fa0b5;height:6px'></i>", "grueso = frenando"],
   ["<b>●</b>", "frenada"], ["<b>◆</b>", "giro"],
   ["<b>○</b>", "ápex"],    ["<b>▲</b>", "a fondo"],
@@ -412,7 +453,16 @@ function pintarMapa(){
   const cv = $("mapa"), M = S.mapa;
   if (!M || !M.x || !M.x.length){ cv.style.display = "none"; return; }
   cv.style.display = "block";
-  $("leyenda").innerHTML = LEYENDA.map(([g,t]) => `<span>${g}${t}</span>`).join("");
+  const sel = trazasSel();
+  const B = (S.bordes && S.bordes.bi && S.bordes.bi.length > 1) ? S.bordes : null;
+  $("leyenda").innerHTML = sel
+    .map(([cual, col]) => [`<i style='background:${col}'></i>`, "vuelta " + cual])
+    .concat(LEYENDA_FIJA)
+    .concat(B ? [["<i style='background:#1c2534;height:8px;border:1px solid #3a4a5e'></i>",
+                  `asfalto visto por las ruedas · ${B.n_vueltas} vueltas`],
+                 ["<i style='background:#b5651d;width:6px;height:6px'></i>", "piano"]]
+               : [["<i style='background:#151b24;height:8px'></i>", "banda nominal (sin bordes aún)"]])
+    .map(([g,t]) => `<span>${g}${t}</span>`).join("");
 
   const pad = 24;
   const x0 = Math.min(...M.x), x1 = Math.max(...M.x);
@@ -436,16 +486,62 @@ function pintarMapa(){
   const Y = z => h/2 - (z - V.cz)*k;          // Z crece hacia el norte -> hacia arriba
   S.lienzoMapa = {w, h, kFit};
 
-  const trA = S.A && S.trazas.get(S.A), trB = S.B && S.trazas.get(S.B);
   const conPos = tr => !!(tr && tr.canales && tr.canales.pos_x && tr.canales.pos_z);
-  const hayPos = conPos(trA) || conPos(trB);
+  const hayPos = sel.some(([,,tr]) => conPos(tr));
+  cv.classList.toggle("pan", !!S.vista);
 
-  // ---- 1. banda de "pista": ancho nominal, decorativa (ver cabecera) ----
+  // ---- 1. asfalto: bordes aprendidos si llegaron, banda nominal si no ----
   c.lineCap = "round"; c.lineJoin = "round";
-  c.strokeStyle = "#151b24"; c.lineWidth = Math.max(k*12, 8);
-  c.beginPath(); c.moveTo(X(M.x[0]), Y(M.z[0]));
-  for (let i = 1; i < M.x.length; i++) c.lineTo(X(M.x[i]), Y(M.z[i]));
-  c.stroke();
+  if (B){
+    const bi = B.bi, bd = B.bd, est = B.estimado || [];
+    // el asfalto como poligono: borde izquierdo de ida, derecho de vuelta
+    // un tono mas claro que la banda nominal: este SI significa algo y tiene
+    // que leerse contra el fondo aunque el corredor sea angosto
+    c.fillStyle = "#1c2534"; c.beginPath();
+    c.moveTo(X(bi[0][0]), Y(bi[0][1]));
+    for (let i = 1; i < bi.length; i++) c.lineTo(X(bi[i][0]), Y(bi[i][1]));
+    for (let i = bd.length-1; i >= 0; i--) c.lineTo(X(bd[i][0]), Y(bd[i][1]));
+    c.closePath(); c.fill();
+    // los bordes: linea fina, punteada donde el dato es estimado (nadie paso)
+    c.lineWidth = 1.2;
+    for (const borde of [bi, bd]){
+      for (const medido of [true, false]){
+        c.strokeStyle = medido ? "#3a4a5e" : "#2a3646";
+        c.setLineDash(medido ? [] : [3, 5]);
+        c.beginPath();
+        let abierto = false;
+        for (let i = 0; i < borde.length; i++){
+          if (!!est[i] === medido){ abierto = false; continue; }
+          const x = X(borde[i][0]), y = Y(borde[i][1]);
+          if (abierto) c.lineTo(x, y); else { c.moveTo(x, y); abierto = true; }
+        }
+        c.stroke();
+      }
+    }
+    c.setLineDash([]);
+    // pianos: donde una rueda piso piano, un punto. Fuera de pista (pasto,
+    // escape) solo con zoom, y tenue: dice "hasta aca llegaron", no es borde.
+    const r = Math.max(1.5, Math.min(k*0.5, 4));
+    c.fillStyle = "#b5651d";
+    for (const [x, z] of B.pianos || []){
+      const px = X(x), py = Y(z);
+      if (px < -5 || py < -5 || px > w+5 || py > h+5) continue;
+      c.fillRect(px - r, py - r, 2*r, 2*r);
+    }
+    if (k >= 1.5){
+      c.fillStyle = "#1f3a26";
+      for (const [x, z] of B.fuera || []){
+        const px = X(x), py = Y(z);
+        if (px < -5 || py < -5 || px > w+5 || py > h+5) continue;
+        c.fillRect(px - r, py - r, 2*r, 2*r);
+      }
+    }
+  } else {
+    c.strokeStyle = "#151b24"; c.lineWidth = Math.max(k*12, 8);
+    c.beginPath(); c.moveTo(X(M.x[0]), Y(M.z[0]));
+    for (let i = 1; i < M.x.length; i++) c.lineTo(X(M.x[i]), Y(M.z[i]));
+    c.stroke();
+  }
 
   // ---- 2. linea de meta: perpendicular al trazado, cruzando la pista ----
   {
@@ -458,7 +554,14 @@ function pintarMapa(){
     c.stroke();
   }
 
-  // ---- 3. recorridos reales: B abajo, A encima ----
+  // ---- 3. recorridos reales: C abajo, B, A encima ----
+  // Grosor segun zoom. A pista completa 3.5 px (7 frenando): con los 2.5 px de
+  // antes la trazada era un pelo sobre una banda de 12 m y habia que entrar a la
+  // curva si o si para ver algo. Con zoom crece a razon de 1.2 px por metro
+  // hasta 9 px (16 frenando); pasado ese tope la linea empieza a tapar el ancho
+  // de la banda y se pierde justo lo que se vino a mirar -- cual vuelta va por
+  // afuera de la otra.
+  const grosor = Math.max(3.5, Math.min(9, k*1.2));
   const recorrido = (tr, color) => {
     const px = tr.canales.pos_x, pz = tr.canales.pos_z, br = tr.canales.brake;
     const n = Math.min(px.length, pz.length);
@@ -471,7 +574,7 @@ function pintarMapa(){
       while (j < n-1 && frena(j) === f) j++;
       // Un stroke por TRAMO, no por segmento: una vuelta son ~2000 puntos y
       // 2000 stroke() sueltos dejan el arrastre del cursor a los tirones.
-      c.lineWidth = f ? 6 : 2.5;
+      c.lineWidth = f ? Math.min(16, grosor*2) : grosor;
       c.beginPath(); c.moveTo(X(px[i]), Y(pz[i]));
       for (let q = i+1; q <= j; q++) c.lineTo(X(px[q]), Y(pz[q]));
       c.stroke();
@@ -479,12 +582,12 @@ function pintarMapa(){
     }
   };
   if (hayPos){
-    if (conPos(trB)) recorrido(trB, "#ff2e4d");
-    if (conPos(trA)) recorrido(trA, "#27e0ff");
+    for (let q = sel.length-1; q >= 0; q--)     // al reves: A se pinta ultima
+      if (conPos(sel[q][2])) recorrido(sel[q][2], sel[q][1]);
   } else {
     // Trazas viejas (grabadas antes de que la traza trajera pos_x/pos_z): se cae
     // al comportamiento anterior -- una sola linea, coloreada por el pie.
-    const tr = trA || trB;
+    const tr = sel.length ? sel[0][2] : null;
     const brk = tr && tr.canales.brake, thr = tr && tr.canales.throttle;
     const paso = tr ? tr.paso_m : 2;
     c.lineWidth = 6;
@@ -530,7 +633,8 @@ function pintarMapa(){
     }
   };
   if (k >= 2 || S.vista){
-    for (const [tr, col] of [[trB, "#ff2e4d"], [trA, "#27e0ff"]]){
+    for (let q = sel.length-1; q >= 0; q--){
+      const col = sel[q][1], tr = sel[q][2];
       if (!conPos(tr) || !tr.eventos) continue;
       for (const e of tr.eventos){
         marca(tr, e.frenada_m, "frenada", col);
@@ -554,10 +658,10 @@ function pintarMapa(){
     const s = (cu.lado === "izq" ? -1 : 1) * (r + Math.max(6, k*6));
     const rx = X(M.x[j]) + nx/L*s, ry = Y(M.z[j]) + ny/L*s;
     if (rx < -r || ry < -r || rx > w+r || ry > h+r) continue;   // con zoom, solo las visibles
-    const sel = S.curvaZoom === cu.n;
+    const resaltada = S.curvaZoom === cu.n;
     c.fillStyle = "#0d1118"; c.beginPath(); c.arc(rx, ry, r, 0, 7); c.fill();
-    c.strokeStyle = sel ? "#27e0ff" : "#1f2733"; c.lineWidth = 1.5; c.stroke();
-    c.fillStyle = sel ? "#eef3fa" : "#5d6b7e";
+    c.strokeStyle = resaltada ? "#27e0ff" : "#1f2733"; c.lineWidth = 1.5; c.stroke();
+    c.fillStyle = resaltada ? "#eef3fa" : "#5d6b7e";
     c.fillText("T"+cu.n, rx, ry);
     S.rotulos.push({n: cu.n, x: rx, y: ry, r});
   }
@@ -569,19 +673,37 @@ function pintarMapa(){
       c.strokeStyle = "#04060a"; c.lineWidth = 2; c.stroke();
     };
     if (hayPos){
-      for (const tr of [trB, trA]){
+      for (let q = sel.length-1; q >= 0; q--){
+        const tr = sel[q][2];
         if (!conPos(tr)) continue;
         const i = Math.min(S.cursor, tr.canales.pos_x.length-1);
         punto(X(tr.canales.pos_x[i]), Y(tr.canales.pos_z[i]));
       }
     } else {
-      const paso = (trA || trB) ? (trA || trB).paso_m : 2;
+      const paso = sel.length ? sel[0][2].paso_m : 2;
       const i = Math.min(M.x.length-1, Math.round(S.cursor*paso / pasoMapa));
       punto(X(M.x[i]), Y(M.z[i]));
     }
   }
 
-  // ------------------------------------------------------------ interaccion ---
+  /* --------------------------------------------------------- interaccion ---
+     REPARTO DE GESTOS: arrastrar MUEVE el mapa, un clic/toque LEE el punto.
+
+     Antes el arrastre fijaba el cursor y NO habia forma de desplazarse: con
+     zoom metido en una curva quedabas encerrado en ella, y pasar a la de al
+     lado obligaba a salir a pista completa y volver a entrar por el chip. Los
+     chips ademas encuadran la curva "de fabrica", que no siempre es donde uno
+     quiere mirar.
+
+     Arrastrar = mover es lo que hace CUALQUIER mapa (Maps, un visor de fotos,
+     el propio juego en la pantalla de setup), asi que la mano ya lo sabe y no
+     hay nada que aprender. El cursor de lectura se conforma con el clic, que es
+     un gesto igual de barato, y se distingue del arrastre por el umbral de
+     abajo. En los graficos de canales el arrastre SIGUE siendo el cursor: ahi
+     no hay a donde desplazarse y barrer la vuelta con el dedo es el gesto util.
+     ------------------------------------------------------------------------ */
+  const UMBRAL_PAN = 5;   // px: soltar antes de moverse esto es un clic, no un arrastre
+
   const zoomEn = (px, py, factor) => {
     const wx = V.cx + (px - w/2)/k, wz = V.cz - (py - h/2)/k;
     const k2 = Math.max(kFit, Math.min(K_MAX, k*factor));
@@ -590,26 +712,52 @@ function pintarMapa(){
     pintarTodo();
   };
 
+  // Desplazar la vista tantos px de pantalla: el punto de mundo que estaba bajo
+  // el dedo tiene que quedar bajo el dedo. A pista completa no hay a donde
+  // moverse (todo el circuito ya cabe), asi que el arrastre no hace nada.
+  const pan = (dx, dy) => {
+    if (!S.vista || (!dx && !dy)) return;
+    S.vista = {cx: S.vista.cx - dx/k, cz: S.vista.cz + dy/k, k: S.vista.k};
+    pintarTodo();
+  };
+
   const pick = (px, py) => {
     // El cursor cae sobre el RECORRIDO DE A (el que se esta mirando), no sobre
-    // el mapa de referencia: con zoom las dos lineas estan separadas y engancharse
-    // a la de referencia dejaria el punto blanco fuera de las dos vueltas.
-    const ref = conPos(trA) ? trA : (conPos(trB) ? trB : null);
+    // el mapa de referencia: con zoom las lineas estan separadas y engancharse
+    // a la de referencia dejaria el punto blanco fuera de todas las vueltas.
+    const ref = (sel.find(([,,tr]) => conPos(tr)) || [])[2] || null;
     const xs = ref ? ref.canales.pos_x : M.x, zs = ref ? ref.canales.pos_z : M.z;
     let mejor = 0, dmin = Infinity;
     for (let i = 0; i < xs.length; i++){
       const d = (X(xs[i])-px)**2 + (Y(zs[i])-py)**2;
       if (d < dmin){ dmin = d; mejor = i; }
     }
-    const paso = (trA || trB) ? (trA || trB).paso_m : 2;
+    const paso = sel.length ? sel[0][2].paso_m : 2;
     S.cursor = ref ? mejor : Math.round(M.metros[mejor] / paso);
     pintarTodo();
+  };
+
+  const finGesto = (ev, valido) => {
+    punteros.delete(ev.pointerId);
+    if (punteros.size < 2){ S.pinch = null; S.medio = null; }
+    if (!gesto || gesto.id !== ev.pointerId) return;
+    const {x0, y0, movido} = gesto;
+    gesto = null;
+    cv.classList.remove("mueve");
+    if (valido && !movido) pick(x0, y0);         // se solto sin moverse: es un clic
   };
 
   cv.onwheel = ev => {
     ev.preventDefault();
     const r = cv.getBoundingClientRect();
     zoomEn(ev.clientX - r.left, ev.clientY - r.top, ev.deltaY < 0 ? 1.15 : 1/1.15);
+  };
+  // doble clic = acercarse x2 en ese punto, el atajo de siempre para meterse a
+  // una curva sin buscar su chip
+  cv.ondblclick = ev => {
+    ev.preventDefault();
+    const r = cv.getBoundingClientRect();
+    zoomEn(ev.clientX - r.left, ev.clientY - r.top, 2);
   };
   cv.onpointerdown = ev => {
     const r = cv.getBoundingClientRect();
@@ -618,13 +766,16 @@ function pintarMapa(){
     if (punteros.size >= 2){                     // arranca el pellizco: nada de cursor
       const ps = [...punteros.values()];
       S.pinch = Math.hypot(ps[0].x-ps[1].x, ps[0].y-ps[1].y);
+      S.medio = {x: (ps[0].x+ps[1].x)/2, y: (ps[0].y+ps[1].y)/2};
+      gesto = null;                              // el segundo dedo cancela el clic pendiente
+      cv.classList.remove("mueve");
       return;
     }
     for (const rt of S.rotulos)                  // tocar el rotulo = entrar a esa curva
       if ((rt.x-px)**2 + (rt.y-py)**2 <= (rt.r+4)**2)
         return zoomCurva(M.curvas.find(x => x.n === rt.n));
-    cv.setPointerCapture(ev.pointerId);
-    pick(px, py);
+    cv.setPointerCapture(ev.pointerId);          // que el arrastre no se corte al salirse
+    gesto = {id: ev.pointerId, x: px, y: py, x0: px, y0: py, movido: false};
   };
   cv.onpointermove = ev => {
     if (!punteros.has(ev.pointerId)) return;     // hover sin arrastrar: no toca nada
@@ -634,22 +785,30 @@ function pintarMapa(){
     if (punteros.size >= 2){
       const ps = [...punteros.values()];
       const d = Math.hypot(ps[0].x-ps[1].x, ps[0].y-ps[1].y);
-      if (S.pinch > 0 && d > 0)
-        zoomEn((ps[0].x+ps[1].x)/2, (ps[0].y+ps[1].y)/2, d/S.pinch);
-      S.pinch = d;
+      const mx = (ps[0].x+ps[1].x)/2, my = (ps[0].y+ps[1].y)/2;
+      // el pellizco tambien desplaza, por el punto medio: si no, acercarse a una
+      // curva de la esquina obliga a pellizcar y despues arrastrar aparte
+      if (S.medio) pan(mx - S.medio.x, my - S.medio.y);
+      if (S.pinch > 0 && d > 0) zoomEn(mx, my, d/S.pinch);
+      S.pinch = d; S.medio = {x: mx, y: my};
       return;
     }
-    pick(px, py);
+    if (!gesto || gesto.id !== ev.pointerId) return;
+    if (!gesto.movido && Math.hypot(px-gesto.x0, py-gesto.y0) > UMBRAL_PAN){
+      gesto.movido = true;
+      cv.classList.add("mueve");
+    }
+    if (gesto.movido){ pan(px-gesto.x, py-gesto.y); gesto.x = px; gesto.y = py; }
   };
-  cv.onpointerup = cv.onpointercancel = ev => {
-    punteros.delete(ev.pointerId);
-    if (punteros.size < 2) S.pinch = null;
-  };
+  cv.onpointerup     = ev => finGesto(ev, true);
+  cv.onpointercancel = ev => finGesto(ev, false);
 }
 
-// Los punteros activos viven FUERA de pintarMapa: cada arrastre repinta el mapa
-// (y reasigna los handlers), asi que un estado local se perderia a mitad de gesto.
+// Los punteros activos y el gesto en curso viven FUERA de pintarMapa: cada
+// arrastre repinta el mapa (y reasigna los handlers), asi que un estado local
+// se perderia a mitad de gesto.
 const punteros = new Map();
+let gesto = null;              // {id,x,y,x0,y0,movido} del arrastre de un dedo
 
 function zoomCurva(cu){
   const M = S.mapa, lz = S.lienzoMapa;
@@ -706,47 +865,56 @@ function pintarChips(){
 // ---- tabla de puntos por curva ----
 // Los metros van RELATIVOS AL APEX DE A ("frenada -118 m") porque el metro
 // absoluto de pista no le dice nada a nadie; la distancia al apex es la
-// referencia con la que un piloto habla de una frenada. La Δ es A-B: positiva
-// significa que A lo hace mas adelante (frena mas tarde, va a fondo despues).
+// referencia con la que un piloto habla de una frenada. Las Δ son A−B y A−C:
+// positiva significa que A lo hace mas adelante (frena mas tarde, va a fondo
+// despues).
 const sgn = v => (v > 0 ? "+" : v < 0 ? "-" : "") + Math.abs(Math.round(v));
 let sigEventos = "";
 function pintarEventos(){
   const cont = $("eventos"), M = S.mapa;
-  const trA = S.A && S.trazas.get(S.A), trB = S.B && S.trazas.get(S.B);
+  const trA = S.A && S.trazas.get(S.A);
   const evA = (trA && trA.eventos) || [];
   if (!M || !evA.length){ cont.innerHTML = ""; sigEventos = ""; return; }
 
-  const sig = [S.A, S.B, M.traza, evA.length].join("|");
+  const sig = [S.A, S.B, S.C, M.traza, evA.length].join("|");
   if (sig !== sigEventos){
-    const eB = new Map(((trB && trB.eventos) || []).map(e => [e.n, e]));
-    const hayB = !!trB;
-    const rel = (v, ref, hay) => !hay ? "" : (v == null ? "—" : sgn(v - ref) + " m");
-    const dif = (x, y) => !hayB ? "" : (x == null || y == null ? "—" : sgn(x - y));
+    // Una columna Δ por vuelta de comparacion puesta (B, C). Con tres vueltas ya
+    // no cabe la columna de metros crudos de cada una: lo que se lee es la
+    // diferencia, y el metro absoluto solo servia de intermedio para calcularla.
+    const comp = [["B", S.B], ["C", S.C]]
+      .filter(([, n]) => n && S.trazas.has(n))
+      .map(([cual, n]) => [cual, cual.toLowerCase(),
+                           new Map(((S.trazas.get(n).eventos) || []).map(e => [e.n, e]))]);
+    const nc = comp.length;
+    const rel = v => v == null ? "—" : sgn(v) + " m";
+    const thD = comp.map(([cual]) => `<th>Δ${cual}</th>`).join("");
     let html = `<table><thead>
       <tr><th rowspan="2">T</th>
-          <th class="g" colspan="3">frenada</th>
-          <th class="g" colspan="3">giro</th>
-          <th class="g" colspan="4">ápex</th>
-          <th class="g" colspan="3">a fondo</th></tr>
-      <tr><th class="g">A</th><th>B</th><th>Δ</th>
-          <th class="g">A</th><th>B</th><th>Δ</th>
-          <th class="g">A</th><th>Δ</th><th>km/h A</th><th>B</th>
-          <th class="g">A</th><th>B</th><th>Δ</th></tr>
+          <th class="g" colspan="${1+nc}">frenada</th>
+          <th class="g" colspan="${1+nc}">giro</th>
+          <th class="g" colspan="${2+2*nc}">ápex</th>
+          <th class="g" colspan="${1+nc}">a fondo</th></tr>
+      <tr><th class="g">A</th>${thD}
+          <th class="g">A</th>${thD}
+          <th class="g">A</th>${thD}<th>km/h A</th>${comp.map(([cual]) => `<th>${cual}</th>`).join("")}
+          <th class="g">A</th>${thD}</tr>
       </thead><tbody>`;
     for (const a of evA){
-      const b = eB.get(a.n) || {}, tiene = eB.has(a.n), ref = a.apex_m;
-      const grupo = kk => `<td class="a g">${rel(a[kk], ref, true)}</td>` +
-                          `<td class="b">${rel(b[kk], ref, tiene)}</td>` +
-                          `<td>${dif(a[kk], b[kk])}</td>`;
+      const ref = a.apex_m;
+      // Δ = A−X con signo: + significa que A lo hace MAS ADELANTE (frena mas
+      // tarde, va a fondo despues). Vacio no, "—": una celda en blanco se lee
+      // como cero y aca significa que esa vuelta no tiene la curva.
+      const porComp = fn => comp.map(([, cl, eX]) => `<td class="${cl}">${fn(eX.get(a.n))}</td>`).join("");
+      const grupo = kk => `<td class="a g">${a[kk] == null ? "—" : rel(a[kk] - ref)}</td>`
+                        + porComp(b => (!b || a[kk] == null || b[kk] == null) ? "—" : sgn(a[kk] - b[kk]));
       html += `<tr data-n="${a.n}"><td class="t">T${a.n}</td>`
             + grupo("frenada_m") + grupo("giro_m")
-            // el apex de A es el origen de todos los metros de la fila; el de B
-            // va como Δ con el MISMO signo que las otras columnas (A−B, + = A mas
-            // adelante), no como "B relativo a A", que se leia al reves
+            // el apex de A es el origen de todos los metros de la fila; los de
+            // B/C van como Δ con el MISMO signo que las otras columnas
             + `<td class="a g">${Math.round(ref)} m</td>`
-            + `<td>${dif(a.apex_m, b.apex_m)}</td>`
+            + porComp(b => (!b || b.apex_m == null) ? "—" : sgn(a.apex_m - b.apex_m))
             + `<td class="a">${a.vmin_kmh == null ? "—" : a.vmin_kmh.toFixed(1)}</td>`
-            + `<td class="b">${!tiene || b.vmin_kmh == null ? "" : b.vmin_kmh.toFixed(1)}</td>`
+            + porComp(b => (!b || b.vmin_kmh == null) ? "—" : b.vmin_kmh.toFixed(1))
             + grupo("gas_m") + `</tr>`;
     }
     cont.innerHTML = html + `</tbody></table>`;
@@ -775,8 +943,9 @@ function pintarGraficos(){
   // que lado se lee al reves la mitad de las veces, y justo en el grafico que
   // decide donde estas perdiendo tiempo.
   if (S.A && S.B) defs.push({delta:true, alto:86, dec:3,
-    tit:"delta A vs B · sube = A pierde · s"});
-  defs.push(...CANALES.filter(c => serie(S.A, c.k) || serie(S.B, c.k)));
+    tit: S.C ? "delta A vs B (blanco) · A vs C (ámbar) · sube = A pierde · s"
+             : "delta A vs B · sube = A pierde · s"});
+  defs.push(...CANALES.filter(c => VUELTAS.some(([cual]) => serie(S[cual], c.k))));
 
   if (cont.childElementCount !== defs.length){
     cont.innerHTML = "";
@@ -803,18 +972,28 @@ function dibujar(cv, d, mtr, n){
   const largo = mtr[n-1] || 1;
   const px = m => padL + m/largo*W;
 
-  let A = null, B = null;
+  // Series a dibujar como [valores, color], en orden A,B,C. En el delta la
+  // primera es siempre A vs B (blanca, la de toda la vida) y la segunda, si hay
+  // C, es A vs C en ambar.
+  let ser;
   if (d.delta){
-    const ta = serie(S.A,"t"), tb = serie(S.B,"t");
-    A = new Array(n); for (let i=0;i<n;i++) A[i] = ta[i]-tb[i];
-  } else { A = serie(S.A, d.k); B = serie(S.B, d.k); }
+    const ta = serie(S.A,"t");
+    ser = [["B","#eef3fa"],["C","#ffb020"]].map(([cual,col]) => {
+      const tx = S[cual] && serie(S[cual],"t");
+      if (!tx) return null;
+      const v = new Array(n); for (let i=0;i<n;i++) v[i] = ta[i]-tx[i];
+      return [v, col];
+    }).filter(Boolean);
+  } else {
+    ser = VUELTAS.map(([cual,col]) => [serie(S[cual], d.k), col]).filter(x => x[0]);
+  }
 
   // escala
   let lo, hi;
   if (d.esc){ [lo,hi] = d.esc; }
   else {
     lo = Infinity; hi = -Infinity;
-    for (const s of [A,B]) if (s) for (let i=0;i<n;i++){ if(s[i]<lo)lo=s[i]; if(s[i]>hi)hi=s[i]; }
+    for (const [s] of ser) for (let i=0;i<n;i++){ if(s[i]<lo)lo=s[i]; if(s[i]>hi)hi=s[i]; }
     if (!isFinite(lo)) { lo = 0; hi = 1; }
     if (d.delta){ const m = Math.max(Math.abs(lo),Math.abs(hi),0.05); lo=-m; hi=m; }
     else { const m = (hi-lo)*0.08 || 1; lo -= m; hi += m; }
@@ -850,20 +1029,20 @@ function dibujar(cv, d, mtr, n){
     }
     c.stroke();
   };
-  if (d.delta){
-    // relleno con signo: bajo cero ganas, sobre cero pierdes
+  if (d.delta && ser.length){
+    // Relleno con signo: bajo cero ganas, sobre cero pierdes. SOLO para A vs B:
+    // dos rellenos superpuestos se ensucian y no se lee ninguno, asi que la
+    // linea de C va sola.
+    const A0 = ser[0][0];
     c.beginPath(); c.moveTo(px(mtr[0]), py(0));
-    for (let i=0;i<n;i++) c.lineTo(px(mtr[i]), py(A[i]));
+    for (let i=0;i<n;i++) c.lineTo(px(mtr[i]), py(A0[i]));
     c.lineTo(px(mtr[n-1]), py(0)); c.closePath();
     const g = c.createLinearGradient(0, py(hi), 0, py(lo));
     g.addColorStop(0, "rgba(255,46,77,.35)"); g.addColorStop(0.5, "rgba(255,46,77,0)");
     g.addColorStop(0.5, "rgba(43,240,122,0)"); g.addColorStop(1, "rgba(43,240,122,.35)");
     c.fillStyle = g; c.fill();
-    trazo(A, "#eef3fa");
-  } else {
-    trazo(B, "#ff2e4d");
-    trazo(A, "#27e0ff");
   }
+  for (let q = ser.length-1; q >= 0; q--) trazo(ser[q][0], ser[q][1]);  // A encima
 
   // eje Y: solo los extremos, que es lo que se lee de una mirada
   c.fillStyle = "#3d4a5c"; c.font = "9px ui-monospace,monospace";
@@ -895,40 +1074,51 @@ function pintarLectura(){
   $("lectura").style.display = "block";
   const i = S.cursor == null ? null : Math.min(S.cursor, n-1);
   const mtr = metros();
-  const ta = S.A && S.trazas.get(S.A), tb = S.B && S.trazas.get(S.B);
+  const sel = trazasSel();
+  // la grilla crece con las vueltas puestas: rotulo + una columna por vuelta
+  $("lectura").style.setProperty("--nv", Math.max(1, sel.length));
+  for (const [cual] of VUELTAS)
+    $("lec"+cual).style.display = sel.some(x => x[0] === cual) ? "" : "none";
+  const ta = S.A && S.trazas.get(S.A);
 
   if (i == null){
     $("curva").textContent = "—";
-    $("lecA").textContent = ta ? `A · L${ta.vuelta} ${t2s(ta.tiempo)}` : "";
-    $("lecB").textContent = tb ? `B · L${tb.vuelta} ${t2s(tb.tiempo)}` : "";
-    $("lecfilas").innerHTML = `<div class="fnota">arrastra el dedo sobre un gráfico o el mapa para leer punto por punto</div>`;
+    for (const [cual,, tr] of sel) $("lec"+cual).textContent = `${cual} · L${tr.vuelta} ${t2s(tr.tiempo)}`;
+    $("lecfilas").innerHTML = `<div class="fnota">toca el mapa o arrastra el dedo sobre un gráfico para leer punto por punto</div>`;
     return;
   }
   const m = mtr[i];
   let cu = null;
   if (S.mapa) for (const x of S.mapa.curvas) if (x.inicio - 60 <= m && m <= x.fin + 40) cu = x;
   $("curva").textContent = (cu ? "T"+cu.n : "—") + "  " + Math.round(m) + "m";
-  $("lecA").textContent = ta ? `A L${ta.vuelta}` : "";
-  $("lecB").textContent = tb ? `B L${tb.vuelta}` : "";
+  for (const [cual,, tr] of sel) $("lec"+cual).textContent = `${cual} L${tr.vuelta}`;
 
+  // cada fila es [rotulo, [clase, texto], ...] -- la clase es la letra de la
+  // vuelta, para que la columna quede del color de su linea en los graficos
   const filas = [];
-  if (ta && tb){
-    const dv = ta.canales.t[i] - tb.canales.t[i];
-    filas.push(["delta A-B", (dv>=0?"+":"") + dv.toFixed(3) + " s",
-                dv >= 0 ? "A va perdiendo" : "A va ganando"]);
+  if (ta) for (const [cual] of VUELTAS.slice(1)){
+    const tx = S[cual] && S.trazas.get(S[cual]);
+    if (!tx) continue;
+    const dv = ta.canales.t[i] - tx.canales.t[i];
+    filas.push([`delta A-${cual}`, ["a", (dv>=0?"+":"") + dv.toFixed(3) + " s"],
+                [cual.toLowerCase(), dv >= 0 ? "A va perdiendo" : "A va ganando"]]);
   }
   for (const c of CANALES){
-    const a = ta && ta.canales[c.k], b = tb && tb.canales[c.k];
-    if (!a && !b) continue;
+    if (!sel.some(([,, tr]) => tr.canales[c.k])) continue;
     const f = v => v == null ? "" : (c.pct ? Math.round(v*100)+"%" : v.toFixed(c.dec ?? 0));
-    filas.push([c.tit, f(a && a[i]), f(b && b[i])]);
+    filas.push([c.tit, ...sel.map(([cual,, tr]) =>
+      [cual.toLowerCase(), f(tr.canales[c.k] && tr.canales[c.k][i])])]);
   }
-  $("lecfilas").innerHTML = filas.map(([k,a,b]) =>
-    `<div class="fila"><span class="k">${k}</span><span class="a">${a}</span><span class="b">${b}</span></div>`).join("");
+  $("lecfilas").innerHTML = filas.map(([k, ...cs]) =>
+    `<div class="fila"><span class="k">${k}</span>`
+    + cs.map(([cl, v]) => `<span class="${cl}">${v}</span>`).join("") + `</div>`).join("");
 }
 
 // ------------------------------------------------------------------ eventos ---
-$("sesion").onchange = async e => { S.A = S.B = null; S.trazas.clear(); await cargarSesion(e.target.value); };
+$("sesion").onchange = async e => { S.A = S.B = S.C = null; S.trazas.clear(); await cargarSesion(e.target.value); };
+// Escape = volver a pista completa, el mismo escape que cierra cualquier cosa.
+// Es la salida rapida cuando te perdiste arrastrando y no ves donde quedaste.
+window.addEventListener("keydown", ev => { if (ev.key === "Escape" && S.vista) zoomCurva(null); });
 $("recargar").onclick = async () => { S.trazas.clear(); await cargarSesion(S.sesion, true); };
 $("csv").onclick = () => {
   const t = S.tandas[S.tanda];
@@ -957,14 +1147,26 @@ setInterval(async () => {
 (async () => {
   try {
     const primera = await cargarSesiones();
-    await cargarSesion(primera);
+    // ?s=<carpeta> abre esa sesion (junto con #Tn arma un link a "esta curva de
+    // esta sesion", que es lo que se le manda a un alumno)
+    const qs = new URLSearchParams(location.search).get("s");
+    const ini = qs && [...$("sesion").options].some(o => o.value === qs) ? qs : primera;
+    $("sesion").value = ini;
+    await cargarSesion(ini);
     // #T3 en la URL abre ya en esa curva (ver zoomCurva); el mapa necesita un
     // primer pintado con ancho real antes de poder calcular la vista
     const m = /^#T(\d+)$/.exec(location.hash);
-    if (m && S.mapa) requestAnimationFrame(() => {
-      const cu = S.mapa.curvas.find(c => c.n === Number(m[1]));
-      if (cu) zoomCurva(cu);
-    });
+    if (m && S.mapa){
+      // en una pestana en segundo plano el canvas no tiene ancho todavia y
+      // zoomCurva no puede calcular la vista: se reintenta hasta 2 s
+      let intentos = 0;
+      const intentar = () => {
+        const cu = S.mapa && S.mapa.curvas.find(c => c.n === Number(m[1]));
+        if (cu && S.lienzoMapa) zoomCurva(cu);
+        else if (++intentos < 40) setTimeout(intentar, 50);
+      };
+      requestAnimationFrame(intentar);
+    }
   } catch(e){
     // sin sesiones grabadas NO es un error: es el estado normal de una
     // instalacion recien hecha. Redactarlo como falla asusta al alumno.

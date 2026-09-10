@@ -13,12 +13,17 @@ Automobilista 2.
 
 - **Visor de análisis** (`http://<IP>:8080/analisis.html`, botón 📈 del dash):
   después de girar, tus vueltas quedan grabadas solas — mapa de la pista con las
-  curvas numeradas y los **dos recorridos reales superpuestos** (A y B, grueso
-  donde se frena), zoom por curva (chips `T1…Tn`, rueda o pellizco; `#T3` en la
-  URL abre ya en esa curva) con los cuatro puntos de cada vuelta marcados
-  —frenada, giro, ápex, a fondo— y la tabla de esos metros por curva con la
-  diferencia A−B; comparación de canales y delta de tiempo metro a metro; export
-  a CSV. Es la herramienta con la que tu coach revisa tu sesión.
+  curvas numeradas y hasta **tres recorridos reales superpuestos** (A, B y C,
+  grueso donde se frena) sobre los **bordes aprendidos** de la pista —el juego
+  no entrega la geometría, pero sí qué superficie hay bajo cada rueda, así que
+  el asfalto y los pianos se sacan de todas tus vueltas en esa pista y se
+  ensanchan solos a medida que giras—; zoom por curva (chips `T1…Tn`, rueda,
+  doble clic o pellizco; arrastrar mueve el mapa, tocar fija el cursor;
+  `?s=<sesión>#T3` en la URL abre ya en esa curva) con los cuatro puntos de
+  cada vuelta marcados —frenada, giro, ápex, a fondo— y la tabla de esos metros
+  por curva con la diferencia contra A; comparación de canales y delta de
+  tiempo metro a metro; export a CSV. Es la herramienta con la que tu coach
+  revisa tu sesión.
 
 - **Página principal**: tira de 20 LEDs de cambio (verde/ámbar/rojo + strobe azul al
   límite), marcha con glow y velocidad. Splits a coche de adelante/atrás, posición,
