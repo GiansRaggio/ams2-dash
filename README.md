@@ -273,6 +273,13 @@ Lo que el informe **no** hace, a propósito:
 Si la sesión mezcló condiciones a mitad de tanda (pista, compuesto, ayudas), no
 emite ningún número y lo dice: cualquier cifra saldría creíble y equivocada.
 
+**Cierre de curso**: `--contra telemetry/<carpeta_de_la_medición_de_entrada>` emite
+el informe de cierre — el Δgap% y el ΔCV% entre la medición de entrada (clase 2) y
+la de salida (clase 8), y el mapa con tu vuelta de entrada y la de salida sobre el
+mismo trazado, sin la referencia del instructor encima. Exige que las dos sesiones
+sean del mismo combo (pista, variante y auto) y falla si no; si falta un número en
+cualquiera de las dos puntas, el Δ se declara faltante con el motivo.
+
 ## Variante UDP (Linux, o si de verdad la necesitas en Windows): `bridge.py`
 
 `bridge.py` es la variante original del fork base: escucha el broadcast UDP de

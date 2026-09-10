@@ -621,9 +621,11 @@ def mapa(folder: str, nombre: str | None = None) -> dict:
 # corredor angosto que se ensancha solo a medida que se gira.
 #
 # Codigos del enum TerrainMaterials del SDK de Project CARS 2 (AMS2 lo hereda).
-# No se pudo abrir el header hoy; los valores se VERIFICARON contra el corpus:
-# 0 en toda la recta, 10 y 41 solo en pianos, 46 en los escapes de Mosport, 7 en
-# el pasto, 49 en la linea blanca de fuera de pista en Cordoba.
+# Verificados el 2026-09-10 contra el header CREST2-AMS2 (SHARED_MEMORY_VERSION
+# 14): 0 ROAD, 7 GRASS, 10 RUMBLE_STRIPS, 32 ASTROTURF, 40/41 B1/B2RUMBLES, 46
+# RUNOFF_ROAD, 47 ILLEGAL_STRIP, 49 PAINT_CONCRETE_ILLEGAL, 50 RALLY_TARMAC. Y
+# contra el corpus: 0 en toda la recta, 10 y 41 solo en pianos, 46 en los
+# escapes de Mosport, 7 en el pasto, 49 en la linea blanca de Cordoba.
 TERRENO_ASFALTO = {0, 1, 2, 3, 4, 21, 29, 35, 36, 37, 45, 48, 50}
 TERRENO_PIANO = {10, 25, 40, 41}
 TERRENO_FUERA = {5, 6, 7, 8, 9, 15, 16, 17, 18, 19, 20, 22, 24, 26, 27, 28,

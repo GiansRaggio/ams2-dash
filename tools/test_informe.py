@@ -49,8 +49,13 @@ def _ok(name, cond, extra=""):
 
 # --- sesion sintetica -----------------------------------------------------------
 
-def _vuelta(perdida=0.0, frena_antes=0.0, n=1200):
+def _vuelta(perdida=0.0, frena_antes=0.0, n=1200, lento=0.0):
     """Una vuelta sintetica con dos curvas.
+
+    `lento` baja la velocidad en TODA la vuelta: sube el tiempo de vuelta parejo sin
+    tocar la dispersion. Es la palanca del gap% en los tests de cierre, separada de
+    la del CV% (`perdida`), que es justo la separacion que el informe tiene que
+    mostrar como dos numeros distintos.
 
     `frena_antes` corre el inicio de la frenada hacia atras y baja la velocidad en
     todo ese tramo: es el error que el informe tiene que detectar y nombrar.
@@ -80,7 +85,7 @@ def _vuelta(perdida=0.0, frena_antes=0.0, n=1200):
                 v += perdida                 # ganancia: parte la perdida en dos rachas
             elif 1050 <= d < 1150:
                 v -= perdida
-        v = max(50.0, v)
+        v = max(50.0, v - lento)
         # trazado en forma de anillo: da posiciones reales para el mapa
         ang = 2 * math.pi * d / LARGO
         dist.append(d); spd.append(v); thr.append(th); brk.append(bk); tt.append(t)
@@ -90,21 +95,33 @@ def _vuelta(perdida=0.0, frena_antes=0.0, n=1200):
 
 
 def escribir_sesion(base, nombre="Test__Car__practice__20260101_000000",
-                    n_vueltas=8, con_pos=True, mezclada=False, sigma_frenada=0.0):
+                    n_vueltas=8, con_pos=True, mezclada=False, sigma_frenada=0.0,
+                    escala=1.0, lento=0.0, track="Test", car="Car"):
+    """Una carpeta de sesion sintetica. `escala` mueve el CV%, `lento` mueve el ritmo.
+
+    `track`/`car` estan para poder armar una sesion de OTRO combo, que es lo unico
+    que el modo cierre tiene que rechazar de plano.
+    """
     d = os.path.join(base, nombre)
     os.makedirs(d, exist_ok=True)
-    json.dump({"track": "Test", "car": "Car", "track_variation": "Test_GP",
-               "started": "2026-01-01T00:00:00", "channels": T.HEADER},
+    # la fecha sale del nombre de la carpeta y no de una constante: el informe de
+    # cierre imprime las dos fechas, y con un "started" fijo las dos salian iguales
+    f = nombre.split("__")[-1][:8]
+    started = (f"{f[:4]}-{f[4:6]}-{f[6:8]}T00:00:00" if len(f) == 8 and f.isdigit()
+               else "2026-01-01T00:00:00")
+    json.dump({"track": track, "car": car, "track_variation": f"{track}_GP",
+               "started": started, "channels": T.HEADER},
               open(os.path.join(d, "session.json"), "w", encoding="utf-8"))
     idx = {h: i for i, h in enumerate(T.HEADER)}
     laps = []
     for k in range(n_vueltas):
         # la vuelta 0 es la mejor; el resto frena antes y pierde en las dos curvas
-        perdida = 0.0 if k == 0 else 5.0 + 0.5 * k
+        perdida = 0.0 if k == 0 else (5.0 + 0.5 * k) * escala
         fa = 0.0 if k == 0 else 30.0
         if sigma_frenada:                    # el punto de frenada salta vuelta a vuelta
             fa = 40.0 + (sigma_frenada if k % 2 else -sigma_frenada)
-        dist, spd, thr, brk, tt, px, pz, lt = _vuelta(perdida=perdida, frena_antes=fa)
+        dist, spd, thr, brk, tt, px, pz, lt = _vuelta(perdida=perdida, frena_antes=fa,
+                                                      lento=lento)
         rows = []
         for j in range(len(dist)):
             r = [0.0] * len(T.HEADER)
@@ -382,6 +399,107 @@ def test_gap_solo_de_la_tanda(base):
         A.REFDIR = ref_orig
 
 
+def test_cierre_del_curso(base):
+    """El producto del curso: el delta entre la medicion de entrada y la de salida.
+
+    El curso abre con la medicion de entrada (clase 2) y cierra con la de salida
+    (clase 8) en el mismo combo ancla. Lo que se entrega no es el informe de la
+    clase 8: es cuanto se movieron los dos numeros y la imagen de las dos vueltas
+    sobre el mismo trazado. Lo que se prueba aca es que ese delta no se pueda
+    fabricar: mismo combo obligatorio, y si falta una punta se dice.
+    """
+    print("\ncierre del curso (--contra la medicion de entrada):")
+    # entrada: mas lenta (peor gap) y mas dispersa (peor CV) que la salida
+    ent = escribir_sesion(base, nombre="Test__Car__practice__20260107_000000",
+                          escala=2.5, lento=8.0)
+    sal = escribir_sesion(base, nombre="Test__Car__practice__20260808_000000")
+    _ok("mismo combo: la validacion pasa", I.validar_par(sal, ent) is None,
+        I.validar_par(sal, ent))
+
+    ref_orig = A.REFDIR
+    A.REFDIR = os.path.join(base, "_refs_cierre")
+    try:
+        os.makedirs(A.REFDIR, exist_ok=True)
+        meta, _ = A._load(sal)
+        with open(os.path.join(A.REFDIR, A._ref_nombre(meta) + ".json"), "w",
+                  encoding="utf-8") as f:
+            json.dump({"car": "Car", "track": "Test", "track_variation": "Test_GP", "lap": 1,
+                       "lap_time": round(A.mejor_de_la_tanda(sal)["lap_time"], 3),
+                       "sectors": [30.0, 30.0, 30.0],
+                       "cond": {"mojado": False, "tc": 0, "abs": 0, "compuesto": "Lisos"}}, f)
+        n_sal, n_ent = I.numeros(sal), I.numeros(ent)
+        dl = I.delta_numeros(n_sal, n_ent)
+        _ok("la entrada era mas lenta que la salida", n_ent["gap"]["valor"] > 0.5,
+            n_ent["gap"] and n_ent["gap"]["valor"])
+        _ok("Δgap = salida - entrada, negativo porque mejoro",
+            dl["gap"]["valor"] < 0 and
+            abs(dl["gap"]["valor"] - (n_sal["gap"]["valor"] - n_ent["gap"]["valor"])) < 0.011,
+            dl["gap"]["valor"])
+        _ok("Δcv tambien con signo, negativo porque se junto",
+            dl["cv"]["valor"] < 0 and
+            abs(dl["cv"]["valor"] - (n_sal["cv"]["valor"] - n_ent["cv"]["valor"])) < 0.011,
+            dl["cv"]["valor"])
+        _ok("el delta guarda las dos puntas, no solo la resta",
+            dl["gap"]["entrada"] == n_ent["gap"]["valor"] and
+            dl["gap"]["salida"] == n_sal["gap"]["valor"])
+
+        d = I.armar(sal, nivel=2, alumno="Alumna Cierre", contra=ent)
+        h = I.render(d)
+        _ok("la cabecera dice que es el cierre del curso",
+            "Informe de cierre del curso" in h)
+        _ok("y lleva las DOS fechas", "2026-01-07" in h and "2026-08-08" in h)
+        _ok("el HTML muestra el Δ del curso", "Δ del curso" in h)
+        _ok("y lo dice en palabras, no solo con el signo", "bajaste" in h)
+        # el mapa es el producto: TU vuelta de entrada contra TU vuelta de salida
+        mp = d["mapa"]
+        _ok("el mapa superpone las dos vueltas del alumno", mp and mp["superpone"])
+        _ok("la leyenda dice entrada y salida con la fecha",
+            mp and mp["etq_otra"] == "entrada 07-01" and mp["etq_tuya"] == "salida 08-08",
+            mp and (mp["etq_tuya"], mp["etq_otra"]))
+        _ok("la referencia de la escuela NO se dibuja en el cierre",
+            "referencia</span>" not in h and "entrada 07-01" in h)
+        _ok("y dice por que no esta", "es tuya contra ti mismo" in h)
+        _ok("el logro de progreso sale de las dos carpetas explicitas",
+            any("medición de entrada del 07-01" in x for x in d["logros"]), d["logros"])
+    finally:
+        A.REFDIR = ref_orig
+
+    # Sin --contra la linea de progreso sigue existiendo, pero (a) sale de la tanda y
+    # no de la mejor vuelta del dia -- ese era el sesgo: el minimo de una muestra baja
+    # solo con mas intentos -- y (b) se presenta como lo que es, la carpeta anterior
+    # del combo que hay en el disco, no la medicion de entrada del curso.
+    print("\n  sin --contra, la sesion anterior se nombra como lo que es:")
+    d_solo = I.armar(sal, nivel=1)
+    linea = next((x for x in d_solo["logros"] if "bajó" in x), None)
+    _ok("hay linea de progreso contra la sesion anterior del combo", bool(linea), linea)
+    _ok("y dice que es la anterior en este combo, con la fecha",
+        linea and "tu sesión anterior en este combo (la del 07-01)" in linea, linea)
+    _ok("mide con la mejor de la TANDA, no con la mejor del dia",
+        linea and f"{A.mejor_de_la_tanda(ent)['lap_time'] - A.mejor_de_la_tanda(sal)['lap_time']:.2f} s"
+        in linea, linea)
+
+    print("\n  el delta no se fabrica:")
+    otro = escribir_sesion(base, nombre="Otro__Car__practice__20260505_000000", track="Otro")
+    _ok("otro combo se rechaza", I.validar_par(sal, otro) is not None)
+    _ok("y el motivo nombra que cambio",
+        "pista" in (I.validar_par(sal, otro) or ""), I.validar_par(sal, otro))
+    try:
+        I.armar(sal, nivel=2, contra=otro)
+        _ok("armar revienta con un combo distinto", False)
+    except ValueError as e:
+        _ok("armar revienta con un combo distinto", "mismo combo" in str(e), str(e))
+
+    corta = escribir_sesion(base, nombre="Test__Car__practice__20260202_000000", n_vueltas=2)
+    dl = I.delta_numeros(I.numeros(sal), I.numeros(corta))
+    _ok("con una entrada de 2 vueltas el Δcv se declara faltante",
+        dl["cv"]["valor"] is None and dl["cv"]["falta"])
+    _ok("y el motivo dice que la punta que falla es la entrada",
+        "en la medición de entrada" in dl["cv"]["falta"], dl["cv"]["falta"])
+    h = I.render(I.armar(sal, nivel=1, contra=corta))
+    _ok("el informe lo dice y no estima", "No se puede calcular" in h and
+        "No se estima con otra cosa" in h)
+
+
 def test_archivo(base, d):
     print("\nescritura del archivo:")
     ruta = I.generar(d, nivel=2, alumno="Ñuñoa Tester",
@@ -410,6 +528,7 @@ def main():
         test_pocas_vueltas(base)
         test_frenada_dispersa(base)
         test_gap_solo_de_la_tanda(base)
+        test_cierre_del_curso(base)
         test_archivo(base, d)
     finally:
         A.TELEM, A.REFDIR = old_telem, old_ref

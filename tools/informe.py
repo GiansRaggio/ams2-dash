@@ -31,9 +31,36 @@ Cuatro reglas del metodo que estan implementadas y no son decoracion:
   - "El nivel es un permiso, no una nota." Por eso `--nivel` es un PARAMETRO que
     pone el instructor. El informe jamas lo deduce de los numeros.
 
+Modo de CIERRE DE CURSO (`--contra <carpeta_de_entrada>`)
+---------------------------------------------------------
+El curso abre con la medicion de ENTRADA (clase 2) y cierra con la de SALIDA
+(clase 8), las dos en el mismo combo ancla y con el mismo protocolo. El producto
+del curso no es el informe de la clase 8: es el delta de gap% y el de CV% entre
+las dos, y la imagen de la vuelta de entrada y la de salida sobre el mismo
+trazado. Con `--contra` el informe emite eso:
+
+  - Seccion 1 muestra los dos numeros de hoy, los de la entrada y el delta
+    (salida - entrada, con signo; negativo = mejoro). Si falta el numero en
+    cualquiera de las dos puntas, el delta se declara faltante con el motivo y no
+    se estima.
+  - Seccion 3 dibuja TU mejor de la tanda de entrada y TU mejor de la tanda de
+    salida. La referencia del instructor NO se dibuja aca: el producto es el
+    alumno contra si mismo, y meter una tercera linea gris convierte la imagen
+    del progreso en otra comparacion mas.
+  - El logro "bajaste X s" sale de las DOS carpetas que paso el instructor, no de
+    la carpeta anterior que encuentre en el disco.
+
+Por que `--contra` pide la carpeta y no usa la referencia guardada del combo como
+"entrada": la referencia es la vuelta del INSTRUCTOR y es la vara del gap% de
+todos los alumnos. Si el toolkit guardara ahi la vuelta de entrada del alumno
+para tenerla a mano, esa vuelta pasaria a ser la referencia de la escuela en ese
+combo y el gap% de todo el curso quedaria medido contra un alumno del primer dia
+-- todos saldrian excelentes y el numero dejaria de significar algo. La medicion
+de entrada vive en su carpeta de sesion, como cualquier otra.
+
 Uso:
     python tools/informe.py <carpeta_sesion> [--nivel 1|2|3] [--alumno "Nombre"]
-                            [--salida ruta.html] [--abrir]
+                            [--contra <carpeta_entrada>] [--salida ruta.html] [--abrir]
 """
 import argparse
 import datetime
@@ -151,6 +178,97 @@ def foco(gap, cv):
         return ("técnica" if cv <= 0.7 else
                 "las dos parejo" if cv <= 1.5 else "consistencia")
     return "técnica" if cv <= 0.7 else "fundamentos"
+
+
+# --- cierre de curso: entrada contra salida -------------------------------------
+
+def _fecha_carpeta(folder):
+    """'DD-MM' del nombre Pista__Auto__tipo__YYYYMMDD_HHMMSS. El nombre crudo si no calza."""
+    f = os.path.basename(os.path.abspath(folder)).split("__")[-1][:8]
+    return f"{f[6:8]}-{f[4:6]}" if len(f) == 8 and f.isdigit() else f
+
+
+def _combo_estricto(folder):
+    """(track, track_variation, car) de session.json, tal cual estan escritos.
+
+    Mas estricto que `A._combo_of`, que solo mira (car, track): dos variantes de la
+    misma pista tienen otro largo y otro trazado, asi que un delta entre ellas seria
+    un numero perfectamente creible sacado de dos pruebas distintas.
+    """
+    meta, _ = A._load(folder)
+    return tuple((meta.get(k) or "").strip() for k in ("track", "track_variation", "car"))
+
+
+def validar_par(salida, entrada):
+    """None si las dos sesiones son del mismo combo; el motivo (texto) si no.
+
+    No se intenta "arreglar" un combo distinto de ninguna forma. El delta del curso
+    solo significa algo si la prueba fue la misma las dos veces -- es la razon
+    entera de que la escuela mida en un combo ancla y no donde toque.
+    """
+    a, b = _combo_estricto(entrada), _combo_estricto(salida)
+    # "x" es el placeholder que deja el grabador cuando la sesion salio mala: dos "x"
+    # calzarian entre si y darian por buena la comparacion mas rota de todas.
+    if not any(a) or not any(b) or "x" in (a[0], a[2], b[0], b[2]):
+        return ("una de las dos sesiones no trae metadata de auto y pista "
+                "(session.json incompleto o con el placeholder 'x'): no se puede "
+                "verificar que sea el mismo combo")
+    if a != b:
+        etq = ("pista", "variante", "auto")
+        dif = "; ".join(f"{etq[i]}: entrada '{a[i] or '?'}' contra salida '{b[i] or '?'}'"
+                        for i in range(3) if a[i] != b[i])
+        return f"no son el mismo combo ({dif})"
+    return None
+
+
+def delta_numeros(num_sal, num_ent):
+    """Delta salida - entrada de los dos numeros. Negativo = mejoro.
+
+    El delta se declara faltante -- con el motivo de la punta que falla -- apenas
+    una de las dos sesiones no tiene el numero. La tentacion es rellenar la punta
+    que falta con lo que haya (la mejor vuelta suelta, la sesion vecina) y sale un
+    delta plausible; el alumno se lleva un progreso que nadie midio.
+    """
+    out = {}
+    for k, clave in (("gap", "ritmo"), ("cv", "consistencia")):
+        a, b = num_ent.get(k), num_sal.get(k)
+        if a and b:
+            out[k] = {"valor": round(b["valor"] - a["valor"], 2),
+                      "entrada": a["valor"], "salida": b["valor"],
+                      "banda_entrada": a["banda"], "falta": None}
+            continue
+        def _porque(num, cl=clave):
+            return ("la sesión mezcló condiciones y no es calificable" if num["mezclada"]
+                    else _motivo(num["faltan"], cl, "el número no se pudo calcular"))
+
+        pe, ps = (None if a else _porque(num_ent)), (None if b else _porque(num_sal))
+        if pe and pe == ps:
+            # Falta en las dos puntas por lo mismo (el caso comun: no hay referencia
+            # guardada del combo). Repetir la frase entera dos veces la vuelve ilegible
+            # justo donde el alumno tiene que entender por que no hay numero.
+            falta = f"en las dos mediciones, {pe}"
+        else:
+            falta = " y ".join(f"en la medición de {q}, {p}" for q, p in
+                               (("entrada", pe), ("salida", ps)) if p)
+        out[k] = {"valor": None, "entrada": a["valor"] if a else None,
+                  "salida": b["valor"] if b else None, "banda_entrada": a["banda"] if a else None,
+                  "falta": falta}
+    return out
+
+
+def par_cierre(salida, entrada):
+    """(traza de salida, traza de entrada) — tu mejor de la TANDA en cada una.
+
+    None si la sesion de salida no tiene traza; la de entrada puede venir en None y
+    el mapa dibuja solo la de hoy. Sale de `mejor_de_la_tanda` y no de la mejor del
+    dia por lo mismo que el gap%: la de la tanda es la que se midio.
+    """
+    ra, rb = A.mejor_de_la_tanda(salida), A.mejor_de_la_tanda(entrada)
+    ta = A._lap_trace(salida, ra) if ra else None
+    tb = A._lap_trace(entrada, rb) if rb else None
+    if not ta or not ta.get("lap_dist"):
+        return None
+    return ta, (tb if tb and tb.get("lap_dist") else None)
 
 
 # --- de que traza contra que traza ----------------------------------------------
@@ -427,7 +545,14 @@ def una_cosa(folder, per, num):
 # --- lo que ya te sale ----------------------------------------------------------
 
 def _sesion_previa(folder):
-    """La sesion anterior del MISMO auto y pista, si existe y es comparable."""
+    """La sesion anterior del MISMO auto y pista, si existe y es comparable.
+
+    Es la carpeta inmediatamente anterior de este combo en el disco local, y nada
+    mas: no sabe de que alumno es ni si fue un intento serio o dos vueltas de
+    prueba. Por eso el texto que la usa dice "tu sesion anterior en este combo" y
+    nombra la fecha, en vez de dar a entender que es la medicion de entrada del
+    curso. Para eso esta `--contra`, donde las dos carpetas las elige el instructor.
+    """
     combo = A._combo_of(folder)
     if not combo:
         return None
@@ -448,12 +573,15 @@ def _sesion_previa(folder):
     return ant
 
 
-def logros(folder, per, num):
+def logros(folder, per, num, entrada=None):
     """Lo que ya le sale, medido.
 
     Nunca elogio suelto: el elogio solo es la peor forma de feedback medida (21% de
     los casos con efecto motivacional NEGATIVO). Cada linea de aca es un numero de
     su propia sesion, no un adjetivo.
+
+    Con `entrada` (modo cierre) la linea de progreso se mide contra ESA carpeta y
+    no contra la que el disco tenga al lado.
     """
     out = []
     c = num.get("_consist")
@@ -472,21 +600,31 @@ def logros(folder, per, num):
     for g in per.get("ganancias", [])[:1]:
         out.append(f"Entre el metro {_m(g['ini'])} y el {_m(g['fin'])} le ganas "
                    f"{g['s']:.2f} s a la referencia.")
-    ant = _sesion_previa(folder)
+    # La trampa que habia aca: esto comparaba `clean_laps()["best_lap_time"]`, o sea
+    # la mejor vuelta de TODA la sesion, contra la mejor de toda la anterior. Dos
+    # sesgos encima: el minimo de una muestra baja solo con mas intentos (el que giro
+    # 25 vueltas "mejoro" sin manejar mejor), y ninguna de las dos vueltas es la que
+    # produjo el gap% de mas arriba, asi que el informe explicaba un numero con otro.
+    # Ahora las dos puntas salen de `mejor_de_la_tanda`, igual que la rubrica.
+    ant, fuente = (entrada, "entrada") if entrada else (_sesion_previa(folder), "previa")
     if ant:
-        a = A.clean_laps(ant).get("best_lap_time")
-        b = A.clean_laps(folder).get("best_lap_time")
-        if a and b and a - b > 0.10:
-            f = os.path.basename(ant).split("__")[-1][:8]
-            fecha = f"{f[6:8]}-{f[4:6]}" if len(f) == 8 and f.isdigit() else f
-            out.append(f"Tu mejor vuelta acá bajó {a - b:.2f} s desde la sesión del {fecha}.")
+        ra, rb = A.mejor_de_la_tanda(ant), A.mejor_de_la_tanda(folder)
+        if ra and rb and ra["lap_time"] - rb["lap_time"] > 0.10:
+            baja = ra["lap_time"] - rb["lap_time"]
+            if fuente == "entrada":
+                out.append(f"Tu mejor vuelta de la tanda bajó {baja:.2f} s entre la medición de "
+                           f"entrada del {_fecha_carpeta(ant)} y la de salida del "
+                           f"{_fecha_carpeta(folder)}.")
+            else:
+                out.append(f"Tu mejor vuelta de la tanda bajó {baja:.2f} s desde tu sesión "
+                           f"anterior en este combo (la del {_fecha_carpeta(ant)}).")
     return out
 
 
 # --- el mapa --------------------------------------------------------------------
 
-def mapa(folder, per, ancho=680, alto=340, margen=18):
-    """SVG del trazado con tu vuelta, la referencia encima y los tramos marcados.
+def mapa(folder, per, ancho=680, alto=340, margen=18, par=None, etiquetas=None):
+    """SVG del trazado con tu vuelta, la de al lado encima y los tramos marcados.
 
     None SOLO si la sesion no trae posicion util (pasa con sesiones importadas de
     otros pilotos, que rellenan los canales con ceros).
@@ -495,14 +633,22 @@ def mapa(folder, per, ancho=680, alto=340, margen=18):
     igual, y medido sobre el corpus, 238 de 338 sesiones no juntan las 3 vueltas
     que pide la comparacion -- se quedaban sin imagen teniendo la traza entera.
     Sin comparacion sale el trazado solo, sin tramos marcados y sin referencia.
+
+    `par` = (tuya, otra, superponer) fuerza que trazas van: lo usa el modo cierre
+    para dibujar entrada contra salida. Pasarlo con `otra=None` es explicito y NO
+    cae de vuelta a la referencia de la escuela: en el cierre esa linea no va.
+    `etiquetas` = (texto de la tuya, texto de la otra) para la leyenda.
     """
-    par = par_trazas(folder)
-    if par:
-        ta, tb, _etq, es_ref = par
+    if par is not None:
+        ta, tb, es_ref = par
     else:
-        rec = A.mejor_de_la_tanda(folder)
-        ta = A._lap_trace(folder, rec) if rec else None
-        tb, es_ref = None, False
+        p = par_trazas(folder)
+        if p:
+            ta, tb, _etq, es_ref = p
+        else:
+            rec = A.mejor_de_la_tanda(folder)
+            ta = A._lap_trace(folder, rec) if rec else None
+            tb, es_ref = None, False
     if not ta or not _tiene_posicion(ta):
         return None
     d, x, z = A._mono(ta["lap_dist"], ta["pos_x"], ta["pos_z"])
@@ -550,7 +696,9 @@ def mapa(folder, per, ancho=680, alto=340, margen=18):
                       f'<text class="pin-n" x="{px:.1f}" y="{pz + 4:.1f}">{n}</text>')
     px, pz = proj(x[0], z[0])
     partes.append(f'<circle class="meta" cx="{px:.1f}" cy="{pz:.1f}" r="4.5"/>')
-    return {"svg": "".join(partes), "ancho": ancho, "alto": alto, "superpone": superpone}
+    etq = etiquetas or ("tu vuelta", "referencia")
+    return {"svg": "".join(partes), "ancho": ancho, "alto": alto, "superpone": superpone,
+            "etq_tuya": etq[0], "etq_otra": etq[1]}
 
 
 # --- armado ---------------------------------------------------------------------
@@ -567,16 +715,41 @@ def _variante(meta):
     return var.replace("_", " ").strip()
 
 
-def armar(folder, nivel=None, alumno=None):
-    """Todo el informe como datos. El HTML es solo una vista de esto."""
+def armar(folder, nivel=None, alumno=None, contra=None):
+    """Todo el informe como datos. El HTML es solo una vista de esto.
+
+    `contra` = carpeta de la medicion de ENTRADA -> informe de cierre de curso.
+    Revienta con ValueError si el combo no calza: seguir seria emitir un delta
+    entre dos pruebas distintas, que es exactamente el numero que no se puede
+    corregir despues porque sale creible.
+    """
     meta, _laps = A._load(folder)
     num = numeros(folder)
     num["foco"] = foco(num["gap"]["valor"] if num["gap"] else None,
                        num["cv"]["valor"] if num["cv"] else None)
     per = perdidas(folder)
+
+    cierre, mp = None, None
+    if contra:
+        malo = validar_par(folder, contra)
+        if malo:
+            raise ValueError(malo)
+        num_ent = numeros(contra)
+        cierre = {"carpeta": os.path.basename(os.path.abspath(contra)),
+                  "fecha": (A._load(contra)[0].get("started") or "")[:10],
+                  "dia_entrada": _fecha_carpeta(contra), "dia_salida": _fecha_carpeta(folder),
+                  "numeros": num_ent, "delta": delta_numeros(num, num_ent)}
+        pc = par_cierre(folder, contra)
+        mp = mapa(folder, per, par=(pc[0], pc[1], True) if pc else (None, None, False),
+                  etiquetas=(f"salida {cierre['dia_salida']}",
+                             f"entrada {cierre['dia_entrada']}"))
+    else:
+        mp = mapa(folder, per)
+
     return {
         "alumno": alumno,
         "nivel": nivel,
+        "cierre": cierre,
         "sesion": os.path.basename(os.path.abspath(folder)),
         "auto": (meta.get("car_tr") or meta.get("car") or "?").replace("_", " "),
         "pista": (meta.get("track_tr") or meta.get("track") or "?").replace("_", " "),
@@ -586,8 +759,8 @@ def armar(folder, nivel=None, alumno=None):
         "numeros": num,
         "perdidas": per,
         "cosa": una_cosa(folder, per, num),
-        "logros": logros(folder, per, num) if nivel != 3 else [],
-        "mapa": mapa(folder, per),
+        "logros": logros(folder, per, num, entrada=contra) if nivel != 3 else [],
+        "mapa": mp,
         "invalidacion": A.tasa_invalidacion(folder),
         # Los contactos son la otra mitad de la "limpieza medida" de la compuerta de
         # permisos. None en las sesiones anteriores al 2026-08-20 (sin los canales):
@@ -647,6 +820,17 @@ section{margin:0 0 26px}
 .aviso{background:#FBF2E4;border-left:3px solid #B5762A;padding:10px 13px;font-size:13px;
   margin-top:12px;border-radius:0 3px 3px 0}
 .aviso b{color:#8A5719}
+
+/* El delta del curso va DENTRO de la caja del numero y no en una fila aparte: el
+   alumno tiene que leer "hoy 3,1% / entrada 6,2% / bajaste 3,1" de un tiron. */
+.delta{margin-top:11px;padding-top:10px;border-top:1px solid var(--linea);font-size:13px}
+.delta .etq{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--tinta2)}
+.delta .cuanto{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums;
+  letter-spacing:-.01em;display:block;margin:2px 0 1px}
+.delta.mejor .cuanto{color:var(--ganancia)}
+.delta.peor .cuanto{color:var(--perdida)}
+.delta .de{color:var(--tinta2);font-size:12px;line-height:1.45}
+.delta.falta{color:var(--tinta2);font-size:12px}
 
 ol.tramos{list-style:none;padding:0;margin:0;counter-reset:t}
 ol.tramos li{background:var(--tarjeta);border:1px solid var(--linea);border-radius:3px;
@@ -748,13 +932,37 @@ def _motivo(faltan, clave, poromision):
     return m.split(":", 1)[1].strip() if ":" in m else poromision
 
 
-def _caja_gap(g, faltan):
+def _bloque_delta(dl, unidad, banda_entrada=None):
+    """El delta del curso, con signo, dentro de la caja del numero.
+
+    Negativo = mejoro, y se dice con palabras ademas del signo: un "-3.1%" a secas
+    lo lee al reves cualquiera que no tenga la rubrica en la cabeza, porque en gap%
+    y en CV% menos es mejor y en casi todo lo demas de la vida no.
+    """
+    if not dl:
+        return ""
+    if dl["valor"] is None:
+        return (f'<div class="delta falta"><span class="etq">Δ del curso</span><br>'
+                f'No se puede calcular: {_esc(dl["falta"])}. No se estima con otra cosa.</div>')
+    v = dl["valor"]
+    clase = "mejor" if v < 0 else ("peor" if v > 0 else "")
+    que = ("bajaste" if v < 0 else "subiste" if v > 0 else "quedaste igual")
+    banda = f' ({_esc(banda_entrada)})' if banda_entrada else ""
+    return (f'<div class="delta {clase}"><span class="etq">Δ del curso</span>'
+            f'<span class="cuanto num">{v:+.2f}</span>'
+            f'<span class="de">entrada {dl["entrada"]:.2f}{unidad}{banda} → '
+            f'salida {dl["salida"]:.2f}{unidad}: '
+            f'{que} {abs(v):.2f} puntos.</span></div>')
+
+
+def _caja_gap(g, faltan, dl=None):
     if not g:
         return ('<div class="caja falta"><div class="que">Ritmo — gap%</div>'
                 '<div class="cifra">sin dato todavía</div><div class="pie">'
                 f'{_esc(_motivo(faltan, "ritmo", "falta la referencia del combo"))}. '
                 'Se calcula apenas tu instructor grabe la vuelta de referencia; '
-                'no se rellena con otra cosa.</div></div>')
+                'no se rellena con otra cosa.</div>'
+                + _bloque_delta(dl, "%") + '</div>')
     aviso = f'<div class="aviso"><b>Ojo:</b> {_esc(g["aviso"])}.</div>' if g.get("aviso") else ""
     return ('<div class="caja"><div class="que">Ritmo — gap%</div>'
             f'<div class="cifra num">{g["valor"]:+.2f}<small>%</small></div>'
@@ -763,14 +971,16 @@ def _caja_gap(g, faltan):
             f'<div class="pie">tu mejor vuelta de la tanda {_esc(_t(g["tuyo_s"]))} contra la '
             f'referencia {_esc(_t(g["ref_s"]))}. Cuenta la tanda de 8 y no tu mejor vuelta '
             f'del día: si valiera la mejor de todas, el que gira más saldría mejor sin '
-            f'manejar mejor.</div>{aviso}</div>')
+            f'manejar mejor.</div>{aviso}'
+            + _bloque_delta(dl, "%", dl and dl.get("banda_entrada")) + '</div>')
 
 
-def _caja_cv(c, faltan):
+def _caja_cv(c, faltan, dl=None):
     if not c:
         return ('<div class="caja falta"><div class="que">Consistencia — CV%</div>'
                 '<div class="cifra">sin dato todavía</div><div class="pie">'
-                f'{_esc(_motivo(faltan, "consistencia", "no hay tanda suficiente"))}.</div></div>')
+                f'{_esc(_motivo(faltan, "consistencia", "no hay tanda suficiente"))}.</div>'
+                + _bloque_delta(dl, "%") + '</div>')
     pie = (f'sobre {c["n"]} vueltas · mediana {_esc(_t(c["mediana_s"]))} · '
            f'mejor {_esc(_t(c["mejor_s"]))}')
     if c["incidentes"]:
@@ -784,7 +994,8 @@ def _caja_cv(c, faltan):
             f'<div class="cifra num">{c["valor"]:.2f}<small>%</small></div>'
             f'<div class="banda">{_esc(c["banda"])}</div>'
             + _regla(c["valor"], BANDAS_CV) +
-            f'<div class="pie">{pie}.</div>{extra}</div>')
+            f'<div class="pie">{pie}.</div>{extra}'
+            + _bloque_delta(dl, "%", dl and dl.get("banda_entrada")) + '</div>')
 
 
 def _sec_tramos(d):
@@ -820,16 +1031,35 @@ def _sec_mapa(d):
     mp = d["mapa"]
     if not mp:
         return ""
-    leyenda = ['<span><i style="background:#14181D"></i>tu vuelta</span>']
+    leyenda = [f'<span><i style="background:#14181D"></i>{_esc(mp["etq_tuya"])}</span>']
     if mp["superpone"]:
-        leyenda.append('<span><i style="background:#98A0AC"></i>referencia</span>')
+        leyenda.append(f'<span><i style="background:#98A0AC"></i>{_esc(mp["etq_otra"])}</span>')
     if d["perdidas"]["tramos"]:
         leyenda.append('<span><i style="background:#A8321E"></i>dónde pierdes</span>')
     leyenda.append('<span><i style="background:#0F5C5B"></i>meta</span>')
-    return ('<section><div class="ojo"><b>3</b> El mapa de tu vuelta</div>'
+    titulo = ("El mapa de tu vuelta: entrada y salida" if d.get("cierre")
+              else "El mapa de tu vuelta")
+    return (f'<section><div class="ojo"><b>3</b> {titulo}</div>'
             f'<figure><svg viewBox="0 0 {mp["ancho"]} {mp["alto"]}" role="img" '
             f'aria-label="Trazado del circuito con los tramos de pérdida marcados">'
-            f'{mp["svg"]}</svg><figcaption>{"".join(leyenda)}</figcaption></figure></section>')
+            f'{mp["svg"]}</svg><figcaption>{"".join(leyenda)}</figcaption></figure>'
+            + _nota_mapa_cierre(d) + '</section>')
+
+
+def _nota_mapa_cierre(d):
+    """El pie del mapa en modo cierre: que son las dos lineas y por que no hay tercera."""
+    c = d.get("cierre")
+    if not c:
+        return ""
+    if not (d["mapa"] and d["mapa"]["superpone"]):
+        return ('<p class="nota">De la medición de entrada no se pudo dibujar la vuelta '
+                'encima (falta la traza o viene en otro sistema de coordenadas), así que acá '
+                'va sólo la de hoy. Dibujar dos trazados que no calzan es peor que no '
+                'dibujarlos.</p>')
+    return ('<p class="nota">Las dos son tu mejor vuelta de la tanda de 8: la de la medición '
+            f'de entrada ({_esc(c["dia_entrada"])}) y la de hoy ({_esc(c["dia_salida"])}), sobre '
+            'el mismo trazado. Acá no va la vuelta de referencia de la escuela a propósito: '
+            'esta imagen es tuya contra ti mismo, y es el producto del curso.</p>')
 
 
 def _sec_cosa(d):
@@ -880,12 +1110,20 @@ def _sec_nivel(d):
 
 def render(d):
     """Los datos como HTML autocontenido. Sin red: se abre igual sin internet."""
-    n = d["numeros"]
+    n, c = d["numeros"], d.get("cierre")
     quien = f'{_esc(d["alumno"])} · ' if d.get("alumno") else ""
     variante = f' · {_esc(d["variante"])}' if d["variante"] else ""
+    if c:
+        titulo = 'Informe de cierre del curso'
+        sub = (f'{quien}medición de entrada del {_esc(c["fecha"] or "?")} → medición de salida '
+               f'del {_esc(d["fecha"] or "?")} · {_esc(d["pista"])}{variante} · '
+               f'{_esc(d["auto"])}')
+    else:
+        titulo = f'{_esc(d["pista"])}{variante} · {_esc(d["auto"])}'
+        sub = f'{quien}sesión del {_esc(d["fecha"] or "?")}'
     cabecera = ('<header><div>'
-                f'<h1>{_esc(d["pista"])}{variante} · {_esc(d["auto"])}</h1>'
-                f'<div class="sub">{quien}sesión del {_esc(d["fecha"] or "?")}'
+                f'<h1>{titulo}</h1>'
+                f'<div class="sub">{sub}'
                 + (f' · {_esc(n["condiciones"])}' if n.get("condiciones") else "") +
                 '</div></div>'
                 '<div class="sello">Escuela de Conducción<br>Deportiva AMS2 Chile<br>'
@@ -898,6 +1136,13 @@ def render(d):
                   'las condiciones a mitad de tanda (estado de pista, compuesto o ayudas), así '
                   'que tus vueltas no son comparables entre sí y cualquier número saldría '
                   'creíble y equivocado. Repite la tanda sin tocar nada.</div></section>')
+        if c:
+            # En el cierre esto no es un detalle: sin numeros de salida no hay delta del
+            # curso, y hay que decirlo aca mismo y no dejar que se note por ausencia.
+            cuerpo += ('<section><div class="aviso"><b>Y por lo mismo no hay Δ del curso.</b> '
+                       'El delta contra la medición de entrada '
+                       f'del {_esc(c["fecha"] or "?")} se calcula cuando esta medición de '
+                       'salida se repita en condiciones estables.</div></section>')
         return _pagina(cabecera + cuerpo + _sec_nivel(d), d)
 
     foco_txt = ""
@@ -905,9 +1150,12 @@ def render(d):
         foco_txt = (f'<p class="nota"><b>En qué se trabaja primero:</b> {_esc(n["foco"])}. Sale '
                     'de cruzar los dos números de arriba, y no es una nota: decide el foco de '
                     'las próximas semanas.</p>')
+    dl = c["delta"] if c else {}
+    ojo1 = "Tus dos números, y lo que se movieron" if c else "Tus dos números"
     partes = [cabecera,
-              '<section><div class="ojo"><b>1</b> Tus dos números</div><div class="dos">'
-              + _caja_gap(n["gap"], n["faltan"]) + _caja_cv(n["cv"], n["faltan"])
+              f'<section><div class="ojo"><b>1</b> {ojo1}</div><div class="dos">'
+              + _caja_gap(n["gap"], n["faltan"], dl.get("gap"))
+              + _caja_cv(n["cv"], n["faltan"], dl.get("cv"))
               + f'</div>{foco_txt}</section>']
     if d["logros"]:
         li = "".join(f"<li>{_esc(x)}</li>" for x in d["logros"])
@@ -918,26 +1166,30 @@ def render(d):
 
 
 def _pagina(cuerpo, d):
+    c = d.get("cierre")
+    sesiones = f'{_esc(c["carpeta"])} → {_esc(d["sesion"])}' if c else _esc(d["sesion"])
     pie = ('<footer>Generado desde tu propia telemetría. Todo lo que ves está medido en tus '
            'vueltas: nada está comparado con otro alumno, y no existe una tabla que los ordene. '
            'Si algo no calza con lo que sentiste en pista, eso es material para el debrief — la '
            'diferencia entre lo que crees y lo que muestra el dato es la parte que más enseña.'
-           f'<br>{_esc(d["sesion"])}</footer>')
+           f'<br>{sesiones}</footer>')
+    quefue = "Informe de cierre" if c else "Informe"
     return ('<!doctype html>\n<html lang="es"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
-            f'<title>Informe · {_esc(d["pista"])} · {_esc(d["auto"])}</title>'
+            f'<title>{quefue} · {_esc(d["pista"])} · {_esc(d["auto"])}</title>'
             f'<style>{_CSS}</style></head><body><div class="hoja">'
             f'{cuerpo}{pie}</div></body></html>\n')
 
 
 # --- cli ------------------------------------------------------------------------
 
-def generar(folder, nivel=None, alumno=None, salida=None):
+def generar(folder, nivel=None, alumno=None, salida=None, contra=None):
     """Genera el informe y devuelve la ruta escrita."""
-    d = armar(folder, nivel=nivel, alumno=alumno)
+    d = armar(folder, nivel=nivel, alumno=alumno, contra=contra)
     if not salida:
         os.makedirs(SALIDA, exist_ok=True)
-        salida = os.path.join(SALIDA, f"{d['sesion']}__informe.html")
+        sufijo = "cierre" if contra else "informe"
+        salida = os.path.join(SALIDA, f"{d['sesion']}__{sufijo}.html")
     with open(salida, "w", encoding="utf-8") as f:
         f.write(render(d))
     return salida
@@ -949,13 +1201,26 @@ def main():
     ap.add_argument("--nivel", type=int, choices=(1, 2, 3), default=None,
                     help="nivel del alumno. Lo pone el instructor: el informe no lo deduce.")
     ap.add_argument("--alumno", default=None, help="nombre del alumno para la cabecera")
+    ap.add_argument("--contra", default=None, metavar="CARPETA_ENTRADA",
+                    help="carpeta de la medicion de ENTRADA del mismo alumno y el mismo combo: "
+                         "emite el informe de cierre del curso con el delta de los dos numeros")
     ap.add_argument("--salida", default=None, help="ruta del HTML de salida")
     ap.add_argument("--abrir", action="store_true", help="abrirlo al terminar")
     a = ap.parse_args()
     if not os.path.isdir(a.carpeta):
         print(f"no existe la carpeta: {a.carpeta}")
         return 2
-    ruta = generar(a.carpeta, nivel=a.nivel, alumno=a.alumno, salida=a.salida)
+    if a.contra and not os.path.isdir(a.contra):
+        print(f"no existe la carpeta de entrada: {a.contra}")
+        return 2
+    try:
+        ruta = generar(a.carpeta, nivel=a.nivel, alumno=a.alumno, salida=a.salida,
+                       contra=a.contra)
+    except ValueError as e:
+        # El combo distinto se para aca y no se avisa "ojo, puede que...": un delta
+        # entre dos pruebas distintas sale creible y despues nadie lo puede desmentir.
+        print(f"no se puede armar el cierre: {e}")
+        return 2
     print(f"informe: {ruta}")
     if a.abrir:
         import webbrowser
