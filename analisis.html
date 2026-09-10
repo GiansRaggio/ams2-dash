@@ -831,6 +831,17 @@ function zoomCurva(cu){
               Math.min((lz.w - 2*pad)/Math.max(x1-x0, 1), (lz.h - 2*pad)/Math.max(z1-z0, 1))));
   S.vista = {cx: (x0+x1)/2, cz: (z0+z1)/2, k};
   S.curvaZoom = cu.n;
+  // El cursor de lectura se va al apex de esa curva (el de A si hay eventos;
+  // si no, el pico de curvatura del mapa). Sin esto la lectura de abajo seguia
+  // diciendo la curva de ANTES mientras el mapa mostraba otra -- se entra a una
+  // curva para leerla, no solo para mirarla.
+  const sel = trazasSel();
+  if (sel.length){
+    const trA = (sel.find(([cual]) => cual === "A") || sel[0])[2];
+    const ev = trA.eventos && trA.eventos.find(e => e.n === cu.n);
+    const metro = ev && ev.apex_m != null ? ev.apex_m : cu.metro;
+    S.cursor = Math.max(0, Math.min(nPuntos() - 1, Math.round(metro / (trA.paso_m || 2))));
+  }
   // la curva va en la URL (#T3) para poder mandarle a un alumno "mira esto"
   // con el link y que le abra ya en la curva
   try { history.replaceState(null, "", "#T" + cu.n); } catch(e){}
