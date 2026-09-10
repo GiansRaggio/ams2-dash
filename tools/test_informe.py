@@ -140,7 +140,7 @@ def test_formato():
         I._banda(2.0, I.BANDAS_GAP) == "bueno", I._banda(2.0, I.BANDAS_GAP))
     _ok("banda gap 99 -> se ancla en la ultima", I._banda(99.0, I.BANDAS_GAP) == "inicial")
     _ok("banda CV 0.29 -> excelente", I._banda(0.29, I.BANDAS_CV) == "excelente")
-    _ok("banda CV 1.6 -> dispersa", I._banda(1.6, I.BANDAS_CV) == "dispersa")
+    _ok("banda CV 1.6 -> inicial (nombre de la rubrica)", I._banda(1.6, I.BANDAS_CV) == "inicial")
     _ok("_t formatea sobre el minuto", I._t(95.395) == "1:35.395", I._t(95.395))
 
 

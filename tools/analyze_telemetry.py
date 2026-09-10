@@ -805,8 +805,11 @@ def consistency_struct(folder, n=8, minimo=6, n_califica=8):
     elif corta:
         veredicto = f"sin veredicto: {len(t)} vueltas, se califica desde {n_califica}"
     else:
-        veredicto = ("excelente" if cv <= 0.3 else "buena" if cv <= 0.7
-                     else "en desarrollo" if cv <= 1.5 else "dispersa")
+        # los nombres son los de la rubrica (docs/evaluacion.md): "inicial", no
+        # "dispersa" -- un adjetivo sobre la persona es justo el feedback que la
+        # escuela prohibe leer en voz alta
+        veredicto = ("excelente" if cv <= 0.3 else "bueno" if cv <= 0.7
+                     else "en desarrollo" if cv <= 1.5 else "inicial")
     # CV por sector sobre las MISMAS vueltas que quedaron (ni las apartadas ni
     # las que no entraron en las `n`): localiza la dispersion sin cambiar el filtro
     cv_sector = None
@@ -878,7 +881,7 @@ def report_consistency(folder):
         print(f"  ojo: sin la tendencia el CV baja a {c['cv_destendenciado_pct']:.2f}% "
               f"-> el problema es DEGRADACION, no falta de repetibilidad.")
         print("  (gomas, combustible o cansancio. Se trabaja distinto que la consistencia.)")
-    print("  escala:  <=0.3 excelente · 0.3-0.7 buena · 0.7-1.5 en desarrollo · >1.5 dispersa")
+    print("  escala:  <=0.3 excelente · 0.3-0.7 bueno · 0.7-1.5 en desarrollo · >1.5 inicial")
     print("  (el CV es adimensional a proposito: el sigma en segundos no compara entre pistas)")
 
 

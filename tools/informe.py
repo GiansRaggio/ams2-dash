@@ -53,8 +53,8 @@ SALIDA = os.path.join(HERE, "informes")
 # es dispersion, que es lo que el alumno tiene que oir.
 BANDAS_GAP = [("excelente", 0.0, 2.0), ("bueno", 2.0, 3.5),
               ("en desarrollo", 3.5, 5.0), ("inicial", 5.0, 8.0)]
-BANDAS_CV = [("excelente", 0.0, 0.3), ("buena", 0.3, 0.7),
-             ("en desarrollo", 0.7, 1.5), ("dispersa", 1.5, 3.0)]
+BANDAS_CV = [("excelente", 0.0, 0.3), ("bueno", 0.3, 0.7),
+             ("en desarrollo", 0.7, 1.5), ("inicial", 1.5, 3.0)]   # nombres de docs/evaluacion.md
 
 # Permisos por nivel (docs/diagnostico.md). El informe los muestra tal cual: lo
 # que el alumno gana al subir es esto, no una etiqueta.
