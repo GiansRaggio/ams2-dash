@@ -55,6 +55,13 @@ Automobilista 2.
   (tendencia entre prácticas de un mismo auto+pista), `--race-fuel <min>` (carga
   de combustible estimada desde el consumo real medido). Ver `docs/SETUP-NOTES.md`
   para cómo se usa en la práctica.
+- **Limpieza medida** (`--contactos`): contactos con otros autos (vuelta, metro,
+  magnitud y contra quién) + vueltas invalidadas y su tasa, sobre las vueltas
+  limpias **y** las invalidadas. Un contacto se detecta por el **cambio** de
+  `coll_mag`, no por muestra: AMS2 deja el último choque publicado y contar
+  muestras contaría cualquier cosa menos choques. Cuenta contactos, **no culpas**.
+  Sale también en el informe del alumno. Sin dato en sesiones anteriores al
+  2026-08-20, que no grababan esos canales.
 
 ## Setup desde cero, en Windows (el camino real para instalar esto)
 

@@ -589,6 +589,10 @@ def armar(folder, nivel=None, alumno=None):
         "logros": logros(folder, per, num) if nivel != 3 else [],
         "mapa": mapa(folder, per),
         "invalidacion": A.tasa_invalidacion(folder),
+        # Los contactos son la otra mitad de la "limpieza medida" de la compuerta de
+        # permisos. None en las sesiones anteriores al 2026-08-20 (sin los canales):
+        # ahi el informe simplemente no dice nada, no dice "0 contactos".
+        "contactos": A.contactos_struct(folder)[0],
     }
 
 
@@ -850,9 +854,19 @@ def _sec_nivel(d):
     inv = d.get("invalidacion")
     limpieza = ""
     if inv:
+        # Los contactos van en ESTA línea y no en una sección propia: la limpieza medida
+        # es una sola cosa (invalidación + contactos) y es el antecedente del permiso.
+        # Sólo se nombran si hubo alguno; un "0 contactos" no le enseña nada al alumno y
+        # decir dos veces el mismo número en un informe de una página lo empeora.
+        cont = d.get("contactos")
+        toques = ""
+        if cont and cont["n_contactos"]:
+            toques = (f' Contactos con otro auto en el registro: {cont["n_contactos"]} en '
+                      f'{cont["n_vueltas_con_traza"]} vueltas. El registro dice que hubo '
+                      f'contacto, no de quién fue: eso se ve en la repetición.')
         limpieza = (f'<p class="nota">Limpieza medida en esta sesión: {inv["invalidas"]} de '
-                    f'{inv["n"]} vueltas invalidadas por límites de pista ({inv["pct"]:.0f}%). '
-                    f'Es uno de los tres antecedentes del permiso.</p>')
+                    f'{inv["n"]} vueltas invalidadas por límites de pista ({inv["pct"]:.0f}%).'
+                    f'{toques} Es uno de los tres antecedentes del permiso.</p>')
     return ('<section><div class="ojo"><b>5</b> Tu nivel, en lo que puedes hacer</div>'
             f'<p style="margin:0 0 11px">{cab}</p>'
             '<table class="permisos"><tr><th></th><th>Coach</th><th>Adelantamiento</th>'

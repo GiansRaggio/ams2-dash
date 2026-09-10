@@ -61,7 +61,10 @@ def _read_jsonl(path):
 def _sessions():
     if not os.path.isdir(TELEM):
         return []
-    subs = [d for d in glob.glob(os.path.join(TELEM, "*")) if os.path.isdir(d)]
+    # las carpetas con `_` no son sesiones (telemetry/_cache guarda los bordes
+    # aprendidos del visor); sin este filtro "la ultima sesion" era el cache
+    subs = [d for d in glob.glob(os.path.join(TELEM, "*"))
+            if os.path.isdir(d) and not os.path.basename(d).startswith("_")]
     return sorted(subs, key=os.path.getmtime)
 
 
@@ -1178,6 +1181,151 @@ def tasa_invalidacion(folder):
             "pct": round(100.0 * len(malas) / len(de_pista), 1)}
 
 
+# Dos cambios de `coll_mag` a menos de esto son el MISMO toque rebotando, no dos
+# contactos. Medido en Mosport: un solo roce publico 4 valores distintos en 0.22 s
+# (0.199 -> 0.211 -> 0.147 -> 0.008), subiendo y bajando. La ventana corre con cada
+# cambio (un rebote largo se encadena entero); un segundo golpe a menos de 1 s del
+# primero es, en la practica, el mismo incidente.
+_CONTACTO_HUECO_S = 1.0
+# Umbrales de dano para AVISAR. El aero es de evento (medido 0.0000 constante en dos
+# carreras enteras), asi que 1% ya es algo. El motor NO: se desgasta solo, ~0.0007 por
+# vuelta sin ningun incidente (Mosport: 0.0008 -> 0.0163 en 20 vueltas limpias), asi
+# que un umbral cerca de cero avisaria en TODA carrera y el aviso dejaria de significar.
+_DMG_AERO_AVISO = 0.01
+_DMG_MOTOR_AVISO = 0.05
+
+
+def contactos_struct(folder):
+    """Contactos con otros autos + vueltas invalidadas: la "limpieza medida" de la sesion.
+
+    Es la pata objetiva de racecraft (25% de esa dimension en docs/evaluacion.md) y
+    uno de los tres antecedentes de la compuerta de permisos de la clase 7. Recorre
+    TODAS las vueltas con traza, limpias (L###) e invalidadas (X###) -- justamente las
+    invalidadas son donde mas se toca, y el summary.jsonl no las lista.
+
+    LA TRAMPA: `coll_mag` NO es un pulso, es ESTADO SOSTENIDO. AMS2 deja publicado el
+    ultimo choque y ahi se queda para siempre, incluso cruzando la meta hacia las
+    vueltas siguientes. Contar muestras con `coll_mag > 0` cuenta cualquier cosa menos
+    choques: medido en Mosport, 18 de 20 vueltas SIN ningun contacto tenian el canal
+    distinto de cero en las 4.300 muestras. Un contacto es el CAMBIO del valor respecto
+    de la muestra anterior. Misma familia de trampa que `mLapInvalidated`: en esta
+    shared memory conviene asumir estado sostenido y no evento, salvo prueba en contrario.
+
+    Y ESTO CUENTA CONTACTOS, NO CULPAS. El dato dice que hubo toque, contra quien, de
+    que magnitud y donde. No dice la trayectoria de los dos autos, que es lo unico que
+    reconstruye un incidente. La culpa la decide la pauta del instructor mirando la
+    repeticion. (Ademas: un toque entre dos alumnos aparece en los DOS registros; por
+    alumno esta bien, sumar el grupo lo contaria doble.)
+
+    None + `motivo` si la sesion no trae los canales (las anteriores al 2026-08-20).
+    """
+    tl = _load_timeline(folder)
+    recs = [r for r in tl if r.get("type") == "lap" and r.get("trace")]
+    if not recs:                               # sesiones viejas sin timeline: queda el summary
+        recs = [l for l in _load(folder)[1] if l.get("trace")]
+    if not recs:
+        return None, "la sesion no tiene trazas guardadas"
+
+    eventos, n_trazas, crash_laps = [], 0, []
+    aero0 = aero1 = motor0 = motor1 = None
+    for r in recs:
+        t = _read_trace(os.path.join(folder, r["trace"]))
+        if not t or "coll_mag" not in t:
+            continue
+        n_trazas += 1
+        cm = t["coll_mag"]
+        ci = t.get("coll_idx") or [-1.0] * len(cm)
+        tt = t.get("t") or [0.0] * len(cm)
+        dd = t.get("lap_dist") or [0.0] * len(cm)
+        pos = t.get("race_pos") or []
+        ultimo = None                          # ultimo evento de ESTA vuelta, para el rebote
+        for k in range(1, len(cm)):
+            # cambio de valor = choque nuevo. Se mira tambien `coll_idx` porque dos
+            # toques seguidos contra rivales distintos pueden dar la misma magnitud.
+            if cm[k] == cm[k - 1] and ci[k] == ci[k - 1]:
+                continue
+            if cm[k] <= 0:
+                continue                       # el canal nunca "vuelve a 0" solo; si baja, es dato
+            if ultimo is not None and tt[k] - ultimo["_t_fin"] <= _CONTACTO_HUECO_S:
+                ultimo["magnitud"] = round(max(ultimo["magnitud"], cm[k]), 3)
+                ultimo["_t_fin"] = tt[k]
+                continue
+            ultimo = {"vuelta": r.get("lap"), "metro": round(dd[k], 1), "t": round(tt[k], 2),
+                      "magnitud": round(cm[k], 3), "rival": int(ci[k]),
+                      "race_pos": int(pos[k]) if k < len(pos) else None, "_t_fin": tt[k]}
+            eventos.append(ultimo)
+        if any(x != 0 for x in t.get("crash_state") or []):
+            crash_laps.append(r.get("lap"))
+        ad, ed = t.get("aero_dmg"), t.get("engine_dmg")
+        if ad:
+            aero0 = ad[0] if aero0 is None else aero0
+            aero1 = ad[-1]
+        if ed:
+            motor0 = ed[0] if motor0 is None else motor0
+            motor1 = ed[-1]
+
+    if not n_trazas:
+        return None, ("esta sesion es anterior al 2026-08-20: sus trazas no traen los "
+                      "canales de contacto (coll_mag / coll_idx / crash_state)")
+
+    for e in eventos:
+        e.pop("_t_fin", None)
+    avisos = []
+    if crash_laps:
+        avisos.append("crash_state distinto de 0 en "
+                      + ", ".join(f"V{v}" for v in crash_laps)
+                      + " (el juego marco choque, no solo roce)")
+    if aero0 is not None and aero1 - aero0 > _DMG_AERO_AVISO:
+        avisos.append(f"dano aerodinamico: subio {100 * (aero1 - aero0):.1f}% en la sesion")
+    if motor0 is not None and motor1 - motor0 > _DMG_MOTOR_AVISO:
+        avisos.append(f"dano de motor: subio {100 * (motor1 - motor0):.1f}% en la sesion "
+                      "(muy por encima del desgaste normal por vueltas)")
+
+    inv = tasa_invalidacion(folder)             # UNA sola definicion de la tasa: la de evaluar()
+    return {
+        "contactos": eventos,
+        "n_contactos": len(eventos),
+        "n_vueltas_con_traza": n_trazas,
+        "magnitud_max": max((e["magnitud"] for e in eventos), default=None),
+        # Tasa y no total: una practica de 30 vueltas y una carrera de 8 no se comparan
+        # por conteo crudo, y el alumno gira distinto en cada evento.
+        "contactos_por_10v": round(10.0 * len(eventos) / n_trazas, 2),
+        "invalidadas": inv["invalidas"] if inv else None,
+        "tasa_invalidacion_pct": inv["pct"] if inv else None,
+        "n_vueltas_pista": inv["n"] if inv else None,
+        "avisos": avisos,
+    }, None
+
+
+def report_contactos(folder):
+    """Imprime la limpieza medida: contactos, vueltas invalidadas y avisos de dano."""
+    cs, motivo = contactos_struct(folder)
+    print(f"\n=== Limpieza medida · {os.path.basename(folder)} ===")
+    if cs is None:
+        print(f"  (sin dato: {motivo})")
+        return
+    print(f"  {cs['n_contactos']} contacto(s) en {cs['n_vueltas_con_traza']} vueltas con traza"
+          f"  ·  {cs['contactos_por_10v']:.2f} por cada 10 vueltas")
+    if cs["contactos"]:
+        print(f"  {'VUELTA':>7} {'METRO':>7} {'t':>7} {'MAGNITUD':>9} {'RIVAL':>6} {'POS':>4}")
+        for e in cs["contactos"]:
+            pos = f"{e['race_pos']}" if e["race_pos"] is not None else "-"
+            riv = f"#{e['rival']}" if e["rival"] >= 0 else "-"
+            print(f"  {'V' + str(e['vuelta']):>7} {e['metro']:>6.0f}m {e['t']:>6.1f}s "
+                  f"{e['magnitud']:>9.3f} {riv:>6} {pos:>4}")
+        print(f"  magnitud maxima: {cs['magnitud_max']:.3f}")
+    if cs["invalidadas"] is not None:
+        print(f"  invalidadas: {cs['invalidadas']} de {cs['n_vueltas_pista']} vueltas de pista "
+              f"({cs['tasa_invalidacion_pct']:.1f}%)")
+    else:
+        print("  invalidadas: sin linea de tiempo, no se puede contar")
+    for a in cs["avisos"]:
+        print(f"  aviso: {a}")
+    print("\n  Esto CUENTA CONTACTOS, NO CULPAS: el dato no trae la trayectoria de los dos")
+    print("  autos, que es lo unico que reconstruye un incidente. La culpa la decide la")
+    print("  pauta del instructor con la repeticion.")
+
+
 def tanda(folder, n=8):
     """Los REGISTROS de las primeras n vueltas cronometradas: la tanda que califica.
 
@@ -2013,6 +2161,9 @@ def main():
                     help="CV%% de la tanda: la metrica con la que se califica consistencia")
     ap.add_argument("--frenadas", action="store_true",
                     help="punto de frenada de cada curva y que tan repetible es (referencias)")
+    ap.add_argument("--contactos", action="store_true",
+                    help="limpieza medida: contactos con otros autos (por CAMBIO de magnitud, no "
+                         "por muestra) + vueltas invalidadas + avisos de dano")
     ap.add_argument("--saturacion", action="store_true",
                     help="que rueda llega antes al limite en cada curva (margen de agarre por rueda)")
     ap.add_argument("--timeline", nargs="?", const="", metavar="FILTRO", default=None,
@@ -2098,6 +2249,8 @@ def main():
         report_consistency(folder)
     elif a.frenadas:
         report_braking(folder)
+    elif a.contactos:
+        report_contactos(folder)
     elif a.saturacion:
         report_saturation(folder)
     else:

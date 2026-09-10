@@ -209,6 +209,98 @@ def write_min_session(telem, track, car, ftype, ts, laps):
     return d
 
 
+def write_contact_session(base, con_canales=True):
+    """Sesion sintetica para el conteo de CONTACTOS, con el patron real del juego.
+
+    V1: `coll_mag` arranca en 0, salta a 0.8 y se QUEDA en 0.8 durante 200 muestras
+    (4 s), y despues salta a 1.5. Son DOS choques, no 400 -- el canal es estado
+    sostenido, no un pulso.
+
+    V2 (invalidada): las 500 muestras en 1.5, heredado de V1 al cruzar meta. Es la
+    trampa que importa: si el conteo mirara el valor y no el cambio, esta vuelta sin
+    ningun toque sumaria 500 contactos mas.
+
+    Con `con_canales=False` la traza se escribe con el header VIEJO (sin coll_*), que
+    es lo que tienen las sesiones anteriores al 2026-08-20.
+    """
+    d = os.path.join(base, "Contacto__Auto__race__20260101_000000")
+    os.makedirs(d, exist_ok=True)
+    header = T.HEADER if con_canales else ["t", "lap_dist", "speed_kmh", "throttle", "brake"]
+    json.dump({"track": "Contacto", "car": "Auto"}, open(os.path.join(d, "session.json"), "w"))
+    idx = {h: i for i, h in enumerate(header)}
+
+    def _traza(nombre, mags, idxs):
+        with gzip.open(os.path.join(d, nombre), "wt", encoding="utf-8") as f:
+            f.write(",".join(header) + "\n")
+            for k in range(len(mags)):
+                r = [0.0] * len(header)
+                r[idx["t"]] = round(k * 0.02, 3)              # 50 Hz, como el grabador
+                r[idx["lap_dist"]] = round(k * 8.0, 2)
+                r[idx["speed_kmh"]] = 150.0
+                if con_canales:
+                    r[idx["coll_mag"]] = mags[k]
+                    r[idx["coll_idx"]] = idxs[k]
+                    r[idx["race_pos"]] = 4.0
+                f.write(",".join(map(str, r)) + "\n")
+
+    mags = [0.0] * 100 + [0.8] * 200 + [1.5] * 200
+    idxs = [-1.0] * 100 + [3.0] * 200 + [5.0] * 200
+    _traza("L001_90.000s.csv.gz", mags, idxs)
+    _traza("X002_95.000s.csv.gz", [1.5] * 500, [5.0] * 500)   # el valor heredado, sin toques
+    with open(os.path.join(d, "timeline.jsonl"), "w", encoding="utf-8") as f:
+        f.write(json.dumps({"type": "lap", "lap": 1, "kind": "flying", "lap_time": 90.0,
+                            "trace": "L001_90.000s.csv.gz"}) + "\n")
+        f.write(json.dumps({"type": "lap", "lap": 2, "kind": "invalid", "lap_time": 95.0,
+                            "invalid": True, "trace": "X002_95.000s.csv.gz"}) + "\n")
+    return d
+
+
+def test_contactos():
+    ok = True
+    base = tempfile.mkdtemp(prefix="anacont_")
+    try:
+        cs, motivo = A.contactos_struct(write_contact_session(base))
+        ok = _ok("hay estructura de contactos", cs is not None, motivo) and ok
+        if cs:
+            # EL test: 400 muestras con coll_mag>0 son 2 choques. Contar frames daria 400.
+            ok = _ok("cuenta 2 contactos, no 400 (el canal es estado, no pulso)",
+                     cs["n_contactos"] == 2, cs["n_contactos"]) and ok
+            ok = _ok("la vuelta 2 hereda el valor y NO suma contactos",
+                     all(e["vuelta"] == 1 for e in cs["contactos"]),
+                     [e["vuelta"] for e in cs["contactos"]]) and ok
+            ok = _ok("recorre tambien la invalidada (X###)", cs["n_vueltas_con_traza"] == 2,
+                     cs["n_vueltas_con_traza"]) and ok
+            ok = _ok("magnitudes: la de cada choque, no la maxima repetida",
+                     [e["magnitud"] for e in cs["contactos"]] == [0.8, 1.5],
+                     [e["magnitud"] for e in cs["contactos"]]) and ok
+            ok = _ok("magnitud maxima 1.5", cs["magnitud_max"] == 1.5, cs["magnitud_max"]) and ok
+            ok = _ok("anota contra quien (coll_idx)",
+                     [e["rival"] for e in cs["contactos"]] == [3, 5],
+                     [e["rival"] for e in cs["contactos"]]) and ok
+            ok = _ok("tasa por 10 vueltas (compara sesiones de distinto largo)",
+                     cs["contactos_por_10v"] == 10.0, cs["contactos_por_10v"]) and ok
+            # La invalidacion sale de la MISMA funcion que usa evaluar(): una sola definicion.
+            ok = _ok("junta las invalidadas y su tasa",
+                     cs["invalidadas"] == 1 and cs["tasa_invalidacion_pct"] == 50.0,
+                     (cs["invalidadas"], cs["tasa_invalidacion_pct"])) and ok
+            ok = _ok("sin dano ni crash: sin avisos inventados", cs["avisos"] == [],
+                     cs["avisos"]) and ok
+
+        shutil.rmtree(base, ignore_errors=True)
+        base = tempfile.mkdtemp(prefix="anacont0_")
+        cs2, motivo2 = A.contactos_struct(write_contact_session(base, con_canales=False))
+        ok = _ok("sesion vieja sin los canales: None, no 0 contactos", cs2 is None, cs2) and ok
+        ok = _ok("y dice por que", bool(motivo2) and "2026-08-20" in motivo2, motivo2) and ok
+        try:
+            A.report_contactos(write_contact_session(base))
+            ok = _ok("report_contactos corre", True) and ok
+        except Exception as e:
+            ok = _ok("report_contactos corre", False, repr(e)) and ok
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+    return ok
+
+
 def main():
     print("test_corners / coasting / interp:")
     dist, spd, thr, brk, tt, _ = make_arrays()
@@ -562,6 +654,8 @@ def main():
 
     print("\ntest saturacion (solo la rueda que la curva CARGA):")
     test_saturacion_solo_rueda_cargada()
+    print("\ntest contactos (limpieza medida: el canal es ESTADO, no pulso):")
+    test_contactos()
     print("\ndone.")
 
 
