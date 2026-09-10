@@ -609,8 +609,11 @@ def main():
     if a.exportar:
         ruta, n = exportar(a.archivo, a.exportar, piloto=a.piloto,
                            max_vueltas=a.vueltas, pista=a.pista, auto=a.auto)
-        m = leer(ruta)["meta"]
-        print(f"exportado -> {ruta}\n{n} vueltas")
+        s = leer(ruta)
+        m = s["meta"]
+        nulas = sum(1 for i in range(len(s["vueltas"]))
+                    if any(x > 0.5 for x in como_dict(s, i)["lap_time_invalid"]))
+        print(f"exportado -> {ruta}\n{n} vueltas ({nulas} nulas, marcadas)")
         print(f"  pista: {m.get('pista')}\n  auto : {m.get('auto')}\n  piloto: {m.get('piloto')}")
         print("  (si el otro piloto no ve la sesion como comparable, revisa que esos "
               "nombres salgan IGUALES a los suyos)")
@@ -636,11 +639,19 @@ def main():
 
 # Inverso de _MAPA: como se arma cada canal SRT desde NUESTRA traza.
 # Lo que no tenemos va en 0.0 -- la app lo mostrara plano, que es honesto.
-def _constructor(d, n, ctes=None):
+def _constructor(d, n, ctes=None, invalida=False):
     """Devuelve una funcion k -> lista de 155 floats en el orden de CANALES_SRT.
 
     `ctes` son valores constantes para canales que no estan en la traza pero si
     en el resumen de la vuelta (temperaturas de ambiente y pista).
+
+    `invalida`: la vuelta fue anulada (limites de pista). Se marca en el canal
+    `lap_time_invalid` de TODAS las muestras, porque es el canal que la app lee
+    para tachar la vuelta -- nuestro propio `importar` hace lo mismo. Antes salia
+    en 0.0 siempre y las vueltas nulas llegaban al otro piloto como limpias, con
+    un tiempo que a veces era el mejor de la sesion. No se sabe en que metro la
+    anulo el juego (la traza no lo guarda), asi que se marca entera: una vuelta
+    anulada es anulada, no "anulada desde el piano".
     """
     ctes = ctes or {}
     g = lambda c: d.get(c) or [0.0] * n
@@ -662,6 +673,8 @@ def _constructor(d, n, ctes=None):
                 f.append(esc["lap_dist"][k])
             elif nom == "lap_time":
                 f.append(esc["t"][k])
+            elif nom == "lap_time_invalid":
+                f.append(1.0 if invalida else 0.0)
             elif nom == "world_position":
                 # SRT ordena [x, z, y]: el vertical es el TERCERO (ver _MAPA)
                 f += [esc["pos_x"][k], esc["pos_z"][k], esc["pos_y"][k]]
@@ -747,7 +760,9 @@ def _nombre_compuesto(base, sufijo):
 def exportar(carpeta, destino, piloto="", max_vueltas=None, pista=None, auto=None):
     """Convierte una sesion NUESTRA a .srt para que la abra otro piloto.
 
-    Devuelve (ruta, n_vueltas). Solo exporta vueltas con traza.
+    Devuelve (ruta, n_vueltas). Solo exporta vueltas con traza -- las nulas
+    tambien (el grabador les guarda traza como X###): van marcadas como nulas
+    en el canal `lap_time_invalid` y en la validez por sector del indice.
     """
     import time
     sys.path.insert(0, os.path.join(HERE, "tools"))
@@ -757,7 +772,9 @@ def exportar(carpeta, destino, piloto="", max_vueltas=None, pista=None, auto=Non
     meta_s = A._meta(carpeta)
     vs = [v for v in A._vueltas(carpeta) if v.get("traza") and v.get("tiempo")]
     if max_vueltas:
-        vs = sorted(vs, key=lambda v: v["tiempo"])[:max_vueltas]
+        # "las N mas rapidas" son las limpias primero: una anulada por cortar una
+        # chicana suele ser la mas rapida de la sesion y no es la que se comparte
+        vs = sorted(vs, key=lambda v: (not v.get("valida", True), v["tiempo"]))[:max_vueltas]
     if not vs:
         raise SrtError("la sesion no tiene vueltas con traza")
 
@@ -779,11 +796,17 @@ def exportar(carpeta, destino, piloto="", max_vueltas=None, pista=None, auto=Non
     for v in vs:
         d = AT._read_trace(os.path.join(carpeta, v["traza"]))
         n = len(d["lap_dist"])
-        fila = _constructor(d, n, ctes=ctes_por_uid.get(v.get("uid"), {}))
+        valida = bool(v.get("valida", True))
+        fila = _constructor(d, n, ctes=ctes_por_uid.get(v.get("uid"), {}),
+                            invalida=not valida)
         sec = list(v.get("sectores") or [])[:3]
         sec += [0.0] * (3 - len(sec))
+        # la validez por sector viene de sectors.jsonl (que sector pisó el limite);
+        # si la sesion no la tiene, cae a la de la vuelta entera
+        sv = list(v.get("sec_validos") or [valida] * 3)[:3]
+        sv += [valida] * (3 - len(sv))
         vueltas.append({"tiempo": v["tiempo"], "sectores": sec,
-                        "sec_validos": [v.get("valida", True)] * 3,
+                        "sec_validos": sv,
                         "muestras": [fila(k) for k in range(n)]})
     ms = int(time.time() * 1000)
     meta = {"guid": os.urandom(16), "ts": ms, "ts_sesion": ms,
