@@ -721,7 +721,98 @@ def _mad(v):
     return 1.4826 * st.median([abs(x - med) for x in v])
 
 
-def consistency_struct(folder, n=8, minimo=6, n_califica=8):
+def _corridas_cronometradas(folder, crono):
+    """Parte las vueltas cronometradas en CORRIDAS de pista, segun timeline.jsonl.
+
+    Corrida = la misma definicion de `ams2_analysis.stints()`: la corrida de pista
+    entre una salida de boxes y la vuelta siguiente, con la vuelta `pit` como
+    BORDE (no pertenece a ninguna corrida; entrar al garage y volver a salir cruza
+    meta con `pit` y `out` a la vez, y tratar cada una como inicio inventa tandas
+    de una vuelta). La logica de corte se replica aca en vez de importarla porque
+    `ams2_analysis` importa ESTE modulo: al reves seria un import circular.
+
+    Devuelve una lista de listas con los REGISTROS del summary (los mismos objetos
+    que entraron en `crono`, en orden). Devuelve [] cuando no se puede ubicar cada
+    vuelta en su corrida: sesion anterior a timeline.jsonl, o linea de tiempo que
+    no cuadra con el resumen. Fallar aca es barato -- quien llama cae a las
+    primeras n de la sesion y lo DICE -- y adivinar es lo caro.
+    """
+    tl = [r for r in _load_timeline(folder) if r.get("type") == "lap"]
+    if not tl:
+        return []
+    cor, n_cor, abierta = [], 0, False        # cor[i] = corrida de la vuelta i de `tl`
+    for r in tl:
+        if r.get("kind") == "pit" or r.get("pit"):
+            abierta = False                   # el borde CIERRA la corrida, no abre otra
+            cor.append(None)
+            continue
+        if not abierta or r.get("out"):       # una salida de boxes abre la siguiente
+            n_cor += 1
+            abierta = True
+        cor.append(n_cor)
+    por_uid = {r["uid"]: c for r, c in zip(tl, cor)
+               if r.get("uid") is not None and c is not None}
+    orden = [c for r, c in zip(tl, cor) if r.get("kind") == "flying" and c is not None]
+    if crono and all(l.get("uid") in por_uid for l in crono):
+        nums = [por_uid[l["uid"]] for l in crono]
+    elif len(orden) == len(crono):
+        # Sesiones viejas: la linea de tiempo no trae uid. Se emparejan en orden, y
+        # SOLO si la cuenta cuadra exacto. Un desfase silencioso pondria vueltas en
+        # la corrida equivocada, que es peor que no cortar: el numero saldria igual
+        # y saldria creible.
+        nums = orden
+    else:
+        return []
+    out = []
+    for l, c in zip(crono, nums):
+        while len(out) < c:                   # corridas sin vueltas cronometradas
+            out.append([])                    # (solo out/pit) conservan su lugar
+        out[c - 1].append(l)
+    return out
+
+
+def vueltas_de_la_tanda(folder, n=8, tanda=None):
+    """Las vueltas cronometradas que CALIFICAN, y de donde salieron.
+
+    Devuelve `(registros, origen_texto, n_corrida)`. `n_corrida` es None cuando
+    hubo que caer a las primeras `n` de la sesion.
+
+    El protocolo de la escuela (docs/diagnostico.md) es: 5 vueltas de
+    reconocimiento que NO se miden, el alumno ENTRA A BOXES, y recien ahi la tanda
+    de 10 seguidas de la que puntuan las 8 primeras. Tomar las primeras 8 de la
+    CARPETA calificaba el reconocimiento -- justo las vueltas en que el alumno
+    todavia esta aprendiendo el trazado -- y solo 3 de la tanda pedida.
+
+    El pit entre el reconocimiento y la tanda es lo que las separa, y eso es DATO:
+    la linea de tiempo marca la vuelta de boxes. Asi que se parten las
+    cronometradas en corridas y se toma la ULTIMA corrida que llegue a `n`
+    vueltas. "Sin salir de pista" es una condicion DENTRO de la tanda, no entre
+    tandas; y si el alumno repitio la tanda, la que vale es la ultima, no la
+    primera.
+
+    `tanda=k` fuerza la corrida k (1-based) cuando el instructor sabe cual quiere.
+    Sin linea de tiempo, o si ninguna corrida llega a `n`, cae a las primeras `n`
+    de la sesion y lo declara en `origen_texto`: el numero sigue saliendo, pero el
+    reporte dice de donde salio en vez de mentir por omision.
+    """
+    _, laps = _load(folder)
+    crono = [l for l in laps if l.get("lap_time")]
+    cs = _corridas_cronometradas(folder, crono)
+    if cs:
+        if tanda is not None:
+            if 1 <= tanda <= len(cs) and cs[tanda - 1]:
+                return (cs[tanda - 1][:n],
+                        f"corrida {tanda} de {len(cs)}, {len(cs[tanda - 1])} vueltas", tanda)
+        else:
+            for k in range(len(cs) - 1, -1, -1):
+                if len(cs[k]) >= n:
+                    return (cs[k][:n],
+                            f"corrida {k + 1} de {len(cs)}, {len(cs[k])} vueltas", k + 1)
+    porque = f"sin corrida de {n}+" if cs else "sin linea de tiempo"
+    return crono[:n], f"primeras {n} de la sesion ({porque})", None
+
+
+def consistency_struct(folder, n=8, minimo=6, n_califica=8, tanda=None):
     """CONSISTENCIA como coeficiente de variacion, que es lo que se califica.
 
     Dos umbrales distintos a proposito: desde `minimo` (6) se CALCULA y se
@@ -741,9 +832,11 @@ def consistency_struct(folder, n=8, minimo=6, n_califica=8):
     adimensional o no significa nada.
 
     Reglas, y cada una tiene su porque:
-      - Las PRIMERAS `n` vueltas cronometradas, en orden. No las mas rapidas: el
-        minimo de una muestra mejora solo por tener mas intentos, asi que elegir
-        despues de ver los numeros premia al que giro mas.
+      - Las primeras `n` vueltas cronometradas DE LA TANDA (ver
+        `vueltas_de_la_tanda`), en orden. De la tanda y no de la carpeta, porque
+        el reconocimiento no puntua. Y en orden, no las mas rapidas: el minimo de
+        una muestra mejora solo por tener mas intentos, asi que elegir despues de
+        ver los numeros premia al que giro mas.
       - El filtro de anomalias va sobre los RESIDUOS de la recta, no sobre los
         tiempos crudos. Filtrar en crudo se come la deriva legitima (gomas,
         combustible, cansancio) tratandola como error, y mejora el CV solo.
@@ -753,8 +846,7 @@ def consistency_struct(folder, n=8, minimo=6, n_califica=8):
 
     Devuelve None si no hay dato suficiente.
     """
-    _, laps = _load(folder)
-    crono = [l for l in laps if l.get("lap_time")][:n]
+    crono, origen, n_corrida = vueltas_de_la_tanda(folder, n, tanda)
     t = [l["lap_time"] for l in crono]
     if len(t) < minimo:
         return None
@@ -837,6 +929,10 @@ def consistency_struct(folder, n=8, minimo=6, n_califica=8):
             "mediana_s": round(med, 3),
             "mejor_s": round(min(buenas), 3),
             "tiempos": [round(x, 3) for x in t],
+            # De DONDE salieron estas vueltas. El texto es para el reporte; el
+            # numero de corrida va aparte porque quien decide si avisar (el
+            # informe) no puede depender de parsear una frase.
+            "tanda_origen": origen, "tanda_corrida": n_corrida,
             "veredicto": veredicto}
 
 
@@ -847,6 +943,8 @@ def report_consistency(folder):
         print("\n  (sin datos de consistencia: se necesitan 6+ vueltas cronometradas)")
         return
     print("\n=== Consistencia (que tan parejas son tus vueltas) ===")
+    if c.get("tanda_origen"):
+        print(f"  tanda: {c['tanda_origen']}")
     dom, avisos = comparabilidad(folder)
     duros = [a for a in avisos if "CAMBIO" in a]
     if duros:
@@ -1326,26 +1424,26 @@ def report_contactos(folder):
     print("  pauta del instructor con la repeticion.")
 
 
-def tanda(folder, n=8):
-    """Los REGISTROS de las primeras n vueltas cronometradas: la tanda que califica.
+def tanda(folder, n=8, tanda=None):
+    """Los REGISTROS de las n vueltas que califican: solo las vueltas.
 
-    Mismo recorte que `consistency_struct`, y a proposito: los dos ejes de la rubrica
-    tienen que salir de la misma muestra o el informe muestra dos "mejor vuelta"
-    distintas y ninguna es explicable.
+    Envoltorio de `vueltas_de_la_tanda` (que ademas dice de donde salieron) para
+    quien no necesita el origen. Mismo recorte que `consistency_struct`, y a
+    proposito: los dos ejes de la rubrica tienen que salir de la misma muestra o
+    el informe muestra dos "mejor vuelta" distintas y ninguna es explicable.
     """
-    _, laps = _load(folder)
-    return [l for l in laps if l.get("lap_time")][:n]
+    return vueltas_de_la_tanda(folder, n, tanda)[0]
 
 
-def mejor_de_la_tanda(folder, n=8):
-    """El registro mas rapido de las primeras n cronometradas. None si no hay.
+def mejor_de_la_tanda(folder, n=8, tanda=None):
+    """El registro mas rapido de la tanda que califica. None si no hay.
 
     NO es `clean_laps()["best_lap_time"]`, que es la mejor de TODA la sesion. La
     diferencia no es cosmetica: docs/evaluacion.md fija el numero de vueltas de
     antemano justo porque el minimo de una muestra mejora solo por tener mas
     intentos, y medir el gap contra la mejor de 20 premia al que giro mas.
     """
-    t = tanda(folder, n)
+    t = vueltas_de_la_tanda(folder, n, tanda)[0]
     return min(t, key=lambda l: l["lap_time"]) if t else None
 
 
@@ -1366,6 +1464,11 @@ def evaluar(folder, pauta=None):
     out = {"sesion": os.path.basename(folder), "dimensiones": {}, "faltantes": [],
            "nota": None, "peso_cubierto": 0.0}
 
+    # De que corrida salieron las vueltas calificadas. Se resuelve ANTES del gate de
+    # condiciones porque hay retornos tempranos y el consumidor no puede quedarse a
+    # veces con la clave y a veces sin ella (mismo motivo que `nota`).
+    vueltas, out["tanda_origen"], out["tanda_corrida"] = vueltas_de_la_tanda(folder)
+
     # --- comparabilidad primero: si la sesion mezcla condiciones, no se califica
     dom, avisos = comparabilidad(folder)
     duros = [a for a in avisos if "CAMBIO" in a]
@@ -1377,7 +1480,7 @@ def evaluar(folder, pauta=None):
 
     # --- TECNICA 25%: gap% contra la referencia guardada
     ref = load_reference(folder)
-    mejor = mejor_de_la_tanda(folder)
+    mejor = min(vueltas, key=lambda l: l["lap_time"]) if vueltas else None
     if ref and ref.get("lap_time") and mejor:
         tuyo = mejor["lap_time"]
         gap = 100.0 * (tuyo - ref["lap_time"]) / ref["lap_time"]
@@ -1448,6 +1551,10 @@ def report_evaluacion(folder, pauta=None):
     """Imprime la nota, y sobre todo QUE FALTA para poder darla."""
     e = evaluar(folder, pauta)
     print(f"\n=== Evaluacion · {e['sesion']} ===")
+    # De donde salieron las vueltas calificadas: si la nota se armo sobre el
+    # reconocimiento en vez de sobre la tanda, tiene que verse aca y no deducirse.
+    if e.get("tanda_origen"):
+        print(f"  tanda: {e['tanda_origen']}")
     if e.get("condiciones"):
         print(f"  condiciones: {e['condiciones']}")
     for nombre, d in e["dimensiones"].items():

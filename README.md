@@ -55,6 +55,14 @@ Automobilista 2.
   (tendencia entre prácticas de un mismo auto+pista), `--race-fuel <min>` (carga
   de combustible estimada desde el consumo real medido). Ver `docs/SETUP-NOTES.md`
   para cómo se usa en la práctica.
+- **Qué vueltas califican** (`--consistencia`, `--evaluar` y el informe): la
+  **tanda**, no la carpeta. Se parten las vueltas cronometradas en corridas de
+  pista (la línea de tiempo marca el paso por boxes) y se toman las 8 primeras de
+  la **última corrida que llegue a 8 vueltas seguidas** — las de reconocimiento
+  quedan en la corrida anterior, que es justo lo que el pit del protocolo separa.
+  Si ninguna corrida llega a 8, o la sesión es anterior a `timeline.jsonl`, se cae
+  a las primeras 8 de la sesión y el reporte lo dice (`tanda: primeras 8 de la
+  sesion (...)`).
 - **Limpieza medida** (`--contactos`): contactos con otros autos (vuelta, metro,
   magnitud y contra quién) + vueltas invalidadas y su tasa, sobre las vueltas
   limpias **y** las invalidadas. Un contacto se detecta por el **cambio** de

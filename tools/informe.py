@@ -134,7 +134,10 @@ def numeros(folder):
     e = A.evaluar(folder)
     mezclada = any("mezcla condiciones" in f for f in e["faltantes"])
     out = {"condiciones": e.get("condiciones"), "mezclada": mezclada,
-           "gap": None, "cv": None, "faltan": []}
+           "gap": None, "cv": None, "faltan": [],
+           # De donde salieron las vueltas calificadas. `tanda_corrida` None = hubo
+           # que caer a las primeras de la sesion; eso SI se le avisa al alumno.
+           "tanda_origen": e.get("tanda_origen"), "tanda_corrida": e.get("tanda_corrida")}
 
     tec = e["dimensiones"].get("tecnica")
     if tec:
@@ -1108,6 +1111,30 @@ def _sec_nivel(d):
             f'</p>{limpieza}</section>')
 
 
+def _aviso_tanda(n, c):
+    """Aviso corto cuando los números NO salieron de una tanda seguida.
+
+    El protocolo mide una tanda DESPUÉS de entrar a boxes: las vueltas de
+    reconocimiento no puntúan. Cuando la sesión no tiene una corrida de 8 vueltas
+    seguidas — o es anterior a la línea de tiempo — se toman las primeras 8 de la
+    carpeta, y ahí el reconocimiento puede estar puntuando. Se avisa SOLO en ese
+    caso: una tanda bien grabada es lo normal y no necesita explicación. En el
+    modo cierre se mira la misma regla en las dos mediciones, y se nombra cuál
+    falló: "hay un aviso" sin decir de cuál de las dos no sirve para nada.
+    """
+    malas = [etq for etq, num in (("de salida", n), ("de entrada", c["numeros"] if c else None))
+             if num and num.get("tanda_corrida") is None]
+    if not malas:
+        return ""
+    cual = ("" if not c else
+            " en las dos mediciones" if len(malas) == 2 else f" en la medición {malas[0]}")
+    return (f'<p class="nota"><b>Ojo con el origen de estos números{cual}:</b> no se encontró una '
+            'tanda de 8 vueltas seguidas sin pasar por boxes, así que se tomaron las primeras 8 '
+            'cronometradas de la sesión. Si esa sesión incluyó las vueltas de reconocimiento, '
+            'están puntuando: repite la tanda completa después del pit para que el número mida '
+            'lo que tiene que medir.</p>')
+
+
 def render(d):
     """Los datos como HTML autocontenido. Sin red: se abre igual sin internet."""
     n, c = d["numeros"], d.get("cierre")
@@ -1156,7 +1183,7 @@ def render(d):
               f'<section><div class="ojo"><b>1</b> {ojo1}</div><div class="dos">'
               + _caja_gap(n["gap"], n["faltan"], dl.get("gap"))
               + _caja_cv(n["cv"], n["faltan"], dl.get("cv"))
-              + f'</div>{foco_txt}</section>']
+              + f'</div>{_aviso_tanda(n, c)}{foco_txt}</section>']
     if d["logros"]:
         li = "".join(f"<li>{_esc(x)}</li>" for x in d["logros"])
         partes.append('<section><div class="ojo">Lo que ya te sale</div>'

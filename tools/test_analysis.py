@@ -326,13 +326,42 @@ def main():
 
     print("\ntest consistencia (CV%, la metrica con la que se califica):")
 
-    def _sesion_cv(base, tiempos):
-        """Sesion minima: solo summary.jsonl, que es de donde sale el CV."""
+    def _sesion_cv(base, tiempos, corridas=None):
+        """Sesion minima: summary.jsonl, que es de donde sale el CV.
+
+        `corridas` = [k1, k2, ...] cuantas vueltas cronometradas tiene cada corrida
+        de pista; con eso se escribe tambien `timeline.jsonl` con la vuelta de
+        salida que abre cada corrida y la vuelta de boxes que las separa. Sin
+        `corridas` la sesion queda SIN linea de tiempo a proposito: ese es el
+        fallback (primeras n de la carpeta) y hay que poder probarlo.
+        """
         d = os.path.join(base, "CV__Auto__practice__20260101_000000")
         os.makedirs(d, exist_ok=True)
         with open(os.path.join(d, "summary.jsonl"), "w", encoding="utf-8") as f:
             for i, t in enumerate(tiempos):
-                f.write(json.dumps({"lap": i + 1, "lap_time": t, "valid": True}) + "\n")
+                f.write(json.dumps({"uid": i + 1, "lap": i + 1, "lap_time": t,
+                                    "valid": True}) + "\n")
+        tlf = os.path.join(d, "timeline.jsonl")
+        if not corridas:
+            # la carpeta se reusa entre casos: una linea de tiempo vieja aca
+            # cambiaria el resultado del caso siguiente sin que se note
+            if os.path.exists(tlf):
+                os.remove(tlf)
+            return d
+        with open(tlf, "w", encoding="utf-8") as f:
+            uid, lap = 0, 0
+            for c, k in enumerate(corridas):
+                if c:                                     # la vuelta de boxes: el BORDE
+                    lap += 1
+                    f.write(json.dumps({"type": "lap", "lap": lap, "lap_time": 120.0,
+                                        "kind": "pit", "pit": True, "uid": None}) + "\n")
+                lap += 1
+                f.write(json.dumps({"type": "lap", "lap": lap, "lap_time": 110.0,
+                                    "kind": "out", "out": True, "uid": None}) + "\n")
+                for _ in range(k):
+                    uid, lap = uid + 1, lap + 1
+                    f.write(json.dumps({"type": "lap", "lap": lap, "kind": "flying",
+                                        "lap_time": tiempos[uid - 1], "uid": uid}) + "\n")
         return d
 
     _b = tempfile.mkdtemp(prefix="anacv_")
@@ -386,6 +415,49 @@ def main():
             A._slope_robusta([10, 10, 10, 99, 10, 10]))
         _ok("Theil-Sen ve la tendencia real", abs(A._slope_robusta([10, 11, 12, 13, 14]) - 1.0) < 0.01,
             A._slope_robusta([10, 11, 12, 13, 14]))
+
+        print("\ntest cual es la tanda (el reconocimiento NO puntua):")
+        # El protocolo: 5 vueltas de reconocimiento, PIT, y ahi si la tanda de 10.
+        # Tomando las primeras 8 de la CARPETA calificaban las 5 lentas + 3 de la
+        # tanda -- el peor de los dos mundos, porque ademas mezcla dos corridas.
+        reco = [95.0, 94.0, 93.5, 93.0, 92.5]
+        buena = [90.0, 90.1, 89.9, 90.05, 90.0, 89.95, 90.1, 90.0, 89.98, 90.02]
+        d = _sesion_cv(_b, reco + buena, corridas=[5, 10])
+        v, origen, k = A.vueltas_de_la_tanda(d)
+        _ok("elige la ULTIMA corrida con 8+ vueltas", k == 2 and "corrida 2 de 2" in origen, origen)
+        _ok("y son las 8 PRIMERAS de esa corrida, en orden",
+            [l["lap_time"] for l in v] == buena[:8], [l["lap_time"] for l in v])
+        c = A.consistency_struct(d)
+        _ok("el CV sale de la tanda, no mezclado con el reconocimiento",
+            c and c["cv_pct"] < 0.3 and c["veredicto"] == "excelente",
+            c and (c["cv_pct"], c["veredicto"]))
+        _ok("ninguna vuelta del reconocimiento entra al CV",
+            c and not any(t in c["tiempos"] for t in reco), c and c["tiempos"])
+        _ok("la mejor tambien es de la tanda (no la mejor de la carpeta)",
+            A.mejor_de_la_tanda(d)["lap_time"] == 89.9, A.mejor_de_la_tanda(d)["lap_time"])
+        _ok("y el struct dice de donde salio", c and c["tanda_corrida"] == 2, c and c["tanda_origen"])
+
+        # tanda=k: el instructor manda cuando sabe cual quiere
+        v1, origen1, k1 = A.vueltas_de_la_tanda(d, tanda=1)
+        _ok("tanda=1 explicito: devuelve el reconocimiento",
+            k1 == 1 and [l["lap_time"] for l in v1] == reco, (origen1, [l["lap_time"] for l in v1]))
+
+        # sin linea de tiempo NO hay estructura que cortar: se cae a las primeras 8
+        # de la carpeta, y se dice. Es el camino de las sesiones viejas.
+        d2 = _sesion_cv(_b, reco + buena)
+        v2, origen2, k2 = A.vueltas_de_la_tanda(d2)
+        _ok("sin timeline: primeras 8 de la sesion", k2 is None and "primeras 8" in origen2, origen2)
+        _ok("sin timeline: y avisa que no hay linea de tiempo",
+            "sin linea de tiempo" in origen2, origen2)
+        _ok("sin timeline: son literalmente las primeras 8 del summary",
+            [l["lap_time"] for l in v2] == (reco + buena)[:8], [l["lap_time"] for l in v2])
+
+        # una sesion cuya UNICA corrida no llega a 8: tampoco se inventa una tanda
+        d3 = _sesion_cv(_b, reco + buena[:2], corridas=[5, 2])
+        v3, origen3, k3 = A.vueltas_de_la_tanda(d3)
+        _ok("ninguna corrida llega a 8: cae a la sesion y lo dice",
+            k3 is None and "sin corrida de 8+" in origen3, origen3)
+        _ok("y toma las 7 que hay, no menos", len(v3) == 7, len(v3))
     finally:
         shutil.rmtree(_b, ignore_errors=True)
 
