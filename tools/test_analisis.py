@@ -463,8 +463,39 @@ def test_bordes():
              "terrain_FR": [0.0] * m, "terrain_RR": [0.0] * m}
         return d
 
-    izq, der, pianos, fuera, nv = A._acumular_bordes(cx, cz, paso, [vuelta(2.0, True), vuelta(-2.0)])
+    izq, der, pianos, fuera, evi_i, evi_d, nv = A._acumular_bordes(cx, cz, paso, [vuelta(2.0, True), vuelta(-2.0)])
     ok("cuenta las 2 vueltas", nv == 2)
+    ev = [v for v in evi_i[5:-5] if v is not None]
+    ok("la evidencia de borde izquierdo es el inicio del piano (2.85 m, a 0.25 de resolucion)",
+       ev and all(abs(v - 2.85) <= 0.15 for v in ev), f"{ev[:1]}")
+    ok("sin piano ni pasto a la derecha no hay evidencia de ese lado", all(v is None for v in evi_d))
+    # el mismo piano pisado desde los dos lados de la referencia es UN borde:
+    # muestras en -0.5 y +0.75 en un metro de curva a la izquierda -> borde
+    # izquierdo en -0.5 (donde empieza el piano), nada a la derecha
+    ev = [set() for _ in range(5)]
+    ev[2] = {-0.5, 0.0, 0.75}
+    ei, ed = A._lados_evidencia(ev, [1.0]*5, [-1.0]*5, [0.02]*5)
+    ok("un piano que cruza la referencia es un solo borde, del lado interior de la curva",
+       ei[2] == -0.5 and ed[2] is None, f"izq={ei[2]} der={ed[2]}")
+    ev[2] = {-6.0, -5.5, 5.5, 6.0}
+    ei, ed = A._lados_evidencia(ev, [1.0]*5, [-1.0]*5, [0.02]*5)
+    ok("un cumulo a cada lado del asfalto son los dos bordes (donde empieza cada uno)",
+       ed[2] == -5.5 and ei[2] == 5.5, f"izq={ei[2]} der={ed[2]}")
+    # dos cumulos del MISMO lado (piano a 1 m, pasto de un trompo a 8 m): manda
+    # el mas cercano al asfalto, y el otro lado queda sin evidencia
+    ev[2] = {1.0, 1.25, 8.0, 8.5}
+    ei, ed = A._lados_evidencia(ev, [1.0]*5, [-1.0]*5, [0.02]*5)
+    ok("dos cumulos del mismo lado no son dos bordes: manda el mas cercano",
+       ei[2] == 1.0 and ed[2] is None, f"izq={ei[2]} der={ed[2]}")
+    # composicion: con evidencia manda la evidencia (2.85), no la envolvente (1.15)
+    bi, bd, esti, estd, ancho, pares = A._componer_bordes(izq, der, evi_i, evi_d)
+    ok("el borde izquierdo compuesto es la evidencia, no la envolvente",
+       abs(bi[50] - 2.85) <= 0.15 and not esti[50], f"{bi[50]:.2f} est={esti[50]}")
+    # sin evidencia de los dos lados en ningun metro, el ancho es el de una
+    # pista comun (12 m) y el borde derecho va a esa distancia del izquierdo
+    ok("sin pares de evidencia el ancho es el de pista comun", pares == 0 and ancho == A.ANCHO_PISTA_M, f"{ancho} m")
+    ok("sin evidencia, el borde derecho va al ancho desde el izquierdo, marcado estimado",
+       abs(bd[50] - (2.85 - 12.0)) <= 0.15 and estd[50], f"{bd[50]:.2f} est={estd[50]}")
     # rumbo +x: la izquierda del auto es +z. Asfalto: ruedas derechas de la vuelta
     # +2 (z=1.15) y ruedas derechas de la vuelta -2 (z=-2.85); las izquierdas de
     # la -2 (z=-1.15) tambien son asfalto pero no son el extremo.
@@ -480,7 +511,7 @@ def test_bordes():
     ok("nada 'fuera' de pista en una recta de asfalto", not fuera)
 
     # relleno: una vuelta que solo cubre los primeros 100 m deja hueco largo
-    izq2, der2, _, _, _ = A._acumular_bordes(cx, cz, paso, [vuelta(1.0, hasta=100.0)])
+    izq2, der2, _, _, _, _, _ = A._acumular_bordes(cx, cz, paso, [vuelta(1.0, hasta=100.0)])
     lleno, est = A._rellenar(izq2, paso, 5.0)
     ok("el hueco largo se estima con el valor por defecto y se marca",
        lleno[-1] == 5.0 and est[-1] and not est[10], f"{lleno[-1]} est={est[-1]}")

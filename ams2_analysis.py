@@ -684,10 +684,17 @@ def _acumular_bordes(cx, cz, paso, trazas):
     RL/RR. Funcion PURA (sin disco) para poder probarla con una pista sintetica
     donde el borde se conoce exacto.
 
-    Devuelve (izq, der, pianos, fuera, n): `izq[i]`/`der[i]` son el maximo y el
-    minimo desplazamiento lateral (m, signo de la normal izquierda del trazado)
-    con asfalto bajo una rueda en el metro i, None donde ninguna rueda paso;
-    `pianos`/`fuera` son listas de (i, d) ya adelgazadas a 0.5 m.
+    Devuelve (izq, der, pianos, fuera, evi_izq, evi_der, n): `izq[i]`/`der[i]`
+    son el maximo y el minimo desplazamiento lateral (m, signo de la normal
+    izquierda del trazado) con asfalto bajo una rueda en el metro i, None donde
+    ninguna rueda paso -- es la ENVOLVENTE de lo recorrido, o sea un minimo del
+    ancho real, no el borde. `evi_izq`/`evi_der` son el BORDE con evidencia: la
+    muestra de piano o de fuera de pista mas cercana al trazado en ese metro
+    (el piano empieza donde termina el asfalto; el pasto, 0.3 m mas alla). Con
+    pocas vueltas la envolvente es un pasillo angosto y la trazada queda pegada
+    a su borde por construccion; la evidencia es lo que dice donde esta el
+    borde de verdad, aunque nadie haya pasado por ahi con las cuatro ruedas.
+    `pianos`/`fuera` son listas de (i, d) ya adelgazadas a 0.5 m, para dibujar.
     """
     n = len(cx)
     # tangente y normal del trazado en cada metro
@@ -698,6 +705,7 @@ def _acumular_bordes(cx, cz, paso, trazas):
         L = math.hypot(dx, dz) or 1.0
         tx[i], tz[i] = dx / L, dz / L
     izq, der = [None] * n, [None] * n
+    evid = [set() for _ in range(n)]         # muestras de borde por metro (d a 0.25 m)
     pianos, fuera = set(), set()
     vueltas = 0
     ruedas = (("terrain_FL", EJE_2, VIA_2), ("terrain_FR", EJE_2, -VIA_2),
@@ -740,17 +748,76 @@ def _acumular_bordes(cx, cz, paso, trazas):
                         izq[j] = lat_m
                     if der[j] is None or lat_m < der[j]:
                         der[j] = lat_m
-                elif code in TERRENO_PIANO:
-                    pianos.add((j, round(lat_m * 2) / 2))
-                elif code in TERRENO_FUERA:
-                    fuera.add((j, round(lat_m * 2) / 2))
-    return izq, der, sorted(pianos), sorted(fuera), vueltas
+                elif code in TERRENO_PIANO or code in TERRENO_FUERA:
+                    piano = code in TERRENO_PIANO
+                    (pianos if piano else fuera).add((j, round(lat_m * 2) / 2))
+                    # el pasto ya es un poco mas alla del borde: se acerca 0.3 m
+                    # hacia el trazado. De que LADO esta cada muestra se decide
+                    # despues, por metro, mirando todas juntas (_lados_evidencia)
+                    borde = lat_m if piano else lat_m - (0.3 if lat_m > 0 else -0.3)
+                    evid[j].add(round(borde * 4) / 4)
+    evi_izq, evi_der = _lados_evidencia(evid, izq, der, _curvatura(cx, cz, paso))
+    return izq, der, sorted(pianos), sorted(fuera), evi_izq, evi_der, vueltas
 
 
-def _rellenar(serie, paso, defecto):
-    """Interpola huecos cortos (< RELLENO_MAX_M) y estima los largos con `defecto`.
-    Devuelve (serie completa, [bool] estimado por metro)."""
+def _lados_evidencia(evid, env_i, env_d, curv, hueco_m=5.0):
+    """A que borde pertenece cada muestra de piano/pasto, metro a metro.
+
+    NO se puede decidir por el signo del desplazamiento: la linea de referencia
+    es una linea de carrera y en el apex va ENCIMA del piano interior, asi que
+    las ruedas de otras vueltas sobre ese mismo piano caen a ambos lados de ella
+    -- y leidas por signo son "borde izquierdo" y "borde derecho" a 1.5 m uno
+    del otro. Medido en Silverstone: ancho mediano de 4 m por esto.
+
+    Se agrupan las muestras del metro en cumulos separados por mas de `hueco_m`
+    (dos bordes de una pista nunca estan a menos de 5 m). Dos cumulos = los dos
+    bordes. Uno solo = un borde, y de que lado se decide contra el CENTRO del
+    asfalto recorrido; si lo cruza (el auto iba sobre el piano), por la
+    curvatura: en una curva, el piano que se pisa es el interior.
+
+    El borde es donde EMPIEZA el piano: el extremo del cumulo mas cercano al
+    asfalto (el minimo si es el izquierdo, el maximo si es el derecho).
+    """
+    n = len(evid)
+    evi_i, evi_d = [None] * n, [None] * n
+    for j in range(n):
+        ds = sorted(evid[j])
+        if not ds:
+            continue
+        cumulos, actual = [], [ds[0]]
+        for d in ds[1:]:
+            if d - actual[-1] > hueco_m:
+                cumulos.append(actual)
+                actual = [d]
+            else:
+                actual.append(d)
+        cumulos.append(actual)
+        centro = ((env_i[j] + env_d[j]) / 2.0
+                  if env_i[j] is not None and env_d[j] is not None else 0.0)
+        # cada cumulo va al lado que le toca; si hay varios del mismo lado (el
+        # piano y, 7 m mas alla, el pasto de un trompo) manda el mas cercano al
+        # asfalto: el borde es el primero que se encuentra saliendo
+        for c in cumulos:
+            medio = (c[0] + c[-1]) / 2.0
+            if medio > centro + 0.5:
+                izq = True
+            elif medio < centro - 0.5:
+                izq = False
+            else:                               # cruza la referencia: en curva, piano interior
+                izq = curv[j] > 0
+            if izq:
+                if evi_i[j] is None or min(c) < evi_i[j]:
+                    evi_i[j] = min(c)
+            elif evi_d[j] is None or max(c) > evi_d[j]:
+                evi_d[j] = max(c)
+    return evi_i, evi_d
+
+
+def _rellenar(serie, paso, defecto, maximo=RELLENO_MAX_M):
+    """Interpola huecos cortos (< `maximo` m) y estima los largos con `defecto`
+    (que puede ser None: queda el hueco). Devuelve (serie, [bool] estimado)."""
     n = len(serie)
+    RELLENO_MAX_M_ = maximo
     out, est = list(serie), [False] * n
     i = 0
     while i < n:
@@ -764,17 +831,115 @@ def _rellenar(serie, paso, defecto):
         b = out[j] if j < n else None
         largo = (j - i) * paso
         for k in range(i, j):
-            if a is not None and b is not None and largo <= RELLENO_MAX_M:
+            if a is not None and b is not None and largo <= RELLENO_MAX_M_:
                 out[k] = a + (b - a) * (k - i + 1) / (j - i + 1)
-            elif a is not None and b is None and largo <= RELLENO_MAX_M:
+            elif a is not None and b is None and largo <= RELLENO_MAX_M_:
                 out[k] = a
-            elif b is not None and a is None and largo <= RELLENO_MAX_M:
+            elif b is not None and a is None and largo <= RELLENO_MAX_M_:
                 out[k] = b
             else:
                 out[k] = defecto
                 est[k] = True
         i = j
     return out, est
+
+
+# Entre dos evidencias de borde del mismo lado se interpola hasta aca. CORTO a
+# proposito: los desplazamientos son relativos a la linea de referencia, que es
+# una linea de carrera y cruza la pista de lado a lado en cada curva. Interpolar
+# a 150 m unia el piano exterior de la entrada con el interior de la salida y
+# daba un "borde" que copiaba la trazada -- Cordoba salia con 2.8 m de ancho
+# con evidencia en el 100% de los metros. En 30 m la referencia se mueve poco.
+EVIDENCIA_MAX_M = 30.0
+ANCHO_PISTA_M = 12.0       # ancho de una pista comun, cuando no hay con que medirlo
+
+
+def _mediana(xs, defecto=None):
+    xs = sorted(x for x in xs if x is not None)
+    return xs[len(xs) // 2] if xs else defecto
+
+
+def _componer_bordes(env_i, env_d, evi_i, evi_d):
+    """Los dos bordes, metro a metro, con tres fuentes en este orden:
+
+      1. EVIDENCIA (piano o pasto bajo una rueda), interpolada entre puntos
+         hasta EVIDENCIA_MAX_M. Es el borde real.
+      2. La ENVOLVENTE de asfalto recorrido, si sale mas afuera que lo anterior
+         (una rueda con asfalto debajo mas alla de un "piano" es asfalto, y
+         punto). Sin evidencia cerca, la envolvente es un piso, no el borde.
+      3. Donde falta evidencia de UN lado: ese lado va al ANCHO MEDIANO de la
+         pista desde el lado conocido. Donde faltan los dos: el ancho mediano
+         centrado en lo recorrido. Ambos marcados como estimados.
+
+    Por que el ancho y no "la mediana de cada lado": la linea de referencia va
+    pegada a los pianos, asi que la distancia mediana de ella a la evidencia
+    de un lado es chica y no dice nada del otro lado. El ancho entre las dos
+    evidencias si es una propiedad de la pista. Antes se usaba la envolvente
+    sola y con 4 vueltas la trazada quedaba pegada al "borde" en toda la
+    salida de la curva (T5 de Cordoba: se sale por la mitad y el mapa decia que
+    por el limite).
+
+    Devuelve (izq, der, [bool] estimado izq, [bool] estimado der).
+    """
+    n = len(env_i)
+    ei, sin_i = _rellenar(evi_i, PASO_M, None, EVIDENCIA_MAX_M)
+    ed, sin_d = _rellenar(evi_d, PASO_M, None, EVIDENCIA_MAX_M)
+    # ancho mediano: evidencia de los dos lados en el mismo metro; si no hay,
+    # la envolvente mas un metro por lado; si tampoco, 10 m (una pista comun)
+    # el ancho se mide solo donde hay evidencia de los DOS lados en el mismo
+    # metro; con pocas vueltas eso puede no pasar nunca, y ahi vale mas un ancho
+    # de pista comun que la envolvente de 4 vueltas
+    # y solo pares de mas de 6 m: menos que eso no es una pista, es un piano
+    # leido desde los dos lados que se le escapo a _lados_evidencia
+    pares = [ei[i] - ed[i] for i in range(n)
+             if not sin_i[i] and not sin_d[i] and ei[i] is not None and ed[i] is not None
+             and ei[i] - ed[i] > 6.0]
+    ancho = _mediana(pares) if len(pares) >= 10 else ANCHO_PISTA_M
+    env_ancho = _mediana([env_i[i] - env_d[i] for i in range(n)
+                          if env_i[i] is not None and env_d[i] is not None], 0.0)
+    ancho = max(ancho, env_ancho + 1.0)
+    izq, der = [None] * n, [None] * n
+    est_i, est_d = [True] * n, [True] * n
+    for i in range(n):
+        li = None if sin_i[i] else ei[i]
+        ld = None if sin_d[i] else ed[i]
+        if li is not None and ld is None:
+            ld = li - ancho
+        elif ld is not None and li is None:
+            li = ld + ancho
+        est_i[i], est_d[i] = sin_i[i], sin_d[i]
+        izq[i], der[i] = li, ld
+    # Los metros sin evidencia de NINGUN lado quedan en None y se interpolan
+    # entre los bordes ya compuestos (hasta 400 m): un borde de pista es una
+    # curva continua, y saltar de "piano + ancho" a "centrado en lo recorrido"
+    # dibujaba escalones de 3 m justo donde termina el piano de salida
+    # (Cordoba T5). Solo donde ni asi hay dato se centra en lo recorrido.
+    izq, _ = _rellenar(izq, PASO_M, None, 400.0)
+    der, _ = _rellenar(der, PASO_M, None, 400.0)
+    for i in range(n):
+        if izq[i] is None or der[i] is None:
+            c = ((env_i[i] + env_d[i]) / 2.0
+                 if env_i[i] is not None and env_d[i] is not None else 0.0)
+            izq[i], der[i] = c + ancho / 2.0, c - ancho / 2.0
+        # la envolvente de asfalto siempre manda si sale mas afuera
+        if env_i[i] is not None and env_i[i] > izq[i]:
+            izq[i], est_i[i] = env_i[i], False
+        if env_d[i] is not None and env_d[i] < der[i]:
+            der[i], est_d[i] = env_d[i], False
+    # suavizado corto (10 m): la evidencia va a 0.25 m y los empalmes entre
+    # tramos con distinta fuente dejan dientes que no son de la pista
+    izq = _suavizar(izq, 2)
+    der = _suavizar(der, 2)
+    return izq, der, est_i, est_d, round(ancho, 1), len(pares)
+
+
+def _suavizar(xs, r):
+    n = len(xs)
+    out = list(xs)
+    for i in range(n):
+        a, b = max(0, i - r), min(n, i + r + 1)
+        out[i] = sum(xs[a:b]) / (b - a)
+    return out
 
 
 def bordes(folder: str) -> dict:
@@ -800,7 +965,9 @@ def bordes(folder: str) -> dict:
             for f in os.listdir(ruta):
                 if f.endswith(".csv.gz") and f[:1] in "LX":
                     archivos.append(os.path.join(ruta, f))
-    firma = [len(archivos), max((os.path.getmtime(f) for f in archivos), default=0)]
+    # la version va en la firma: cambiar el calculo sin cambiarla serviria el
+    # cache viejo hasta que entre una traza nueva
+    firma = ["v7", len(archivos), max((os.path.getmtime(f) for f in archivos), default=0)]
     limpio = "".join(c if c.isalnum() else "_" for c in f"{clave[0]}__{clave[1]}")
     cache_dir = os.path.join(TELEM, "_cache")
     cache = os.path.join(cache_dir, f"bordes__{limpio}.json")
@@ -814,14 +981,9 @@ def bordes(folder: str) -> dict:
 
     xs_m, cx, cz = _centro_ref(folder)
     cols = ("lap_dist", "pos_x", "pos_z", "terrain_FL", "terrain_FR", "terrain_RL", "terrain_RR")
-    izq, der, pianos, fuera, n_v = _acumular_bordes(
+    env_i, env_d, pianos, fuera, evi_i, evi_d, n_v = _acumular_bordes(
         cx, cz, PASO_M, (_leer_columnas(f, cols) for f in archivos))
-    medidos = [v for v in izq if v is not None]
-    med_i = sorted(medidos)[len(medidos) // 2] if medidos else 5.0
-    medidos = [v for v in der if v is not None]
-    med_d = sorted(medidos)[len(medidos) // 2] if medidos else -5.0
-    izq, est_i = _rellenar(izq, PASO_M, med_i)
-    der, est_d = _rellenar(der, PASO_M, med_d)
+    izq, der, est_i, est_d, ancho, n_pares = _componer_bordes(env_i, env_d, evi_i, evi_d)
     n = len(cx)
 
     def punto(i, d):
@@ -835,6 +997,8 @@ def bordes(folder: str) -> dict:
         "pista": clave[0], "variante": clave[1],
         "n_vueltas": n_v, "n_sesiones": len({os.path.dirname(f) for f in archivos}),
         "paso_m": PASO_M,
+        "ancho_m": ancho,                 # ancho mediano usado donde falta evidencia
+        "ancho_medido": n_pares >= 10,    # False = ANCHO_PISTA_M por defecto
         "metros": [round(x, 1) for x in xs_m],
         "bi": [punto(i, izq[i]) for i in range(n)],      # borde izquierdo (x, z)
         "bd": [punto(i, der[i]) for i in range(n)],      # borde derecho

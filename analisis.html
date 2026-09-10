@@ -471,7 +471,8 @@ function pintarMapa(){
     .map(([cual, col]) => [`<i style='background:${col}'></i>`, "vuelta " + cual])
     .concat(LEYENDA_FIJA)
     .concat(B ? [["<i style='background:#1c2534;height:8px;border:1px solid #3a4a5e'></i>",
-                  `asfalto visto por las ruedas · ${B.n_vueltas} vueltas`],
+                  `asfalto según ${B.n_vueltas} vueltas · ancho ${B.ancho_m} m` +
+                  (B.ancho_medido ? "" : " (supuesto)") + " · punteado = estimado"],
                  ["<i style='background:#b5651d;width:6px;height:6px'></i>", "piano"]]
                : [["<i style='background:#151b24;height:8px'></i>", "banda nominal (sin bordes aún)"]])
     .map(([g,t]) => `<span>${g}${t}</span>`).join("");
