@@ -22,7 +22,10 @@ Automobilista 2.
   `?s=<sesión>#T3` en la URL abre ya en esa curva) con los cuatro puntos de
   cada vuelta marcados —frenada, giro, ápex, a fondo— y la tabla de esos metros
   por curva con la diferencia contra A; comparación de canales y delta de
-  tiempo metro a metro; export a CSV. Es la herramienta con la que tu coach
+  tiempo metro a metro; y **comparar con otra sesión de la misma pista**
+  (selector bajo la lista de vueltas: B y C pueden ser vueltas de otro día;
+  `?s=<sesión>&vs=<otra>&b=<otra>|<traza>` arma el link "tu vuelta de entrada
+  contra la de salida"); export a CSV. Es la herramienta con la que tu coach
   revisa tu sesión.
 
 - **Página principal**: tira de 20 LEDs de cambio (verde/ámbar/rojo + strobe azul al

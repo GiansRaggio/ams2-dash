@@ -109,6 +109,11 @@
   .v .sel.on.c{border-color:var(--amber);color:#04060a;background:var(--amber)}
   .v.notrace .t{color:var(--dim);font-weight:400}
   .v.notrace .sel{opacity:.25}
+  /* la otra sesion: mismas filas .v, en su propia caja para que se lea de un
+     vistazo que esas vueltas son de OTRO dia y no de la tanda de arriba */
+  #otrasesion{width:100%;margin-top:8px}
+  #vueltasotra{display:flex;flex-direction:column;gap:3px;max-height:30vh;overflow-y:auto;margin-top:6px}
+  #vueltasotra .v .n{width:5.4em}   /* cabe "T2·L10": alla la vuelta va con su tanda */
 
   /* ---------- cursor / lectura ---------- */
   #lectura{position:sticky;bottom:0;z-index:15;background:linear-gradient(0deg,#0b1018 78%,#0b101800);
@@ -163,6 +168,9 @@
     <div>
       <div class="label" style="padding:0 2px 4px">vueltas de la tanda · A para ver · B y C para comparar</div>
       <div id="vueltas"></div>
+      <select id="otrasesion"></select>
+      <div id="avisootra"></div>
+      <div id="vueltasotra"></div>
     </div>
 
     <div id="avisos"></div>
@@ -198,8 +206,10 @@ const api = (r, q) => fetch("/api/" + r + "?" + new URLSearchParams(q)).then(asy
 // ---------------------------------------------------------------- estado ---
 const S = {
   sesion: null, meta: null, tandas: [], tanda: 0,
-  mapa: null, trazas: new Map(),      // nombre de archivo -> traza remuestreada
-  A: null, B: null, C: null,          // nombres de archivo de las vueltas elegidas
+  sesiones: [],                       // lista cruda de /api/sesiones (la usa el selector de abajo)
+  otra: null,                         // {carpeta, info, vueltas} de la sesion de comparacion
+  mapa: null, trazas: new Map(),      // clave de vuelta -> traza remuestreada
+  A: null, B: null, C: null,          // claves de las vueltas elegidas (ver claveDe)
   cursor: null,                       // indice en la grilla de metros
   vista: null,                        // {cx,cz,k} en coords de mundo; null = pista completa
   curvaZoom: null,                    // n de la curva a la que se entro (para resaltarla)
@@ -223,6 +233,48 @@ const VUELTAS = [["A","#27e0ff"],["B","#ff2e4d"],["C","#ffb020"]];
 const trazasSel = () => VUELTAS
   .map(([cual, col]) => [cual, col, S[cual] ? S.trazas.get(S[cual]) : null])
   .filter(x => x[2]);
+
+/* ============== COMPARAR CONTRA UNA VUELTA DE OTRA SESION =================
+
+   La escuela necesita poner la vuelta del alumno en la clase 2 al lado de la
+   suya en la clase 8: misma pista, misma variante, sesiones separadas por
+   semanas. "Tu vuelta de entrada contra la de salida sobre el mismo trazado".
+
+   Funciona sin tocar nada de fondo porque este visor NUNCA compara por tiempo:
+   todo esta remuestreado sobre la misma grilla de DISTANCIA (misma pista, mismo
+   largo, mismo paso en metros), y el mapa dibuja `pos_x`/`pos_z`, que son
+   COORDENADAS DE MUNDO del circuito -- las mismas el 30 de agosto que el 6 de
+   septiembre. Asi que mapa, delta, graficos, tabla por curva y lectura se comen
+   una vuelta de otro dia igual que una de la tanda de al lado.
+
+   A SIEMPRE ES DE LA SESION ACTUAL, a proposito: el mapa, los bordes aprendidos,
+   los chips de curva y las filas de la tabla salen de la sesion abierta, y la
+   tabla se ancla al apex de A. Dejar que A viniera de otra carpeta obligaria a
+   recargar mapa + bordes + curvas cada vez que se toca una letra, para ver
+   exactamente lo mismo. Se elige la sesion desde arriba y se traen B y C.
+
+   IDENTIDAD DE UNA VUELTA: las de la sesion actual siguen siendo su nombre de
+   archivo pelado (nada que migrar); las de otra sesion son "<carpeta>|<traza>".
+   `S.A/B/C` y las llaves de `S.trazas` guardan esa clave, y `asegurarTrazas` la
+   parte para saber a que carpeta pedirle la traza. Los nombres de carpeta no
+   llevan "|", asi que la primera barra separa sin ambiguedad.
+   ========================================================================= */
+const esOtra = k => !!k && k.includes("|");
+const claveDe = (v, carpeta) =>
+  (carpeta && carpeta !== S.sesion) ? carpeta + "|" + v.traza : v.traza;
+const partesClave = k => {
+  const i = k.indexOf("|");
+  return i < 0 ? {s: S.sesion, t: k} : {s: k.slice(0, i), t: k.slice(i + 1)};
+};
+// esa clave sigue apuntando a la sesion de comparacion que hay elegida ahora
+const vigenteOtra = k => esOtra(k) && !!S.otra && k.startsWith(S.otra.carpeta + "|");
+// Fecha corta (MM-DD) de la vuelta, vacia si es de la sesion abierta. Sin esto
+// "B · L12 1:28.707" no dice de que dia es, que es justo lo que se compara.
+const fechaDe = k => vigenteOtra(k) ? (S.otra.info.inicio || "").slice(5, 10) : "";
+const sufFecha = k => { const f = fechaDe(k); return f ? " · " + f : ""; };
+// en el titulo del delta va entre parentesis: ahi el "·" ya separa las dos
+// comparaciones y "A vs B · 08-30 · A vs C" se lee como una sola frase
+const parFecha = k => { const f = fechaDe(k); return f ? ` (${f})` : ""; };
 
 const CANALES = [
   {k:"speed_kmh", tit:"velocidad", u:"km/h", alto:96, dec:0},
@@ -262,6 +314,7 @@ function lienzo(cv, alto){
 // ---------------------------------------------------------------- sesiones ---
 async function cargarSesiones(){
   const j = await api("sesiones", {n: 60});
+  S.sesiones = j.sesiones;            // el selector de "otra sesion" filtra sobre esta misma lista
   const sel = $("sesion");
   sel.innerHTML = "";
   for (const s of j.sesiones){
@@ -283,8 +336,13 @@ async function cargarSesiones(){
 }
 
 async function cargarSesion(carpeta, mantenerTanda){
+  // Cambiar de sesion tira la comparacion (otra pista posible, otras curvas);
+  // RECARGAR la misma no, que ahi lo unico que se quiere es releer el disco sin
+  // perder lo que hay puesto en pantalla.
+  const cambio = S.sesion !== carpeta;
   S.sesion = carpeta;
-  try { history.replaceState(null, "", "?s=" + encodeURIComponent(carpeta) + location.hash); } catch(e){}
+  if (cambio) limpiarOtra();
+  urlEstado();
   const j = await api("sesion", {s: carpeta});
   S.meta = j.meta; S.tandas = j.tandas;
   const conTraza = S.tandas.map((t,i) => [i, t.con_traza]).filter(x => x[1] > 0);
@@ -298,6 +356,8 @@ async function cargarSesion(carpeta, mantenerTanda){
        <span>${S.tandas.length} tanda${S.tandas.length>1?"s":""}</span>`
     : "";
   pintarTandas();
+  pintarSelectOtra();
+  pintarVueltasOtra();
   // otra pista, otras coordenadas de mundo: el zoom guardado no significa nada
   S.mapa = null; S.bordes = null; S.vista = null; S.curvaZoom = null;
   sigChips = ""; sigEventos = "";
@@ -320,7 +380,15 @@ function pintarTandas(){
     const d = document.createElement("div");
     d.className = "tanda" + (i === S.tanda ? " sel" : "");
     d.innerHTML = `T${t.n} <small>${t.con_traza}/${t.n_vueltas}v · ${t.mejor ? t2s(t.mejor) : "—"}</small>`;
-    d.onclick = () => { S.tanda = i; S.A = S.B = S.C = null; pintarTandas(); cargarTanda(); };
+    // cambiar de tanda suelta las vueltas de ESTA sesion (son de otra corrida),
+    // pero la vuelta anclada de la otra sesion se queda: es la referencia contra
+    // la que se esta mirando, y volver a elegirla en cada tanda es puro roce
+    d.onclick = () => {
+      S.tanda = i; S.A = null;
+      if (!vigenteOtra(S.B)) S.B = null;
+      if (!vigenteOtra(S.C)) S.C = null;
+      pintarTandas(); cargarTanda();
+    };
     c.appendChild(d);
   });
 }
@@ -342,11 +410,15 @@ async function cargarTanda(){
   // entrada). C arranca vacia a proposito: la tercera vuelta se elige a mano,
   // porque el sentido de meterla lo pone el que mira (la de la trazada nueva, la
   // que se salio, la del alumno), no el crono.
+  // B y C pueden venir de otra sesion: ahi NO se resetean aunque no esten en
+  // esta tanda -- justamente no lo estan, y esa es la comparacion que se pidio.
   const orden = [...conTraza].sort((a,b) => (a.tiempo||9e9) - (b.tiempo||9e9));
-  if (!S.A || !conTraza.some(v => v.traza === S.A)) S.A = orden[0].traza;
-  if (!S.B || !conTraza.some(v => v.traza === S.B)) S.B = orden[1] ? orden[1].traza : null;
-  if (S.C && !conTraza.some(v => v.traza === S.C)) S.C = null;
+  const aqui = k => conTraza.some(v => v.traza === k);
+  if (!S.A || !aqui(S.A)) S.A = orden[0].traza;
+  if (!S.B || !(aqui(S.B) || vigenteOtra(S.B))) S.B = orden[1] ? orden[1].traza : null;
+  if (S.C && !(aqui(S.C) || vigenteOtra(S.C))) S.C = null;
   pintarVueltas();
+  pintarVueltasOtra();
   await asegurarTrazas();
   S.cursor = null;
   pintarTodo();
@@ -363,31 +435,138 @@ function pintarVueltas(){
     d.innerHTML = `<span class="n">L${v.vuelta}</span>
       <span class="t">${v.tiempo ? t2s(v.tiempo) : "—"}</span>
       <span class="d">${dif || (v.traza ? "" : (v.tipo === "out" ? "salida" : v.tipo === "invalid" ? "invalidada" : v.tipo))}</span>`;
-    for (const [cual] of VUELTAS){
-      const b = document.createElement("button");
-      b.className = "sel " + cual.toLowerCase() + (S[cual] === v.traza ? " on" : "");
-      b.textContent = cual;
-      b.disabled = !v.traza;
-      b.onclick = async () => {
-        if (!v.traza) return;
-        S[cual] = (S[cual] === v.traza) ? null : v.traza;
-        // una vuelta no puede estar en dos letras a la vez: compararla consigo
-        // misma da un delta plano en cero y dos lineas superpuestas
-        if (S[cual]) for (const [otra] of VUELTAS)
-          if (otra !== cual && S[otra] === S[cual]) S[otra] = null;
-        pintarVueltas(); await asegurarTrazas(); pintarTodo();
-      };
-      d.appendChild(b);
-    }
+    for (const [cual] of VUELTAS) d.appendChild(botonVuelta(cual, v.traza));
     cont.appendChild(d);
   }
+}
+
+// El boton A/B/C de una fila de vuelta. Vive aparte porque lo usan las dos
+// listas (la de la tanda y la de la otra sesion) y la unica diferencia entre
+// ellas es la CLAVE que ponen en S[cual].
+function botonVuelta(cual, clave){
+  const b = document.createElement("button");
+  b.className = "sel " + cual.toLowerCase() + (clave && S[cual] === clave ? " on" : "");
+  b.textContent = cual;
+  b.disabled = !clave;
+  b.onclick = async () => {
+    if (!clave) return;
+    S[cual] = (S[cual] === clave) ? null : clave;
+    // una vuelta no puede estar en dos letras a la vez: compararla consigo
+    // misma da un delta plano en cero y dos lineas superpuestas
+    if (S[cual]) for (const [otra] of VUELTAS)
+      if (otra !== cual && S[otra] === S[cual]) S[otra] = null;
+    pintarVueltas(); pintarVueltasOtra(); urlEstado();
+    await asegurarTrazas(); pintarTodo();
+  };
+  return b;
+}
+
+// ------------------------------------------------- la otra sesion (B y C) ---
+// Solo se ofrecen las sesiones de la MISMA pista y variante: con otra pista los
+// metros y las coordenadas de mundo no significan lo mismo y la comparacion
+// seria un dibujo bonito y falso.
+function pintarSelectOtra(){
+  const sel = $("otrasesion");
+  const act = S.sesiones.find(x => x.carpeta === S.sesion);
+  const cand = !act ? [] : S.sesiones.filter(x => x.carpeta !== S.sesion
+                        && x.pista === act.pista && x.variante === act.variante && x.vueltas > 0);
+  sel.innerHTML = "";
+  const cero = document.createElement("option");
+  cero.value = "";
+  cero.textContent = cand.length ? "comparar con otra sesión de esta pista…"
+                                 : "no hay otra sesión grabada de esta pista";
+  sel.appendChild(cero);
+  for (const s of cand){
+    const o = document.createElement("option");
+    o.value = s.carpeta;
+    o.textContent = `${(s.inicio || "").slice(5,16).replace("T"," ")} · `
+                  + `${(s.auto || "?").replace(/_/g," ")} · ${s.vueltas}v`;
+    sel.appendChild(o);
+  }
+  sel.disabled = !cand.length;
+  sel.value = S.otra ? S.otra.carpeta : "";
+}
+
+function limpiarOtra(){
+  S.otra = null;
+  for (const [cual] of VUELTAS) if (esOtra(S[cual])) S[cual] = null;
+  $("avisootra").innerHTML = "";
+  $("vueltasotra").innerHTML = "";
+}
+
+async function elegirOtra(carpeta){
+  const sel = $("otrasesion");
+  // el repintado lo hace quien llama: asi una sola pasada de asegurarTrazas +
+  // pintarTodo cubre tanto elegir como limpiar
+  if (!carpeta){ limpiarOtra(); pintarSelectOtra(); pintarVueltas(); urlEstado(); return; }
+  const info = S.sesiones.find(x => x.carpeta === carpeta);
+  const la = S.meta && S.meta.track_length_m, lb = info && info.largo_m;
+  // Mismo nombre de pista no garantiza el mismo trazado: una variante distinta
+  // (o la pista repavimentada en una version del juego) cambia el largo, y ahi
+  // el metro 1200 de una vuelta NO es el metro 1200 de la otra.
+  if (la && lb && Math.abs(la - lb) > 5){
+    $("avisootra").innerHTML = `<div class="aviso">⚠ la otra sesión es de otra variante o `
+      + `versión de la pista (${Math.round(lb)} m contra ${Math.round(la)} m): la comparación `
+      + `por distancia no es confiable.</div>`;
+    sel.value = S.otra ? S.otra.carpeta : "";
+    return;
+  }
+  const j = await api("sesion", {s: carpeta});
+  // Aplanada, pero cargando la tanda: el numero de vuelta se REPITE entre tandas
+  // (se reinicia al volver a boxes), asi que "L9" solo no identifica nada.
+  const vueltas = [];
+  for (const t of j.tandas)
+    for (const v of t.vueltas) if (v.traza) vueltas.push({...v, tanda: t.n});
+  S.otra = {carpeta, info: info || {}, vueltas};
+  $("avisootra").innerHTML = "";
+  pintarSelectOtra(); pintarVueltasOtra(); urlEstado();
+}
+
+function pintarVueltasOtra(){
+  const cont = $("vueltasotra");
+  cont.innerHTML = "";
+  if (!S.otra) return;
+  const et = document.createElement("div");
+  et.className = "label"; et.style.padding = "2px 2px 4px";
+  const i = S.otra.info || {};
+  et.textContent = `${(i.inicio || "").slice(5,16).replace("T"," ")} · `
+                 + `${(i.auto || "?").replace(/_/g," ")} — B y C para comparar`;
+  cont.appendChild(et);
+  const tiempos = S.otra.vueltas.filter(v => v.tiempo).map(v => v.tiempo);
+  const mejor = tiempos.length ? Math.min(...tiempos) : null;
+  for (const v of S.otra.vueltas){
+    const clave = claveDe(v, S.otra.carpeta);
+    const d = document.createElement("div");
+    d.className = "v" + (v.valida ? "" : " inv");
+    const dif = v.tiempo && mejor && v.tiempo !== mejor ? "+" + (v.tiempo - mejor).toFixed(3) : "";
+    d.innerHTML = `<span class="n">T${v.tanda}·L${v.vuelta}</span>
+      <span class="t">${v.tiempo ? t2s(v.tiempo) : "—"}</span>
+      <span class="d">${dif}</span>`;
+    for (const cual of ["B","C"]) d.appendChild(botonVuelta(cual, clave));
+    cont.appendChild(d);
+  }
+}
+
+// ?s=<sesion>&vs=<otra>&b=<carpeta>|<traza> -- el link que se le manda al alumno
+// ("mira tu vuelta de entrada contra la de hoy") tiene que abrir con todo puesto.
+function urlEstado(){
+  if (!S.sesion) return;
+  const q = new URLSearchParams({s: S.sesion});
+  if (S.otra){
+    q.set("vs", S.otra.carpeta);
+    const b = vigenteOtra(S.B) ? S.B : vigenteOtra(S.C) ? S.C : null;
+    if (b) q.set("b", b);
+  }
+  try { history.replaceState(null, "", "?" + q + location.hash); } catch(e){}
 }
 
 async function asegurarTrazas(){
   for (const [cual] of VUELTAS){
     const n = S[cual];
-    if (n && !S.trazas.has(n))
-      S.trazas.set(n, await api("traza", {s: S.sesion, t: n}));
+    if (n && !S.trazas.has(n)){
+      const {s, t} = partesClave(n);        // "<carpeta>|<traza>" si es de otra sesion
+      S.trazas.set(n, await api("traza", {s, t}));
+    }
   }
   const av = [];
   for (const [cual] of VUELTAS){
@@ -468,7 +647,7 @@ function pintarMapa(){
   const sel = trazasSel();
   const B = (S.bordes && S.bordes.bi && S.bordes.bi.length > 1) ? S.bordes : null;
   $("leyenda").innerHTML = sel
-    .map(([cual, col]) => [`<i style='background:${col}'></i>`, "vuelta " + cual])
+    .map(([cual, col]) => [`<i style='background:${col}'></i>`, "vuelta " + cual + sufFecha(S[cual])])
     .concat(LEYENDA_FIJA)
     .concat(B ? [["<i style='background:#1c2534;height:8px;border:1px solid #3a4a5e'></i>",
                   `asfalto según ${B.n_vueltas} vueltas · ancho ${B.ancho_m} m` +
@@ -967,8 +1146,8 @@ function pintarGraficos(){
   // que lado se lee al reves la mitad de las veces, y justo en el grafico que
   // decide donde estas perdiendo tiempo.
   if (S.A && S.B) defs.push({delta:true, alto:86, dec:3,
-    tit: S.C ? "delta A vs B (blanco) · A vs C (ámbar) · sube = A pierde · s"
-             : "delta A vs B · sube = A pierde · s"});
+    tit: S.C ? `delta A vs B${parFecha(S.B)} (blanco) · A vs C${parFecha(S.C)} (ámbar) · sube = A pierde · s`
+             : `delta A vs B${parFecha(S.B)} · sube = A pierde · s`});
   defs.push(...CANALES.filter(c => VUELTAS.some(([cual]) => serie(S[cual], c.k))));
 
   if (cont.childElementCount !== defs.length){
@@ -1107,7 +1286,8 @@ function pintarLectura(){
 
   if (i == null){
     $("curva").textContent = "—";
-    for (const [cual,, tr] of sel) $("lec"+cual).textContent = `${cual} · L${tr.vuelta} ${t2s(tr.tiempo)}`;
+    for (const [cual,, tr] of sel)
+      $("lec"+cual).textContent = `${cual} · L${tr.vuelta} ${t2s(tr.tiempo)}${sufFecha(S[cual])}`;
     $("lecfilas").innerHTML = `<div class="fnota">toca el mapa o arrastra el dedo sobre un gráfico para leer punto por punto</div>`;
     return;
   }
@@ -1115,7 +1295,7 @@ function pintarLectura(){
   let cu = null;
   if (S.mapa) for (const x of S.mapa.curvas) if (x.inicio - 60 <= m && m <= x.fin + 40) cu = x;
   $("curva").textContent = (cu ? "T"+cu.n : "—") + "  " + Math.round(m) + "m";
-  for (const [cual,, tr] of sel) $("lec"+cual).textContent = `${cual} L${tr.vuelta}`;
+  for (const [cual,, tr] of sel) $("lec"+cual).textContent = `${cual} L${tr.vuelta}${sufFecha(S[cual])}`;
 
   // cada fila es [rotulo, [clase, texto], ...] -- la clase es la letra de la
   // vuelta, para que la columna quede del color de su linea en los graficos
@@ -1140,6 +1320,10 @@ function pintarLectura(){
 
 // ------------------------------------------------------------------ eventos ---
 $("sesion").onchange = async e => { S.A = S.B = S.C = null; S.trazas.clear(); await cargarSesion(e.target.value); };
+$("otrasesion").onchange = async e => {
+  await elegirOtra(e.target.value);
+  await asegurarTrazas(); pintarTodo();
+};
 // Escape = volver a pista completa, el mismo escape que cierra cualquier cosa.
 // Es la salida rapida cuando te perdiste arrastrando y no ves donde quedaste.
 window.addEventListener("keydown", ev => { if (ev.key === "Escape" && S.vista) zoomCurva(null); });
@@ -1181,10 +1365,24 @@ setInterval(async () => {
     const primera = await cargarSesiones();
     // ?s=<carpeta> abre esa sesion (junto con #Tn arma un link a "esta curva de
     // esta sesion", que es lo que se le manda a un alumno)
-    const qs = new URLSearchParams(location.search).get("s");
+    const params = new URLSearchParams(location.search);
+    const qs = params.get("s");
     const ini = qs && [...$("sesion").options].some(o => o.value === qs) ? qs : primera;
     $("sesion").value = ini;
     await cargarSesion(ini);
+    // &vs=<otra> abre ya con la sesion de comparacion elegida y &b=<clave> con la
+    // vuelta puesta en B: es el link "mira tu vuelta de entrada contra la de hoy"
+    const vs = params.get("vs");
+    if (vs && S.sesiones.some(x => x.carpeta === vs)){
+      await elegirOtra(vs);
+      const b = params.get("b");
+      if (S.otra && b && S.otra.vueltas.some(v => claveDe(v, S.otra.carpeta) === b)){
+        if (S.C === b) S.C = null;
+        S.B = b;
+        pintarVueltas(); pintarVueltasOtra(); urlEstado();
+      }
+      await asegurarTrazas(); pintarTodo();
+    }
     // #T3 en la URL abre ya en esa curva (ver zoomCurva); el mapa necesita un
     // primer pintado con ancho real antes de poder calcular la vista
     const m = /^#T(\d+)$/.exec(location.hash);
