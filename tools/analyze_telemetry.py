@@ -458,8 +458,13 @@ def report_session(folder):
         if len(repr_secs) >= 3:
             sig = [st.pstdev([s[i] for s in repr_secs]) for i in range(3)]
             worst = max(range(3), key=lambda i: sig[i])
-            print(f"  consist. sector : S1 {sig[0]:.2f} · S2 {sig[1]:.2f} · S3 {sig[2]:.2f}s  "
-                  f"(mas disperso S{worst+1}; sobre {len(repr_secs)} vueltas limpias repr.)")
+            # Sigma en SEGUNDOS sobre las vueltas dentro del 3% de la mejor: es una
+            # descripcion rapida, NO el CV calificable (ese va en --consistencia,
+            # sin este filtro, que acota la dispersion por construccion). Antes se
+            # llamaba "consist. sector" y se leia como el CV.
+            print(f"  sigma sector (s): S1 {sig[0]:.2f} · S2 {sig[1]:.2f} · S3 {sig[2]:.2f}  "
+                  f"(mas disperso S{worst+1}; {len(repr_secs)} vueltas dentro del 3% de la mejor; "
+                  f"NO es el CV calificable, ver --consistencia)")
 
 
 def _load_timeline(folder):
@@ -713,8 +718,19 @@ def _mad(v):
     return 1.4826 * st.median([abs(x - med) for x in v])
 
 
-def consistency_struct(folder, n=8, minimo=6):
+def consistency_struct(folder, n=8, minimo=6, n_califica=8):
     """CONSISTENCIA como coeficiente de variacion, que es lo que se califica.
+
+    Dos umbrales distintos a proposito: desde `minimo` (6) se CALCULA y se
+    muestra como descripcion; desde `n_califica` (8, la regla de
+    docs/evaluacion.md) CALIFICA. Antes un CV de 6 vueltas salia con veredicto
+    "buena" igual que uno de 8, y la regla de las 8 existe justo para que no se
+    califique sobre una muestra corta.
+
+    Trae ademas `cv_sector_pct`: el mismo CV por sector, sobre el MISMO conjunto
+    de vueltas ya filtrado (lo que docs/evaluacion.md promete y no se emitia),
+    para localizar donde vive la dispersion. None si la sesion no tiene
+    sectors.jsonl o no hay `minimo` vueltas con sectores.
 
     NO es el sigma en segundos de `report_session`: 0.5 s en un circuito de 1:15 es
     otra cosa que 0.5 s en uno de 3:30, asi que el sigma no compara entre pistas y
@@ -735,7 +751,8 @@ def consistency_struct(folder, n=8, minimo=6):
     Devuelve None si no hay dato suficiente.
     """
     _, laps = _load(folder)
-    t = [l["lap_time"] for l in laps if l.get("lap_time")][:n]
+    crono = [l for l in laps if l.get("lap_time")][:n]
+    t = [l["lap_time"] for l in crono]
     if len(t) < minimo:
         return None
     idx = list(range(len(t)))
@@ -777,18 +794,40 @@ def consistency_struct(folder, n=8, minimo=6):
     # del reporte: un veredicto que hay que acordarse de ignorar no es un gate.
     dom, _av = comparabilidad(folder)
     mezclada = bool(dom and dom.get("_mezclada"))
+    # "corta" mira las vueltas CRONOMETRADAS de la tanda, no las que quedaron
+    # tras apartar incidentes: la regla de las 8 es sobre lo pedido, y un
+    # incidente apartado es parte del metodo, no una vuelta que falto
+    corta = len(t) < n_califica
     if mezclada:
         veredicto = "sin veredicto: la sesion mezcla condiciones"
     elif aprendiendo:
         veredicto = "sin veredicto: todavia aprendiendo el circuito"
+    elif corta:
+        veredicto = f"sin veredicto: {len(t)} vueltas, se califica desde {n_califica}"
     else:
         veredicto = ("excelente" if cv <= 0.3 else "buena" if cv <= 0.7
                      else "en desarrollo" if cv <= 1.5 else "dispersa")
-    return {"n": len(buenas), "n_pedidas": n, "incidentes": len(fuera),
+    # CV por sector sobre las MISMAS vueltas que quedaron (ni las apartadas ni
+    # las que no entraron en las `n`): localiza la dispersion sin cambiar el filtro
+    cv_sector = None
+    por_uid = {r.get("uid"): r for r in _load_sectors(folder) if r.get("uid") is not None}
+    filas = [por_uid[l.get("uid")]["sectors"] for i, l in enumerate(crono)
+             if i not in fuera and l.get("uid") in por_uid
+             and por_uid[l.get("uid")].get("sectors") and len(por_uid[l.get("uid")]["sectors"]) == 3
+             and all(x > 0 for x in por_uid[l.get("uid")]["sectors"])]
+    if len(filas) >= minimo:
+        cv_sector = []
+        for k in range(3):
+            col = [f[k] for f in filas]
+            m = st.median(col)
+            cv_sector.append(round(100.0 * _mad(col) / m, 3) if m > 0 else None)
+    return {"n": len(buenas), "n_pedidas": n, "n_califica": n_califica, "incidentes": len(fuera),
             "cv_pct": round(cv, 3), "cv_destendenciado_pct": round(cv_dest, 3),
+            "cv_sector_pct": cv_sector, "n_sectores": len(filas),
             "deriva_s_vuelta": round(b, 3), "deriva_pct_vuelta": round(deriva_pct, 3),
             "aprendiendo": aprendiendo, "degradando": degradando,
-            "mezclada": mezclada, "califica": not aprendiendo and not mezclada,
+            "mezclada": mezclada, "corta": corta,
+            "califica": not aprendiendo and not mezclada and not corta,
             "mediana_s": round(med, 3),
             "mejor_s": round(min(buenas), 3),
             "tiempos": [round(x, 3) for x in t],
@@ -815,6 +854,15 @@ def report_consistency(folder):
           f"   (sobre {c['n']} vueltas, mediana {_fmt_t(c['mediana_s']).strip()})")
     if c["incidentes"]:
         print(f"  {c['incidentes']} vuelta(s) apartada(s) como incidente: se reportan, no promedian")
+    if c.get("cv_sector_pct"):
+        cs = c["cv_sector_pct"]
+        peor = max(range(3), key=lambda i: cs[i] if cs[i] is not None else -1)
+        print("  CV por sector : " + " · ".join(f"S{i+1} {v:.2f}%" if v is not None else f"S{i+1} —"
+                                                for i, v in enumerate(cs))
+              + f"   (la dispersion vive en S{peor+1}; mismas {c['n_sectores']} vueltas)")
+    if c.get("corta") and not c.get("mezclada") and not c.get("aprendiendo"):
+        print(f"  NO CALIFICA: {c['n']} vueltas; la regla pide {c['n_califica']} cronometradas seguidas."
+              " El numero describe, no califica.")
     d, dp = c["deriva_s_vuelta"], c["deriva_pct_vuelta"]
     if abs(dp) >= 0.05:
         que = "te vas cayendo" if d > 0 else "vas bajando tiempos"

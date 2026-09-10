@@ -281,6 +281,13 @@ def main():
 
         # 5) Muestra corta: sin veredicto, no un numero inventado
         _ok("bajo 6 vueltas: None", A.consistency_struct(_sesion_cv(_b, [90.0, 90.1, 89.9])) is None)
+        # 6-7 vueltas: se calcula y se muestra, pero NO califica (regla de las 8 de
+        # docs/evaluacion.md). Antes salia con veredicto igual que una de 8.
+        c7 = A.consistency_struct(_sesion_cv(_b, [90.0, 90.1, 89.9, 90.05, 90.0, 90.1, 89.95]))
+        _ok("7 vueltas: hay CV pero no califica", c7 is not None and c7["corta"] and not c7["califica"]
+            and "desde 8" in c7["veredicto"], c7 and c7["veredicto"])
+        _ok("8 vueltas: califica", c4["califica"] and not c4["corta"])
+        _ok("sin sectors.jsonl el CV por sector es None, no revienta", c4.get("cv_sector_pct") is None)
 
         # 6) La pendiente robusta es el nucleo del arreglo
         _ok("Theil-Sen ignora el outlier", abs(A._slope_robusta([10, 10, 10, 99, 10, 10])) < 0.6,
