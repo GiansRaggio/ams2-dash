@@ -261,6 +261,100 @@ def test_tanda_de_verdad():
         shutil.rmtree(base, ignore_errors=True)
 
 
+def _sintetica(frena=True, largo=1200.0, paso=2.0):
+    """Una vuelta de laboratorio con los cuatro metros clave PUESTOS a mano.
+
+    Es el unico test del archivo que NO usa el corpus, y a proposito: contra una
+    vuelta real solo se puede mirar el numero y opinar si parece razonable. Aca
+    la recta, la frenada, el giro, el apex y el a-fondo estan en un metro exacto
+    conocido, asi que un cambio de criterio que corra el punto 20 m se cae.
+
+    Con `frena=False` sale una curva DE APOYO: se pasa sin tocar el freno pero
+    se dobla igual (el caso que un detector ingenuo marca como "sin curva").
+    """
+    metros = [round(i * paso, 1) for i in range(int(largo / paso) + 1)]
+    spd, thr, brk, st = [], [], [], []
+    for m in metros:
+        if frena:
+            # frena 812 · gira 856 · apex 900 (96.3 km/h) · a fondo 930
+            if m < 812:
+                v, t, b, s = 200.0, 1.0, 0.0, 0.0
+            elif m < 900:
+                v = 200.0 - (m - 812) / 88.0 * (200.0 - 96.3)
+                t, b = 0.0, 0.6
+                s = 0.5 if m >= 856 else 0.0
+            elif m < 930:
+                v, t, b, s = 96.3 + (m - 900) / 30.0 * 20.0, 0.40, 0.0, 0.5
+            else:
+                v, t, b = 116.3 + (m - 930) * 0.3, 1.0, 0.0
+                s = max(0.0, 0.5 - (m - 930) * 0.01)
+        else:
+            # curva de apoyo: gira 360 · apex 400 (210 km/h) · a fondo 420, sin freno
+            b = 0.0
+            if m < 360:
+                v, t, s = 240.0 - (m / 360.0) * 20.0, 0.85, 0.0
+            elif m < 400:
+                v, t, s = 220.0 - (m - 360) / 40.0 * 10.0, 0.85, 0.3
+            elif m < 420:
+                v, t, s = 210.0 + (m - 400) * 0.2, 0.85, 0.3
+            else:
+                v, t, s = 214.0 + (m - 420) * 0.1, 1.0, max(0.0, 0.3 - (m - 420) * 0.01)
+        spd.append(v); thr.append(t); brk.append(b); st.append(s)
+    return {"paso_m": paso, "metros": metros,
+            "canales": {"speed_kmh": spd, "throttle": thr, "brake": brk, "steer": st}}
+
+
+def test_eventos():
+    print("\npuntos clave por curva (frenada / giro / apex / a fondo):")
+    tr = _sintetica(frena=True)
+    cu = [{"n": 1, "inicio": 860.0, "fin": 920.0, "metro": 900.0, "lado": "der"}]
+    e = A.eventos(tr, cu)[0]
+    ok("apex = minimo de velocidad de la curva", e["apex_m"] == 900.0, e["apex_m"])
+    ok("vmin es la velocidad en el apex", abs(e["vmin_kmh"] - 96.3) < 0.05, e["vmin_kmh"])
+    ok("frenada = donde EMPIEZA de verdad, no donde se pisa cerca del apex",
+       e["frenada_m"] == 812.0, e["frenada_m"])
+    ok("giro = primer volante sostenido", e["giro_m"] == 856.0, e["giro_m"])
+    ok("a fondo = primer acelerador clavado a la salida", e["gas_m"] == 930.0, e["gas_m"])
+
+    # modulacion: soltar el freno 10 m en mitad de la frenada NO parte el punto
+    tr2 = _sintetica(frena=True)
+    for i, m in enumerate(tr2["metros"]):
+        if 850 <= m < 860:
+            tr2["canales"]["brake"][i] = 0.0
+    ok("un hueco de 10 m dentro de la frenada no la corta en dos",
+       A.eventos(tr2, cu)[0]["frenada_m"] == 812.0, A.eventos(tr2, cu)[0]["frenada_m"])
+
+    # curva de apoyo: sin freno, pero con giro
+    tra = _sintetica(frena=False)
+    ca = [{"n": 1, "inicio": 370.0, "fin": 430.0, "metro": 400.0, "lado": "izq"}]
+    ea = A.eventos(tra, ca)[0]
+    ok("curva de apoyo: frenada None (no se invento un punto)", ea["frenada_m"] is None, ea["frenada_m"])
+    ok("curva de apoyo: el giro SI se detecta (umbral adaptativo)",
+       ea["giro_m"] == 360.0, ea["giro_m"])
+    ok("curva de apoyo: apex donde baja la velocidad", ea["apex_m"] == 400.0, ea["apex_m"])
+    ok("curva de apoyo: a fondo a la salida", ea["gas_m"] == 420.0, ea["gas_m"])
+
+    # Un kink que se pasa PLANO despues de una curva frenada. Las curvas salen de
+    # la curvatura, asi que la lista incluye estos: sin el tope del apex anterior,
+    # la busqueda hacia atras se come la frenada de la curva de antes y le anota
+    # al kink un punto de frenada que esta dentro de la curva anterior (medido en
+    # Cordoba: "T4 frena a 398 m del apex", 200 m adentro de T3).
+    dos = A.eventos(tr, [{"n": 1, "inicio": 860.0, "fin": 920.0, "metro": 900.0},
+                         {"n": 2, "inicio": 1000.0, "fin": 1060.0, "metro": 1030.0}])
+    ok("un kink plano NO hereda la frenada de la curva anterior",
+       dos[1]["frenada_m"] is None, dos[1]["frenada_m"])
+    ok("y la curva frenada de antes conserva la suya", dos[0]["frenada_m"] == 812.0)
+
+    # bordes: una curva que cae fuera de la traza no puede reventar ni inventar filas
+    fuera = A.eventos(tr, [{"n": 9, "inicio": 5000.0, "fin": 5060.0, "metro": 5030.0}])
+    ok("una curva fuera de la traza se omite, no revienta", fuera == [], fuera)
+    ok("sin canales no devuelve nada", A.eventos({"metros": [], "canales": {}}, cu) == [])
+    ok("sin canal de volante el resto sigue saliendo",
+       A.eventos({"paso_m": 2.0, "metros": tr["metros"],
+                  "canales": {k: v for k, v in tr["canales"].items() if k != "steer"}},
+                 cu)[0]["giro_m"] is None)
+
+
 def test_frontera():
     """La API queda expuesta en la LAN: el nombre de sesion es entrada no confiable."""
     print("\nfrontera de confianza (nombre de sesion):")
@@ -360,6 +454,7 @@ def main():
     else:
         print("(sin telemetry/ grabado -- normal en un clon fresco: se saltan los")
         print(" tests que comparan contra el corpus y corren los independientes)")
+    test_eventos()
     test_tanda_de_verdad()
     test_frontera()
     test_api()

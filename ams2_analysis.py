@@ -59,8 +59,11 @@ def _dirs():
     return out
 
 # Canales que el visor pide por defecto. `t` NO es opcional: es el reloj con el
-# que se calcula el delta entre vueltas.
-CANALES_VISOR = ("t", "speed_kmh", "throttle", "brake", "gear", "rpm", "steer")
+# que se calcula el delta entre vueltas. `pos_x`/`pos_z` tampoco son un extra:
+# son el RECORRIDO REAL de esa vuelta, y sin ellos el mapa solo puede dibujar un
+# trazado (el de la vuelta de referencia) y dos trazadas distintas se ven iguales.
+CANALES_VISOR = ("t", "speed_kmh", "throttle", "brake", "gear", "rpm", "steer",
+                 "pos_x", "pos_z")
 PASO_M = 2.0          # grilla de distancia del visor (2 m ~= 36 ms a 200 km/h)
 MAPA_PUNTOS = 900     # puntos del trazado que se mandan al navegador
 
@@ -270,7 +273,25 @@ def _cerrar_en_meta(data, canales, largo, tiempo):
 
 
 def traza(folder: str, nombre: str, canales=CANALES_VISOR, paso=PASO_M) -> dict:
-    """Una vuelta remuestreada por distancia, lista para graficar."""
+    """Una vuelta remuestreada por distancia, lista para graficar.
+
+    Trae ademas `eventos`: los cuatro puntos de cada curva (frenada, giro, apex,
+    a fondo) de ESTA vuelta. Se calculan ACA y no en el navegador por tres
+    razones concretas:
+
+      · UNA sola definicion. "Donde frena" tiene un criterio fino (caminar hacia
+        atras desde el apex tolerando modulacion) que ya vive en
+        `analyze_telemetry._punto_frenada`. Reimplementarlo en JS garantiza que
+        el visor y el informe escrito digan numeros distintos de la misma vuelta,
+        que es la peor forma de estar equivocado.
+      · Es TESTEABLE. Con una traza sintetica se sabe el metro exacto esperado;
+        en el canvas solo se puede mirar y opinar.
+      · Se REUSA. `tools/informe.py` va a pedir lo mismo para escribir el
+        resumen de la tanda, sin pasar por el navegador.
+
+    Si el mapa falla por lo que sea, `eventos` va vacio: es un adorno del visor,
+    no puede tumbar la traza (que es lo que sostiene los graficos y el delta).
+    """
     ruta = os.path.join(folder, os.path.basename(nombre))
     data = AT._read_trace(ruta)
     if not data:
@@ -282,7 +303,7 @@ def traza(folder: str, nombre: str, canales=CANALES_VISOR, paso=PASO_M) -> dict:
     data, cierre = _cerrar_en_meta(data, pedidos, largo, reg.get("tiempo") if reg else None)
     xs, cols = _rejilla(data["lap_dist"], [data[c] for c in pedidos], paso, largo)
     dec = {"t": 3, "throttle": 3, "brake": 3, "steer": 3}
-    return {
+    out = {
         "traza": os.path.basename(nombre),
         "vuelta": reg.get("vuelta") if reg else None,
         "tiempo": reg.get("tiempo") if reg else None,
@@ -294,6 +315,11 @@ def traza(folder: str, nombre: str, canales=CANALES_VISOR, paso=PASO_M) -> dict:
                     for c, col in zip(pedidos, cols)},
         "muestras": muestras,
     }
+    try:
+        out["eventos"] = eventos(out, _curvas_cacheadas(folder))
+    except Exception:                # noqa: BLE001  (adorno: nunca tumba la traza)
+        out["eventos"] = []
+    return out
 
 
 def delta(a: dict, b: dict) -> list[float]:
@@ -308,6 +334,146 @@ def delta(a: dict, b: dict) -> list[float]:
         return []
     n = min(len(ta), len(tb))
     return [round(ta[i] - tb[i], 3) for i in range(n)]
+
+
+# ------------------------------------------------- puntos clave por curva ---
+_CACHE_CURVAS: dict = {}
+
+
+def _curvas_cacheadas(folder: str) -> list:
+    """Las curvas del mapa de la sesion, memorizadas por carpeta.
+
+    `traza()` las necesita para cada vuelta, y recalcularlas significa releer y
+    remuestrear el .gz de la vuelta de referencia CADA vez -- comparando dos
+    vueltas eso es el doble de trabajo, y el test del corpus pide ~140 trazas
+    seguidas. La llave incluye el mtime de la carpeta: mientras giras entran
+    trazas nuevas, la vuelta de referencia puede cambiar y el cache tiene que
+    caducar solo en vez de congelar la numeracion de la primera consulta.
+    """
+    try:
+        llave = (folder, os.path.getmtime(folder))
+    except OSError:
+        return mapa(folder)["curvas"]
+    if llave not in _CACHE_CURVAS:
+        _CACHE_CURVAS.clear()        # una sesion a la vez; no hay nada que acumular
+        _CACHE_CURVAS[llave] = mapa(folder)["curvas"]
+    return _CACHE_CURVAS[llave]
+
+
+def eventos(tr: dict, curvas: list) -> list[dict]:
+    """Los cuatro puntos con los que se habla de una curva, vuelta a vuelta.
+
+    Un piloto no compara "la trazada" en abstracto: compara DONDE frena, DONDE
+    dobla, DONDE esta el apex y DONDE vuelve a fondo. Esos cuatro metros por
+    curva son lo unico que hace comparable una vuelta con otra en palabras
+    ("frenaste 12 m antes y saliste a fondo 8 m despues"), y son justo lo que el
+    mapa no puede mostrar solo con colorear la linea.
+
+    `tr` es la salida de `traza()` (grilla regular de `paso_m` metros) y `curvas`
+    la de `mapa()["curvas"]`. Devuelve una fila por curva que caiga dentro de la
+    traza:
+
+        {"n": 1, "frenada_m": 812.0, "giro_m": 856.0, "apex_m": 901.0,
+         "vmin_kmh": 96.3, "gas_m": 930.0}
+
+    Cualquiera de los metros puede ser None y eso NO es un error: una curva de
+    apoyo se pasa sin tocar el freno (`frenada_m` None) y una curva encadenada
+    con la siguiente nunca llega a fondo antes del tope (`gas_m` None). Mostrar
+    None es informacion; inventar un numero, no.
+    """
+    metros = tr.get("metros") or []
+    ch = tr.get("canales") or {}
+    spd = ch.get("speed_kmh")
+    if not metros or not spd:
+        return []
+    brk, thr, st = ch.get("brake"), ch.get("throttle"), ch.get("steer")
+    paso = tr.get("paso_m") or (metros[1] - metros[0] if len(metros) > 1 else 1.0)
+    n = len(metros)
+    fin_traza = metros[-1]
+
+    def ix(m):
+        """Indice de grilla del metro `m`. La grilla arranca en 0 y es regular."""
+        return max(0, min(n - 1, int(round(m / paso))))
+
+    out, ap_prev = [], -1
+    for cu in curvas or []:
+        ini, fin = cu.get("inicio"), cu.get("fin")
+        if ini is None or fin is None or ini - 20 > fin_traza:
+            continue                 # curva fuera de esta traza (vuelta truncada)
+        a, b = ix(ini - 20), ix(fin + 20)
+        if b <= a:
+            b = min(n - 1, a + 1)
+        ap = min(range(a, b + 1), key=lambda i: spd[i])
+        apex_m = metros[ap]
+
+        # --- frenada: hacia ATRAS desde el apex ---------------------------------
+        # Mismo criterio que `analyze_telemetry._punto_frenada`: buscar hacia
+        # adelante agarra la frenada de la curva ANTERIOR en cuanto hay chicanas,
+        # y cortar en el primer hueco parte una frenada modulada en dos.
+        #
+        # Con un tope EXTRA que aquel no necesita: no se cruza el apex de la curva
+        # anterior. `_punto_frenada` se llama con curvas sacadas de los minimos de
+        # velocidad (todas frenadas de verdad); aca las curvas salen de la
+        # CURVATURA, asi que la lista incluye kinks que se pasan a fondo. Medido
+        # en Cordoba: T4 se pasa plana y el tope de 400 m dejaba que la busqueda
+        # se comiera entera la frenada de T3 y anotara "T4 frena a 398 m del
+        # apex" -- un punto que esta 200 m dentro de la curva anterior. Con el
+        # tope, T4 queda en None, que es la verdad: no frena.
+        frenada_m = None
+        if brk:
+            tope = max(0, ap_prev + 1, ap - int(round(400.0 / paso)))
+            j = ap
+            while j > tope and brk[j] <= 0.05:
+                j -= 1
+            if brk[j] > 0.05:
+                ultimo = j
+                while j > tope:
+                    if brk[j] > 0.05:
+                        ultimo = j
+                    elif metros[ultimo] - metros[j] > 15.0:
+                        break        # 15 m de freno suelto ya no es modular
+                    j -= 1
+                frenada_m = metros[ultimo]
+
+        # --- giro (turn-in): primer volante sostenido --------------------------
+        # El umbral es ADAPTATIVO (20% del maximo de la propia curva) porque un
+        # valor fijo no sirve para las dos puntas del rango: una horquilla de
+        # primera llega a |steer| 0.9 y una curva rapida de apoyo apenas roza
+        # 0.12. Con umbral fijo bajo, la rapida marca giro en cualquier
+        # correccion de recta; con umbral fijo alto, desaparece.
+        giro_m = None
+        if st:
+            w0, w1 = ix(ini - 120), ix(fin + 20)
+            mx = max((abs(st[i]) for i in range(w0, w1 + 1)), default=0.0)
+            umb = max(0.05, 0.20 * mx)
+            base = frenada_m if frenada_m is not None else ini - 120
+            desde = max(ap_prev + 1, ix(max(base, apex_m - 400.0)))
+            lim = min(ap, n - 3)
+            for i in range(desde, lim + 1):
+                # tres muestras seguidas (6 m): un pico suelto es ruido del canal
+                if abs(st[i]) >= umb and abs(st[i + 1]) >= umb and abs(st[i + 2]) >= umb:
+                    giro_m = metros[i]
+                    break
+
+        # --- a fondo: primer acelerador clavado a la salida --------------------
+        gas_m = None
+        if thr:
+            lim = min(ix(fin + 250), n - 3)
+            for i in range(ap, lim + 1):
+                if thr[i] >= 0.90 and thr[i + 1] >= 0.90 and thr[i + 2] >= 0.90:
+                    gas_m = metros[i]
+                    break
+
+        out.append({
+            "n": cu.get("n"),
+            "frenada_m": round(frenada_m, 1) if frenada_m is not None else None,
+            "giro_m": round(giro_m, 1) if giro_m is not None else None,
+            "apex_m": round(apex_m, 1),
+            "vmin_kmh": round(spd[ap], 1),
+            "gas_m": round(gas_m, 1) if gas_m is not None else None,
+        })
+        ap_prev = ap
+    return out
 
 
 # --------------------------------------------------------- mapa de pista ---

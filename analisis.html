@@ -64,6 +64,24 @@
   #leyenda{position:absolute;right:8px;top:8px;display:flex;flex-direction:column;gap:3px;
            font-size:max(9px,1.1vh);color:var(--dim);text-align:right;pointer-events:none}
   #leyenda i{display:inline-block;width:14px;height:3px;vertical-align:middle;margin-right:5px}
+  #leyenda b{color:var(--txt);font-weight:400;margin-right:4px}
+
+  /* ---------- chips de curva + tabla de puntos por curva ---------- */
+  #curvachips{display:flex;gap:6px;overflow-x:auto;padding-bottom:2px;scrollbar-width:none}
+  #curvachips::-webkit-scrollbar{display:none}
+  #eventos{overflow-x:auto}
+  #eventos table{border-collapse:collapse;white-space:nowrap;
+                 font-size:max(10px,1.25vh);font-variant-numeric:tabular-nums}
+  #eventos th,#eventos td{padding:3px 7px;text-align:right;border-bottom:1px solid #131a23}
+  #eventos thead th{color:var(--dim);font-weight:600;letter-spacing:.06em;text-transform:uppercase;
+                    font-size:max(9px,1.1vh);border-bottom:1px solid var(--line)}
+  #eventos .g{border-left:1px solid var(--line)}
+  #eventos td.t{text-align:left;color:var(--dim);font-weight:700}
+  #eventos td.a{color:var(--cyan)}
+  #eventos td.b{color:var(--red)}
+  #eventos tbody tr{cursor:pointer}
+  #eventos tbody tr.aqui{background:#141d29}
+  #eventos tbody tr.aqui td.t{color:var(--txt)}
 
   /* ---------- vueltas ---------- */
   #vueltas{display:flex;flex-direction:column;gap:3px;max-height:38vh;overflow-y:auto}
@@ -116,12 +134,11 @@
   <div id="app" style="display:none;flex-direction:column;gap:10px">
     <div class="box" id="mapwrap">
       <canvas id="mapa"></canvas>
-      <div id="leyenda">
-        <span><i style="background:var(--blue)"></i>a fondo</span>
-        <span><i style="background:var(--red)"></i>freno</span>
-        <span><i style="background:var(--green)"></i>parcial</span>
-      </div>
+      <div id="leyenda"></div>
     </div>
+
+    <div id="curvachips"></div>
+    <div id="eventos"></div>
 
     <div>
       <div class="label" style="padding:0 2px 4px">vueltas de la tanda · A para ver · B para comparar</div>
@@ -163,7 +180,14 @@ const S = {
   mapa: null, trazas: new Map(),      // nombre de archivo -> traza remuestreada
   A: null, B: null,                   // nombres de archivo de las vueltas elegidas
   cursor: null,                       // indice en la grilla de metros
+  vista: null,                        // {cx,cz,k} en coords de mundo; null = pista completa
+  curvaZoom: null,                    // n de la curva a la que se entro (para resaltarla)
+  lienzoMapa: null,                   // {w,h,kFit} del ultimo pintado (lo usan los chips)
+  rotulos: [],                        // rotulos Tn dibujados, para poder tocarlos
+  pinch: null,                        // distancia entre los dos dedos del pellizco
 };
+
+const K_MAX = 25;                     // px/m: mas zoom que esto y no cabe una curva entera
 
 const CANALES = [
   {k:"speed_kmh", tit:"velocidad", u:"km/h", alto:96, dec:0},
@@ -238,7 +262,9 @@ async function cargarSesion(carpeta, mantenerTanda){
        <span>${S.tandas.length} tanda${S.tandas.length>1?"s":""}</span>`
     : "";
   pintarTandas();
-  S.mapa = null;
+  // otra pista, otras coordenadas de mundo: el zoom guardado no significa nada
+  S.mapa = null; S.vista = null; S.curvaZoom = null;
+  sigChips = ""; sigEventos = "";
   if (S.tandas.some(t => t.con_traza > 0)){
     try { S.mapa = await api("mapa", {s: carpeta}); } catch(e){}
   }
@@ -342,88 +368,400 @@ function metros(){
 
 function pintarTodo(){
   pintarMapa();
+  pintarChips();
+  pintarEventos();
   pintarGraficos();
   pintarLectura();
 }
 
-// ---- mapa: el trazado real, coloreado por lo que hace el pie ----
+/* ======================= EL MAPA ES PARA COMPARAR TRAZADA =======================
+
+   Antes dibujaba UN trazado -- el de la vuelta mas rapida de la sesion --
+   coloreado por lo que hacia el pie en la vuelta A. Eso sirve para ubicarse y
+   para nada mas: las dos vueltas comparten linea, asi que dos trazadas
+   distintas se ven identicas. Ahora se dibuja el RECORRIDO REAL de cada vuelta
+   con sus propios `pos_x`/`pos_z`, uno encima del otro, y encima los cuatro
+   puntos de cada curva (frenada, giro, apex, a fondo) que calcula el backend.
+
+   Por eso el zoom por curva NO es una comodidad, es lo que hace comparable el
+   dibujo: a pista completa, 4 km de circuito en 1900 px son ~2 m/px, asi que
+   una diferencia de trazada de 1 m -- media rueda en el auto, decimas en el
+   crono -- ocupa medio pixel. Invisible. Entrando a una curva se llega a 10-25
+   px/m y la misma diferencia se ve del ancho de un dedo.
+
+   Lo unico DECORATIVO es la banda oscura de fondo: 12 m de ancho nominal
+   alrededor de la linea de referencia. El juego NO entrega el ancho de pista,
+   asi que esa banda no mide nada. Esta para que las trazadas se lean contra
+   "asfalto" y para que se note de una cuando una vuelta va por afuera de la
+   otra.
+
+   El arrastre de UN puntero sigue siendo el CURSOR de lectura, que es la
+   interaccion principal del visor. No hay pan por arrastre a proposito: para
+   moverse estan los chips de curva, la rueda del mouse y el pellizco.
+   =========================================================================== */
+
+const LEYENDA = [
+  ["<i style='background:#27e0ff'></i>", "vuelta A"],
+  ["<i style='background:#ff2e4d'></i>", "vuelta B"],
+  ["<i style='background:#8fa0b5;height:6px'></i>", "grueso = frenando"],
+  ["<b>●</b>", "frenada"], ["<b>◆</b>", "giro"],
+  ["<b>○</b>", "ápex"],    ["<b>▲</b>", "a fondo"],
+];
+
 function pintarMapa(){
-  const cv = $("mapa");
-  if (!S.mapa){ cv.style.display = "none"; return; }
+  const cv = $("mapa"), M = S.mapa;
+  if (!M || !M.x || !M.x.length){ cv.style.display = "none"; return; }
   cv.style.display = "block";
-  const alto = Math.max(190, Math.min(340, (window.innerHeight || 700) * 0.34));
+  $("leyenda").innerHTML = LEYENDA.map(([g,t]) => `<span>${g}${t}</span>`).join("");
+
+  const pad = 24;
+  const x0 = Math.min(...M.x), x1 = Math.max(...M.x);
+  const z0 = Math.min(...M.z), z1 = Math.max(...M.z);
+  const dx = (x1 - x0) || 1, dz = (z1 - z0) || 1;
+
+  // Alto: lo mas grande que quepa. Tope por pantalla (72% del alto de la
+  // ventana) y tope por FORMA -- si la pista es apaisada, mas alto que
+  // `ancho*ratio` es aire vacio arriba y abajo, no mapa mas grande.
+  const wcss = cv.clientWidth || cv.parentElement.clientWidth || 0;
+  const alto = Math.round(Math.max(260, Math.min((window.innerHeight || 700) * 0.72,
+                                                 wcss * (dz/dx) + 2*pad)));
   const lz = lienzo(cv, alto);
   if (!lz) return;
   const {c, w, h} = lz;
-  const M = S.mapa, pad = 20;
-  const xs = M.x, zs = M.z;
-  const x0 = Math.min(...xs), x1 = Math.max(...xs);
-  const z0 = Math.min(...zs), z1 = Math.max(...zs);
-  const k = Math.min((w - 2*pad) / (x1 - x0 || 1), (h - 2*pad) / (z1 - z0 || 1));
-  const cx = (w - (x1-x0)*k)/2, cy = (h - (z1-z0)*k)/2;
-  const X = i => cx + (xs[i]-x0)*k, Y = i => h - (cy + (zs[i]-z0)*k);   // Z crece hacia el norte
 
-  // color por estado del pie en la vuelta A (o la que haya)
-  const nom = S.A || S.B;
-  const tr = nom && S.trazas.get(nom);
-  const paso = tr ? tr.paso_m : 2, mtr = tr ? tr.metros : null;
-  const brk = tr && tr.canales.brake, thr = tr && tr.canales.throttle;
-  const idxDe = m => mtr ? Math.min(mtr.length-1, Math.round(m/paso)) : 0;
-  const colorEn = m => {
-    if (!brk) return "#3f8cff";
-    const i = idxDe(m);
-    if (brk[i] > 0.02) return "#ff2e4d";
-    if (thr[i] > 0.90) return "#3f8cff";
-    return "#2bf07a";
-  };
+  const kFit = Math.min((w - 2*pad)/dx, (h - 2*pad)/dz);
+  const V = S.vista || {cx: (x0+x1)/2, cz: (z0+z1)/2, k: kFit};
+  const k = V.k;
+  const X = x => w/2 + (x - V.cx)*k;
+  const Y = z => h/2 - (z - V.cz)*k;          // Z crece hacia el norte -> hacia arriba
+  S.lienzoMapa = {w, h, kFit};
 
-  c.lineWidth = 6; c.lineCap = "round"; c.lineJoin = "round";
-  for (let i = 0; i < xs.length-1; i++){
-    c.strokeStyle = colorEn(M.metros[i]);
-    c.beginPath(); c.moveTo(X(i), Y(i)); c.lineTo(X(i+1), Y(i+1)); c.stroke();
+  const trA = S.A && S.trazas.get(S.A), trB = S.B && S.trazas.get(S.B);
+  const conPos = tr => !!(tr && tr.canales && tr.canales.pos_x && tr.canales.pos_z);
+  const hayPos = conPos(trA) || conPos(trB);
+
+  // ---- 1. banda de "pista": ancho nominal, decorativa (ver cabecera) ----
+  c.lineCap = "round"; c.lineJoin = "round";
+  c.strokeStyle = "#151b24"; c.lineWidth = Math.max(k*12, 8);
+  c.beginPath(); c.moveTo(X(M.x[0]), Y(M.z[0]));
+  for (let i = 1; i < M.x.length; i++) c.lineTo(X(M.x[i]), Y(M.z[i]));
+  c.stroke();
+
+  // ---- 2. linea de meta: perpendicular al trazado, cruzando la pista ----
+  {
+    const ux = X(M.x[1]) - X(M.x[0]), uy = Y(M.z[1]) - Y(M.z[0]);
+    const L = Math.hypot(ux, uy) || 1, r = Math.max(9, Math.min(k*7, 70));
+    c.strokeStyle = "#eef3fa"; c.lineWidth = 3;
+    c.beginPath();
+    c.moveTo(X(M.x[0]) - uy/L*r, Y(M.z[0]) + ux/L*r);
+    c.lineTo(X(M.x[0]) + uy/L*r, Y(M.z[0]) - ux/L*r);
+    c.stroke();
   }
 
-  // meta
-  c.strokeStyle = "#eef3fa"; c.lineWidth = 3;
-  c.beginPath(); c.moveTo(X(0), Y(0));
-  c.lineTo(X(0) + (Y(1)-Y(0))*0.5, Y(0) - (X(1)-X(0))*0.5); c.stroke();
-
-  // numeros de curva
-  c.font = `700 ${Math.max(10, Math.round(w/34))}px ui-monospace,monospace`;
-  c.textAlign = "center"; c.textBaseline = "middle";
-  for (const cu of M.curvas){
-    const i = Math.round(cu.metro / (M.metros[1]-M.metros[0] || 1));
-    const j = Math.min(Math.max(i,1), xs.length-2);
-    // se corre hacia AFUERA de la curva para no tapar el trazado
-    const nx = -(Y(j+1)-Y(j-1)), ny = (X(j+1)-X(j-1));
-    const L = Math.hypot(nx, ny) || 1, s = cu.lado === "izq" ? -15 : 15;
-    c.fillStyle = "#0d1118"; c.beginPath();
-    c.arc(X(j)+nx/L*s, Y(j)+ny/L*s, Math.max(8, w/48), 0, 7); c.fill();
-    c.fillStyle = "#5d6b7e";
-    c.fillText("T"+cu.n, X(j)+nx/L*s, Y(j)+ny/L*s);
-  }
-
-  // cursor
-  if (S.cursor != null && mtr){
-    const m = mtr[Math.min(S.cursor, mtr.length-1)];
-    const i = Math.min(xs.length-1, Math.round(m / (M.metros[1]-M.metros[0] || 1)));
-    c.fillStyle = "#fff"; c.beginPath(); c.arc(X(i), Y(i), 6, 0, 7); c.fill();
-    c.strokeStyle = "#04060a"; c.lineWidth = 2; c.stroke();
-  }
-
-  cv.onpointerdown = cv.onpointermove = ev => {
-    if (ev.buttons === 0 && ev.type === "pointermove") return;
-    const r = cv.getBoundingClientRect();
-    const px = ev.clientX - r.left, py = ev.clientY - r.top;
-    let mejor = 0, dmin = 1e18;
-    for (let i = 0; i < xs.length; i++){
-      const d = (X(i)-px)**2 + (Y(i)-py)**2;
-      if (d < dmin){ dmin = d; mejor = i; }
+  // ---- 3. recorridos reales: B abajo, A encima ----
+  const recorrido = (tr, color) => {
+    const px = tr.canales.pos_x, pz = tr.canales.pos_z, br = tr.canales.brake;
+    const n = Math.min(px.length, pz.length);
+    const frena = i => !!br && br[i] > 0.02;
+    c.strokeStyle = color;
+    let i = 0;
+    while (i < n-1){
+      const f = frena(i);
+      let j = i + 1;
+      while (j < n-1 && frena(j) === f) j++;
+      // Un stroke por TRAMO, no por segmento: una vuelta son ~2000 puntos y
+      // 2000 stroke() sueltos dejan el arrastre del cursor a los tirones.
+      c.lineWidth = f ? 6 : 2.5;
+      c.beginPath(); c.moveTo(X(px[i]), Y(pz[i]));
+      for (let q = i+1; q <= j; q++) c.lineTo(X(px[q]), Y(pz[q]));
+      c.stroke();
+      i = j;
     }
-    const paso2 = tr ? tr.paso_m : 2;
-    S.cursor = Math.round(M.metros[mejor] / paso2);
+  };
+  if (hayPos){
+    if (conPos(trB)) recorrido(trB, "#ff2e4d");
+    if (conPos(trA)) recorrido(trA, "#27e0ff");
+  } else {
+    // Trazas viejas (grabadas antes de que la traza trajera pos_x/pos_z): se cae
+    // al comportamiento anterior -- una sola linea, coloreada por el pie.
+    const tr = trA || trB;
+    const brk = tr && tr.canales.brake, thr = tr && tr.canales.throttle;
+    const paso = tr ? tr.paso_m : 2;
+    c.lineWidth = 6;
+    for (let i = 0; i < M.x.length-1; i++){
+      const j = brk ? Math.min(brk.length-1, Math.round(M.metros[i]/paso)) : 0;
+      c.strokeStyle = !brk ? "#3f8cff"
+                    : brk[j] > 0.02 ? "#ff2e4d" : (thr[j] > 0.90 ? "#3f8cff" : "#2bf07a");
+      c.beginPath(); c.moveTo(X(M.x[i]), Y(M.z[i]));
+      c.lineTo(X(M.x[i+1]), Y(M.z[i+1])); c.stroke();
+    }
+  }
+
+  // ---- 4. marcadores de los puntos de cada curva ----
+  // Solo con zoom (>= 2 px/m, o entrando a una curva -- en un celular la curva
+  // entera cabe en ~1.3 px/m y ahi los glifos son justo lo que se vino a ver).
+  // A pista completa serian 4 glifos x 2 vueltas x ~15 curvas amontonados sobre
+  // una linea de 2 px: se tapan entre ellos y encima tapan el trazado. La
+  // lectura fina de los metros vive en la tabla de abajo, que si esta siempre.
+  const marca = (tr, m, tipo, color) => {
+    if (m == null) return;
+    const px = tr.canales.pos_x, pz = tr.canales.pos_z;
+    const i = Math.max(0, Math.min(px.length-1, Math.round(m / (tr.paso_m || 2))));
+    const x = X(px[i]), y = Y(pz[i]);
+    if (x < -20 || y < -20 || x > w+20 || y > h+20) return;
+    const a = Math.max(0, i-2), b = Math.min(px.length-1, i+2);
+    const ang = Math.atan2(Y(pz[b]) - Y(pz[a]), X(px[b]) - X(px[a]));
+    c.lineWidth = 1.5; c.strokeStyle = "#04060a"; c.fillStyle = color;
+    c.beginPath();
+    if (tipo === "frenada"){
+      c.arc(x, y, 5, 0, 7); c.fill(); c.stroke();
+    } else if (tipo === "giro"){
+      c.moveTo(x, y-6); c.lineTo(x+6, y); c.lineTo(x, y+6); c.lineTo(x-6, y);
+      c.closePath(); c.fill(); c.stroke();
+    } else if (tipo === "apex"){
+      c.fillStyle = "#04060a"; c.arc(x, y, 6, 0, 7); c.fill();
+      c.strokeStyle = color; c.lineWidth = 2.5; c.stroke();
+    } else {                                     // a fondo: triangulo hacia adelante
+      const p = (d, s) => [x + Math.cos(ang)*d - Math.sin(ang)*s,
+                           y + Math.sin(ang)*d + Math.cos(ang)*s];
+      const v = [p(8,0), p(-5,5), p(-5,-5)];
+      c.moveTo(v[0][0], v[0][1]); c.lineTo(v[1][0], v[1][1]); c.lineTo(v[2][0], v[2][1]);
+      c.closePath(); c.fill(); c.stroke();
+    }
+  };
+  if (k >= 2 || S.vista){
+    for (const [tr, col] of [[trB, "#ff2e4d"], [trA, "#27e0ff"]]){
+      if (!conPos(tr) || !tr.eventos) continue;
+      for (const e of tr.eventos){
+        marca(tr, e.frenada_m, "frenada", col);
+        marca(tr, e.giro_m,    "giro",    col);
+        marca(tr, e.apex_m,    "apex",    col);
+        marca(tr, e.gas_m,     "gas",     col);
+      }
+    }
+  }
+
+  // ---- 5. rotulos Tn, corridos hacia AFUERA para no tapar el trazado ----
+  c.font = `700 ${Math.max(10, Math.round(w/40))}px ui-monospace,monospace`;
+  c.textAlign = "center"; c.textBaseline = "middle";
+  const pasoMapa = (M.metros[1] - M.metros[0]) || 1;
+  S.rotulos = [];
+  for (const cu of M.curvas){
+    const j = Math.min(Math.max(Math.round(cu.metro/pasoMapa), 1), M.x.length-2);
+    const nx = -(Y(M.z[j+1]) - Y(M.z[j-1])), ny = (X(M.x[j+1]) - X(M.x[j-1]));
+    const L = Math.hypot(nx, ny) || 1;
+    const r = Math.max(9, Math.min(w/48, 20));
+    const s = (cu.lado === "izq" ? -1 : 1) * (r + Math.max(6, k*6));
+    const rx = X(M.x[j]) + nx/L*s, ry = Y(M.z[j]) + ny/L*s;
+    if (rx < -r || ry < -r || rx > w+r || ry > h+r) continue;   // con zoom, solo las visibles
+    const sel = S.curvaZoom === cu.n;
+    c.fillStyle = "#0d1118"; c.beginPath(); c.arc(rx, ry, r, 0, 7); c.fill();
+    c.strokeStyle = sel ? "#27e0ff" : "#1f2733"; c.lineWidth = 1.5; c.stroke();
+    c.fillStyle = sel ? "#eef3fa" : "#5d6b7e";
+    c.fillText("T"+cu.n, rx, ry);
+    S.rotulos.push({n: cu.n, x: rx, y: ry, r});
+  }
+
+  // ---- 6. cursor: un punto por vuelta, cada uno en SU posicion ----
+  if (S.cursor != null){
+    const punto = (x, y) => {
+      c.fillStyle = "#fff"; c.beginPath(); c.arc(x, y, 5, 0, 7); c.fill();
+      c.strokeStyle = "#04060a"; c.lineWidth = 2; c.stroke();
+    };
+    if (hayPos){
+      for (const tr of [trB, trA]){
+        if (!conPos(tr)) continue;
+        const i = Math.min(S.cursor, tr.canales.pos_x.length-1);
+        punto(X(tr.canales.pos_x[i]), Y(tr.canales.pos_z[i]));
+      }
+    } else {
+      const paso = (trA || trB) ? (trA || trB).paso_m : 2;
+      const i = Math.min(M.x.length-1, Math.round(S.cursor*paso / pasoMapa));
+      punto(X(M.x[i]), Y(M.z[i]));
+    }
+  }
+
+  // ------------------------------------------------------------ interaccion ---
+  const zoomEn = (px, py, factor) => {
+    const wx = V.cx + (px - w/2)/k, wz = V.cz - (py - h/2)/k;
+    const k2 = Math.max(kFit, Math.min(K_MAX, k*factor));
+    if (k2 <= kFit*1.001){ S.vista = null; S.curvaZoom = null; }
+    else S.vista = {cx: wx - (px - w/2)/k2, cz: wz + (py - h/2)/k2, k: k2};
     pintarTodo();
   };
+
+  const pick = (px, py) => {
+    // El cursor cae sobre el RECORRIDO DE A (el que se esta mirando), no sobre
+    // el mapa de referencia: con zoom las dos lineas estan separadas y engancharse
+    // a la de referencia dejaria el punto blanco fuera de las dos vueltas.
+    const ref = conPos(trA) ? trA : (conPos(trB) ? trB : null);
+    const xs = ref ? ref.canales.pos_x : M.x, zs = ref ? ref.canales.pos_z : M.z;
+    let mejor = 0, dmin = Infinity;
+    for (let i = 0; i < xs.length; i++){
+      const d = (X(xs[i])-px)**2 + (Y(zs[i])-py)**2;
+      if (d < dmin){ dmin = d; mejor = i; }
+    }
+    const paso = (trA || trB) ? (trA || trB).paso_m : 2;
+    S.cursor = ref ? mejor : Math.round(M.metros[mejor] / paso);
+    pintarTodo();
+  };
+
+  cv.onwheel = ev => {
+    ev.preventDefault();
+    const r = cv.getBoundingClientRect();
+    zoomEn(ev.clientX - r.left, ev.clientY - r.top, ev.deltaY < 0 ? 1.15 : 1/1.15);
+  };
+  cv.onpointerdown = ev => {
+    const r = cv.getBoundingClientRect();
+    const px = ev.clientX - r.left, py = ev.clientY - r.top;
+    punteros.set(ev.pointerId, {x: px, y: py});
+    if (punteros.size >= 2){                     // arranca el pellizco: nada de cursor
+      const ps = [...punteros.values()];
+      S.pinch = Math.hypot(ps[0].x-ps[1].x, ps[0].y-ps[1].y);
+      return;
+    }
+    for (const rt of S.rotulos)                  // tocar el rotulo = entrar a esa curva
+      if ((rt.x-px)**2 + (rt.y-py)**2 <= (rt.r+4)**2)
+        return zoomCurva(M.curvas.find(x => x.n === rt.n));
+    cv.setPointerCapture(ev.pointerId);
+    pick(px, py);
+  };
+  cv.onpointermove = ev => {
+    if (!punteros.has(ev.pointerId)) return;     // hover sin arrastrar: no toca nada
+    const r = cv.getBoundingClientRect();
+    const px = ev.clientX - r.left, py = ev.clientY - r.top;
+    punteros.set(ev.pointerId, {x: px, y: py});
+    if (punteros.size >= 2){
+      const ps = [...punteros.values()];
+      const d = Math.hypot(ps[0].x-ps[1].x, ps[0].y-ps[1].y);
+      if (S.pinch > 0 && d > 0)
+        zoomEn((ps[0].x+ps[1].x)/2, (ps[0].y+ps[1].y)/2, d/S.pinch);
+      S.pinch = d;
+      return;
+    }
+    pick(px, py);
+  };
+  cv.onpointerup = cv.onpointercancel = ev => {
+    punteros.delete(ev.pointerId);
+    if (punteros.size < 2) S.pinch = null;
+  };
+}
+
+// Los punteros activos viven FUERA de pintarMapa: cada arrastre repinta el mapa
+// (y reasigna los handlers), asi que un estado local se perderia a mitad de gesto.
+const punteros = new Map();
+
+function zoomCurva(cu){
+  const M = S.mapa, lz = S.lienzoMapa;
+  if (!M || !lz) return;
+  if (!cu){ S.vista = null; S.curvaZoom = null; return pintarTodo(); }
+  // Los bordes salen de los puntos del MAPA en [inicio-100, fin+80]: 100 m antes
+  // para que entre la zona de frenada (que es donde esta la diferencia) y 80 m
+  // despues para ver la salida.
+  const a = cu.inicio - 100, b = cu.fin + 80;
+  let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity, n = 0;
+  for (let i = 0; i < M.metros.length; i++){
+    if (M.metros[i] < a || M.metros[i] > b) continue;
+    n++;
+    x0 = Math.min(x0, M.x[i]); x1 = Math.max(x1, M.x[i]);
+    z0 = Math.min(z0, M.z[i]); z1 = Math.max(z1, M.z[i]);
+  }
+  if (!n) return;
+  const pad = 40;
+  const k = Math.min(K_MAX, Math.max(lz.kFit,
+              Math.min((lz.w - 2*pad)/Math.max(x1-x0, 1), (lz.h - 2*pad)/Math.max(z1-z0, 1))));
+  S.vista = {cx: (x0+x1)/2, cz: (z0+z1)/2, k};
+  S.curvaZoom = cu.n;
+  // la curva va en la URL (#T3) para poder mandarle a un alumno "mira esto"
+  // con el link y que le abra ya en la curva
+  try { history.replaceState(null, "", "#T" + cu.n); } catch(e){}
+  pintarTodo();
+}
+
+// ---- chips de curva: todo · T1 · T2 … ----
+let sigChips = "";
+function pintarChips(){
+  const cont = $("curvachips"), M = S.mapa;
+  if (!M || !M.curvas || !M.curvas.length){ cont.innerHTML = ""; sigChips = ""; return; }
+  const sig = M.traza + "|" + M.curvas.length;
+  if (sig !== sigChips){
+    cont.innerHTML = "";
+    const todo = document.createElement("div");
+    todo.className = "tanda"; todo.dataset.n = "0"; todo.textContent = "todo";
+    todo.onclick = () => zoomCurva(null);
+    cont.appendChild(todo);
+    for (const cu of M.curvas){
+      const d = document.createElement("div");
+      d.className = "tanda"; d.dataset.n = String(cu.n);
+      d.innerHTML = `T${cu.n} <small>${cu.lado} · ${Math.round(cu.metro)}m</small>`;
+      d.onclick = () => zoomCurva(cu);
+      cont.appendChild(d);
+    }
+    sigChips = sig;
+  }
+  for (const el of cont.children)
+    el.classList.toggle("sel", Number(el.dataset.n) === (S.curvaZoom || 0));
+}
+
+// ---- tabla de puntos por curva ----
+// Los metros van RELATIVOS AL APEX DE A ("frenada -118 m") porque el metro
+// absoluto de pista no le dice nada a nadie; la distancia al apex es la
+// referencia con la que un piloto habla de una frenada. La Δ es A-B: positiva
+// significa que A lo hace mas adelante (frena mas tarde, va a fondo despues).
+const sgn = v => (v > 0 ? "+" : v < 0 ? "-" : "") + Math.abs(Math.round(v));
+let sigEventos = "";
+function pintarEventos(){
+  const cont = $("eventos"), M = S.mapa;
+  const trA = S.A && S.trazas.get(S.A), trB = S.B && S.trazas.get(S.B);
+  const evA = (trA && trA.eventos) || [];
+  if (!M || !evA.length){ cont.innerHTML = ""; sigEventos = ""; return; }
+
+  const sig = [S.A, S.B, M.traza, evA.length].join("|");
+  if (sig !== sigEventos){
+    const eB = new Map(((trB && trB.eventos) || []).map(e => [e.n, e]));
+    const hayB = !!trB;
+    const rel = (v, ref, hay) => !hay ? "" : (v == null ? "—" : sgn(v - ref) + " m");
+    const dif = (x, y) => !hayB ? "" : (x == null || y == null ? "—" : sgn(x - y));
+    let html = `<table><thead>
+      <tr><th rowspan="2">T</th>
+          <th class="g" colspan="3">frenada</th>
+          <th class="g" colspan="3">giro</th>
+          <th class="g" colspan="4">ápex</th>
+          <th class="g" colspan="3">a fondo</th></tr>
+      <tr><th class="g">A</th><th>B</th><th>Δ</th>
+          <th class="g">A</th><th>B</th><th>Δ</th>
+          <th class="g">A</th><th>Δ</th><th>km/h A</th><th>B</th>
+          <th class="g">A</th><th>B</th><th>Δ</th></tr>
+      </thead><tbody>`;
+    for (const a of evA){
+      const b = eB.get(a.n) || {}, tiene = eB.has(a.n), ref = a.apex_m;
+      const grupo = kk => `<td class="a g">${rel(a[kk], ref, true)}</td>` +
+                          `<td class="b">${rel(b[kk], ref, tiene)}</td>` +
+                          `<td>${dif(a[kk], b[kk])}</td>`;
+      html += `<tr data-n="${a.n}"><td class="t">T${a.n}</td>`
+            + grupo("frenada_m") + grupo("giro_m")
+            // el apex de A es el origen de todos los metros de la fila; el de B
+            // va como Δ con el MISMO signo que las otras columnas (A−B, + = A mas
+            // adelante), no como "B relativo a A", que se leia al reves
+            + `<td class="a g">${Math.round(ref)} m</td>`
+            + `<td>${dif(a.apex_m, b.apex_m)}</td>`
+            + `<td class="a">${a.vmin_kmh == null ? "—" : a.vmin_kmh.toFixed(1)}</td>`
+            + `<td class="b">${!tiene || b.vmin_kmh == null ? "" : b.vmin_kmh.toFixed(1)}</td>`
+            + grupo("gas_m") + `</tr>`;
+    }
+    cont.innerHTML = html + `</tbody></table>`;
+    for (const fila of cont.querySelectorAll("tbody tr"))
+      fila.onclick = () => zoomCurva(M.curvas.find(x => x.n === Number(fila.dataset.n)));
+    sigEventos = sig;
+  }
+
+  // resaltar la curva donde esta el cursor (mismo criterio que la lectura de abajo)
+  const mtr = metros();
+  const m = (S.cursor == null || !mtr.length) ? null : mtr[Math.min(S.cursor, mtr.length-1)];
+  let aqui = null;
+  if (m != null) for (const x of M.curvas) if (x.inicio - 60 <= m && m <= x.fin + 40) aqui = x.n;
+  for (const fila of cont.querySelectorAll("tbody tr"))
+    fila.classList.toggle("aqui", Number(fila.dataset.n) === aqui);
 }
 
 // ---- graficos por distancia ----
@@ -620,6 +958,13 @@ setInterval(async () => {
   try {
     const primera = await cargarSesiones();
     await cargarSesion(primera);
+    // #T3 en la URL abre ya en esa curva (ver zoomCurva); el mapa necesita un
+    // primer pintado con ancho real antes de poder calcular la vista
+    const m = /^#T(\d+)$/.exec(location.hash);
+    if (m && S.mapa) requestAnimationFrame(() => {
+      const cu = S.mapa.curvas.find(c => c.n === Number(m[1]));
+      if (cu) zoomCurva(cu);
+    });
   } catch(e){
     // sin sesiones grabadas NO es un error: es el estado normal de una
     // instalacion recien hecha. Redactarlo como falla asusta al alumno.
