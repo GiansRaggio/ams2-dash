@@ -17,6 +17,7 @@ Requisitos en AMS2 (Options -> System):
 """
 import asyncio
 import faulthandler
+import gzip
 import http.server
 import json
 import math
@@ -26,6 +27,7 @@ import subprocess
 import sys
 import threading
 import time
+import zlib
 
 import websockets
 
@@ -682,6 +684,13 @@ class _NoCacheHandler(http.server.SimpleHTTPRequestHandler):
                                     q.get("validas") == "1")
         except ValueError as e:
             return self._json({"error": str(e)}, 400)
+        except (EOFError, zlib.error, gzip.BadGzipFile):
+            # Traza a medio escribir (sesion en curso, o un gzip que quedo cortado):
+            # no es un error del server ni del pedido, es "todavia no". 503 y el
+            # visor lo muestra como reintentable en vez de romper la pantalla.
+            return self._json({"error": "esa traza todavía se está escribiendo (o quedó "
+                                        "incompleta); reintenta en unos segundos",
+                               "reintentar": True}, 503)
         except Exception as e:                       # nunca tumbar el hilo del server
             log(f"[api] {ruta}: {type(e).__name__}: {e}")
             return self._json({"error": f"{type(e).__name__}: {e}"}, 500)
@@ -692,7 +701,9 @@ class _NoCacheHandler(http.server.SimpleHTTPRequestHandler):
         decenas de MB y armarla entera en memoria antes del primer byte deja al
         celular mirando una pantalla en blanco."""
         lineas = ams2_analysis.stint_csv(carpeta, tanda, solo_validas)
-        primera = next(lineas)                       # dispara los errores ANTES del 200
+        primera = next(lineas, None)                 # dispara los errores ANTES del 200
+        if primera is None:                          # todas las trazas ilegibles
+            raise ValueError("ninguna vuelta de la tanda se pudo leer (trazas incompletas)")
         nombre = f"{os.path.basename(carpeta)}__tanda{tanda}.csv"
         self.send_response(200)
         self.send_header("Content-Type", "text/csv; charset=utf-8")

@@ -79,6 +79,25 @@ def _meta(folder: str) -> dict:
         return {}
 
 
+_CACHE_META: dict = {}
+
+
+def _meta_indexado(folder: str) -> dict:
+    """`_meta` memorizado por el mtime de su session.json. "Comparar con otra
+    sesion" filtra TODAS las carpetas por pista en cada carga del visor (cientos de
+    session.json): un stat por carpeta es mucho mas barato que parsear cada JSON, y
+    el archivo casi nunca cambia (se escribe al abrir la sesion)."""
+    try:
+        mtime = os.path.getmtime(os.path.join(folder, "session.json"))
+    except OSError:
+        mtime = None
+    c = _CACHE_META.get(folder)
+    if c is None or c[0] != mtime:
+        c = (mtime, _meta(folder))
+        _CACHE_META[folder] = c
+    return c[1]
+
+
 def sesiones(limite: int | None = 40, pista: str | None = None,
              variante: str | None = None) -> list[dict]:
     """Sesiones grabadas, de la mas reciente a la mas vieja.
@@ -88,10 +107,16 @@ def sesiones(limite: int | None = 40, pista: str | None = None,
     medicion de la clase 2, un mes atras, y si giro por su cuenta entre medio ya no
     esta entre las 60 mas recientes del selector de arriba."""
     out = []
-    for d in sorted(_dirs(), key=os.path.getmtime, reverse=True):
+    con_mt = []
+    for d in _dirs():
+        try:
+            con_mt.append((os.path.getmtime(d), d))
+        except OSError:
+            continue                  # carpeta que desaparecio entre el listdir y aca
+    for mt, d in sorted(con_mt, reverse=True):
         if limite and len(out) >= limite:
             break
-        m = _meta(d)
+        m = _meta_indexado(d)
         if pista is not None and (m.get("track"), m.get("track_variation") or None) \
                 != (pista, variante or None):
             continue
@@ -521,10 +546,16 @@ def medicion(folder: str) -> dict:
     """
     regs, origen, k = AT.vueltas_de_la_tanda(folder)
     if k is None or not regs:
-        return {"falta": ("esta sesión no tiene tanda puntuada: ninguna corrida llega a 8 "
-                          "vueltas cronometradas seguidas" if "sin corrida" in origen else
-                          "esta sesión no tiene tanda puntuada (es anterior a la línea de "
-                          "tiempo y no se puede partir en corridas)")}
+        if "sin corrida" in origen:
+            falta = ("esta sesión no tiene tanda puntuada: ninguna corrida llega a 8 vueltas "
+                     "cronometradas seguidas")
+        elif "no cuadra" in origen:
+            falta = ("esta sesión no tiene tanda puntuada: su línea de tiempo no cuadra con el "
+                     "resumen y no se puede partir en corridas")
+        else:
+            falta = ("esta sesión no tiene tanda puntuada (es anterior a la línea de tiempo y "
+                     "no se puede partir en corridas)")
+        return {"falta": falta}
     mejor = min(regs, key=lambda l: l["lap_time"])
     return {"corrida": k, "traza": mejor.get("trace"), "vuelta": mejor.get("lap"),
             "tiempo": mejor.get("lap_time"), "origen": origen}
@@ -760,46 +791,120 @@ def _limpio(s) -> str:
     return "".join(c if c.isalnum() else "_" for c in str(s or ""))
 
 
+def _finito(x) -> bool:
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+
+
+def _validar_curvas(j) -> str | None:
+    """None si el archivo de curvas fijadas sirve; si no, el motivo.
+
+    Se edita a mano a proposito (una T que sobra, numeracion de catalogo), asi que
+    se valida al cargar: un archivo roto no puede llegar al mapa de diez alumnos.
+    Reglas: `largo_m` positivo; cada curva con `n` entero positivo y unico, y
+    `metro`/`inicio`/`fin` finitos con 0 <= inicio <= metro <= fin <= largo_m; las
+    curvas en orden creciente de metro Y de n (un n que retrocede es un error de
+    tipeo, no una numeracion de catalogo).
+    """
+    if not isinstance(j, dict):
+        return "no es un objeto JSON"
+    largo = j.get("largo_m")
+    if not _finito(largo) or largo <= 0:
+        return "largo_m no es un numero positivo"
+    cs = j.get("curvas")
+    if not isinstance(cs, list) or not cs:
+        return "no trae curvas"
+    vistos, prev = set(), None
+    for i, c in enumerate(cs, 1):
+        if not isinstance(c, dict):
+            return f"la curva {i} no es un objeto"
+        n = c.get("n")
+        if not isinstance(n, int) or isinstance(n, bool) or n < 1:
+            return f"la curva {i} no tiene un n entero positivo"
+        if n in vistos:
+            return f"T{n} esta repetida"
+        for k in ("metro", "inicio", "fin"):
+            if not _finito(c.get(k)):
+                return f"T{n}: {k} no es un numero"
+        for k in ("x", "z", "radio_m", "giro"):
+            if c.get(k) is not None and not _finito(c[k]):
+                return f"T{n}: {k} no es un numero"
+        if not 0 <= c["inicio"] <= c["metro"] <= c["fin"] <= largo:
+            return f"T{n}: no cumple 0 <= inicio <= metro <= fin <= largo_m"
+        if prev is not None and (c["metro"] <= prev[1] or n <= prev[0]):
+            return f"T{n}: las curvas no van en orden creciente (de metro y de n)"
+        vistos.add(n)
+        prev = (n, c["metro"])
+    return None
+
+
 def _leer_pista(ruta: str):
-    """Un archivo de curvas fijadas, memorizado por mtime (se pide en cada traza)."""
+    """Un archivo de curvas fijadas, memorizado por mtime (se pide en cada traza).
+    Devuelve (documento|None, motivo|None): motivo = por que se rechazo."""
     try:
         llave = (ruta, os.path.getmtime(ruta))
     except OSError:
-        return None
+        return None, "no se pudo leer"
     if llave not in _CACHE_PISTAS:
         try:
             with open(ruta, encoding="utf-8") as f:
                 j = json.load(f)
-        except (OSError, ValueError):
+            motivo = _validar_curvas(j)
+        except (OSError, ValueError) as e:
+            j, motivo = None, f"no es JSON valido ({type(e).__name__})"
+        if motivo is not None:
             j = None
-        if j is not None:
+        else:
             j["_ruta"], j["_archivo"] = ruta, os.path.basename(ruta)
-        _CACHE_PISTAS[llave] = j
+        _CACHE_PISTAS[llave] = (j, motivo)
     return _CACHE_PISTAS[llave]
+
+
+def _buscar_curvas(folder: str):
+    """(curvas fijadas de la pista de esta sesion o None, [avisos]).
+
+    Si hay mas de un archivo para la pista (dos versiones del largo, una copia
+    vieja), manda el de MENOR diferencia de largo, no el primero alfabetico, y se
+    avisa: dos archivos para una pista es un error de quien los versiona. Un archivo
+    que no valida se rechaza con aviso; si no queda otro, se cae a la numeracion de
+    la sesion.
+    """
+    meta = _meta(folder)
+    largo = meta.get("track_length_m")
+    if not meta.get("track") or not largo or not os.path.isdir(PISTAS):
+        return None, []
+    pre = f"curvas__{_limpio(meta['track'])}__{_limpio(meta.get('track_variation'))}__"
+    validos, avisos = [], []
+    for f in sorted(os.listdir(PISTAS)):
+        if not (f.startswith(pre) and f.endswith(".json")):
+            continue
+        j, motivo = _leer_pista(os.path.join(PISTAS, f))
+        if j is None:
+            avisos.append(f"{f} no se usa: {motivo}")
+            continue
+        if (j.get("pista") == meta["track"] and j.get("variante") == meta.get("track_variation")
+                and abs(j["largo_m"] - largo) <= TOL_LARGO_M):
+            validos.append((abs(j["largo_m"] - largo), f, j))
+    if not validos:
+        return None, avisos
+    validos.sort(key=lambda x: (x[0], x[1]))
+    if len(validos) > 1:
+        empate = " (empatan en largo: se toma el primero por nombre)" if validos[0][0] == validos[1][0] else ""
+        avisos.append(f"hay {len(validos)} archivos de curvas para esta pista; se usa "
+                      f"{validos[0][1]}, el de largo mas parecido{empate}")
+    return validos[0][2], avisos
 
 
 def curvas_de_pista(folder: str):
     """Las curvas fijadas de la pista de esta sesion (pista, variante y largo), o None."""
-    meta = _meta(folder)
-    largo = meta.get("track_length_m")
-    if not meta.get("track") or not largo or not os.path.isdir(PISTAS):
-        return None
-    pre = f"curvas__{_limpio(meta['track'])}__{_limpio(meta.get('track_variation'))}__"
-    for f in sorted(os.listdir(PISTAS)):
-        if not (f.startswith(pre) and f.endswith(".json")):
-            continue
-        j = _leer_pista(os.path.join(PISTAS, f))
-        if (j and j.get("curvas") and j.get("pista") == meta["track"]
-                and j.get("variante") == meta.get("track_variation")
-                and abs((j.get("largo_m") or 0) - largo) <= TOL_LARGO_M):
-            return j
-    return None
+    return _buscar_curvas(folder)[0]
 
 
 def numeracion(folder: str) -> dict:
-    """De donde sale la T de esta sesion: {"fuente": "pista"|"sesion", "archivo"}."""
-    j = curvas_de_pista(folder)
-    return {"fuente": "pista", "archivo": j["_archivo"]} if j else {"fuente": "sesion", "archivo": None}
+    """De donde sale la T de esta sesion: {"fuente": "pista"|"sesion", "archivo",
+    "aviso"}. `aviso` != None si hay archivos rechazados o duplicados."""
+    j, avisos = _buscar_curvas(folder)
+    return {"fuente": "pista" if j else "sesion", "archivo": j["_archivo"] if j else None,
+            "aviso": "; ".join(avisos) or None}
 
 
 def fijar_curvas(folder: str, forzar: bool = False):
@@ -895,7 +1000,7 @@ def mapa(folder: str, nombre: str | None = None) -> dict:
     largo = _meta(folder).get("track_length_m")
     xs_m, (px, pz) = _rejilla(data["lap_dist"], [data["pos_x"], data["pos_z"]], PASO_M, largo)
     # las curvas fijadas de la pista mandan; la numeracion de esta vuelta es el respaldo
-    fij = curvas_de_pista(folder)
+    fij, avisos_fij = _buscar_curvas(folder)
     curvas = fij["curvas"] if fij else _curvas(xs_m, px, pz)
 
     # a la pantalla va un trazado aligerado; las curvas se calculan con TODO el
@@ -913,6 +1018,8 @@ def mapa(folder: str, nombre: str | None = None) -> dict:
         # de esta vuelta, que otra sesion puede numerar distinto (el visor lo avisa)
         "numeracion": "pista" if fij else "sesion",
         "curvas_archivo": fij["_archivo"] if fij else None,
+        # archivos de curvas rechazados (no validan) o duplicados: el visor lo dice
+        "curvas_aviso": "; ".join(avisos_fij) or None,
         # True = la mas rapida no se pudo leer (a medio volcar) y se uso otra: es
         # una numeracion de paso, que _curvas_cacheadas no debe congelar
         "respaldo": saltadas > 0 and not fij,
@@ -1346,15 +1453,22 @@ def stint_csv(folder: str, n: int, solo_validas: bool = False):
     if not vs:
         raise ValueError("la tanda no tiene ninguna vuelta con traza")
     import gzip
+    import zlib
     primera = True
     for v in vs:
         ruta = os.path.join(folder, v["traza"])
-        with gzip.open(ruta, "rt", encoding="utf-8") as f:
-            cab = f.readline().rstrip("\n")
-            if primera:
-                yield "lap,uid," + cab + "\n"
-                primera = False
-            pre = f"{v['vuelta']},{v.get('uid') or 0},"
-            for ln in f:
-                if ln.strip():
-                    yield pre + ln
+        # Una vuelta a la vez en memoria (~2 MB), no toda la tanda: asi un gzip
+        # cortado (sesion en curso, o un taskkill de antes del volcado atomico) se
+        # salta ENTERO en vez de dejar media vuelta en el CSV y reventar el stream.
+        try:
+            with gzip.open(ruta, "rt", encoding="utf-8") as f:
+                cab = f.readline().rstrip("\n")
+                lineas = [ln for ln in f if ln.strip()]
+        except (OSError, EOFError, zlib.error):
+            continue
+        if primera:
+            yield "lap,uid," + cab + "\n"
+            primera = False
+        pre = f"{v['vuelta']},{v.get('uid') or 0},"
+        for ln in lineas:
+            yield pre + ln

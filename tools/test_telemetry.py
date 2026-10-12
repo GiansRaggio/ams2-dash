@@ -380,6 +380,9 @@ def main():
         test_compound_empty_start()
         test_report_timeline_reader()
         test_cierre_en_menu_principal()
+        test_juego_cerrado_de_golpe()
+        test_apagar_cierra()
+        test_traza_atomica()
         test_corridas_por_boxes()
 
         print("done.")
@@ -599,7 +602,152 @@ def test_cierre_en_menu_principal():
         _ok("juego cerrado (GAME_EXITED) 5 s: tambien se cierra",
             log3.sess_dir() is None and log3._cerrada == c3)
         shutil.rmtree(log3._base, ignore_errors=True)
+
+        # repeticion vista DESDE el menu principal (7): la sesion ya termino. Visto en
+        # pista: carrera -> 4 -> 1 -> 7. (La repeticion DENTRO de la sesion, 6, no.)
+        log4 = T.TelemetryLogger(base_dir=tempfile.mkdtemp(prefix="ams2tel8c_"))
+        r4 = [0.0]
+        log4._reloj = lambda: r4[0]
+        feed_lap(log4, 0); cross_to(log4, 1)
+        c4 = log4.sess_dir()
+        _menu(log4, 10.0, estado=7, reloj=r4)
+        _menu(log4, 15.5, estado=7, reloj=r4)
+        _ok("repeticion desde el menu principal (FRONT_END_REPLAY) 5 s: se cierra",
+            log4.sess_dir() is None and log4._cerrada == c4)
+        shutil.rmtree(log4._base, ignore_errors=True)
     finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_juego_cerrado_de_golpe():
+    """El alumno cierra AMS2 directo (o se cae), sin pasar por el menu principal. La
+    shared memory NO desaparece (el bridge tiene handles abiertos): queda el ultimo
+    frame congelado. La carpeta se cierra cuando el frame no cambia 5 s y AMS2 ya no
+    esta en la lista de procesos; si el frame vuelve a moverse antes, nada."""
+    print("test_juego_cerrado_de_golpe (memoria congelada y sin proceso -> carpeta cerrada):")
+    base = tempfile.mkdtemp(prefix="ams2tel10_")
+    try:
+        reloj = [0.0]
+        vivo = [True]
+        consultas = [0]
+
+        def juego_vivo():
+            consultas[0] += 1
+            return vivo[0]
+        log = T.TelemetryLogger(base_dir=base)
+        log._reloj = lambda: reloj[0]
+        log._juego_vivo = juego_vivo
+        feed_lap(log, 0); cross_to(log, 1)
+        a = log.sess_dir()
+
+        def frame(t, seq):
+            """lo que hace _run con cada frame: vigilar y, si corresponde, ingerir"""
+            reloj[0] = t
+            if log._vigilar_juego(seq):
+                log._ingest(Snap(laps_completed=1, dist=500.0))
+        for k in range(10):
+            frame(100.0 + k * 0.02, 1000 + k)            # el juego escribe: avanza
+        frame(101.0, 1009)                               # y se congela
+        frame(105.9, 1009)
+        _ok("4.9 s congelada: sigue abierta", log.sess_dir() == a and consultas[0] == 0)
+        frame(106.1, 1009)
+        _ok("5 s congelada pero AMS2 sigue corriendo (pausa, minimizado): NO se cierra",
+            log.sess_dir() == a and consultas[0] == 1, consultas[0])
+        frame(106.5, 1009)
+        _ok("la lista de procesos se mira a lo mas cada 2 s", consultas[0] == 1, consultas[0])
+        vivo[0] = None
+        frame(108.2, 1009)
+        _ok("si no se puede saber si el juego esta, tampoco se cierra", log.sess_dir() == a)
+        vivo[0] = False
+        frame(110.3, 1009)
+        log._drenar_cerrada()
+        _ok("congelada y AMS2 ya no esta: la carpeta se cierra", log.sess_dir() is None
+            and log._cerrada is None, log.sess_dir())
+        carpetas = [d for d in os.listdir(base) if os.path.isdir(os.path.join(base, d))]
+        for k in range(50):
+            frame(111.0 + k, 1009)                       # el frame congelado dice "en pista"
+        carpetas2 = [d for d in os.listdir(base) if os.path.isdir(os.path.join(base, d))]
+        _ok("los frames congelados ya no se ingieren (no abren una carpeta vacia)",
+            carpetas2 == carpetas and log.sess_dir() is None, carpetas2)
+        frame(200.0, 5000)                               # el juego volvio
+        _ok("cuando el frame vuelve a moverse, graba de nuevo (carpeta nueva)",
+            log.sess_dir() is not None and log.sess_dir() != a, log.sess_dir())
+
+        # sin memoria legible (open/snapshot fallan): mismo debounce, y se cancela
+        # si vuelve antes
+        log2 = T.TelemetryLogger(base_dir=tempfile.mkdtemp(prefix="ams2tel10b_"))
+        r2 = [0.0]
+        log2._reloj = lambda: r2[0]
+        log2._juego_vivo = lambda: True
+        feed_lap(log2, 0); cross_to(log2, 1)
+        b = log2.sess_dir()
+        for t, seq in ((10.0, 1), (11.0, None), (14.0, None), (15.5, 2)):
+            r2[0] = t
+            log2._vigilar_juego(seq)
+        _ok("memoria perdida 4.5 s y vuelve: se cancela", log2.sess_dir() == b)
+        for t in (20.0, 22.0, 25.1):
+            r2[0] = t
+            log2._vigilar_juego(None)
+        _ok("memoria perdida 5 s: se cierra (sin memoria no entra nada mas)",
+            log2.sess_dir() is None and log2._cerrada == b)
+        shutil.rmtree(log2._base, ignore_errors=True)
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_apagar_cierra():
+    """Apagado, el hilo no lee la memoria ni drena: una carpeta abierta antes de
+    apagar se quedaba "en curso" para siempre y la bandeja no la ofrecia."""
+    print("test_apagar_cierra (grabador a off -> carpeta cerrada y entregable):")
+    base = tempfile.mkdtemp(prefix="ams2tel11_")
+    try:
+        log = T.TelemetryLogger(base_dir=base)
+        cerradas = []
+        log.set_on_close(cerradas.append)
+        feed_lap(log, 0); cross_to(log, 1)
+        feed_lap(log, 1); cross_to(log, 2)
+        a = log.sess_dir()
+        log.set_mode("off")
+        _ok("al apagar, la carpeta deja de ser 'la actual'", log.sess_dir() is None)
+        log._drenar_cerrada()                    # lo que hace _run en modo off cada 0.5 s
+        _ok("y la bandeja la recibe", cerradas == [a], cerradas)
+        log.set_mode("full")
+        feed_lap(log, 0); cross_to(log, 1)
+        b = log.sess_dir()
+        _ok("al prender en la misma sesion del juego (mismo segundo incluso) va a una "
+            "carpeta NUEVA, nunca a la que ya se entrego",
+            b is not None and b != a, (os.path.basename(a), os.path.basename(b or "")))
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_traza_atomica():
+    """La linea de tiempo anuncia el nombre de la traza antes del volcado: bajo ese
+    nombre tiene que existir solo la traza COMPLETA (se escribe a .tmp y se renombra)."""
+    print("test_traza_atomica (gzip a .tmp + os.replace):")
+    base = tempfile.mkdtemp(prefix="ams2tel12_")
+    orig = T.os.replace
+    vistos = []
+
+    def replace(src, dst):
+        vistos.append((os.path.basename(src), os.path.basename(dst), os.path.exists(dst)))
+        return orig(src, dst)
+    try:
+        T.os.replace = replace
+        log = T.TelemetryLogger(base_dir=base)
+        feed_lap(log, 0); cross_to(log, 1)
+        feed_lap(log, 1); cross_to(log, 2)
+        sd = session_dir(base)
+        gz = [x for x in vistos if x[1].endswith(".csv.gz")]
+        _ok("la traza se escribe a .tmp y se renombra a su nombre final",
+            len(gz) == 1 and gz[0][0] == gz[0][1] + ".tmp", gz)
+        _ok("antes del rename el nombre final NO existia (nadie pudo leerla a medias)",
+            gz and gz[0][2] is False)
+        _ok("no queda ningun .tmp", not [f for f in os.listdir(sd) if f.endswith(".tmp")])
+        with gzip.open(os.path.join(sd, gz[0][1]), "rt", encoding="utf-8") as f:
+            _ok("y la traza final se lee entera", f.readline().strip().split(",") == T.HEADER)
+    finally:
+        T.os.replace = orig
         shutil.rmtree(base, ignore_errors=True)
 
 

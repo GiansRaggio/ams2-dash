@@ -52,12 +52,17 @@ _LIVE = (ams2_shm.GAME_INGAME_PLAYING, ams2_shm.GAME_INGAME_INMENU_TIME_TICKING)
 # Fuera de toda sesion: el menu principal del juego (y el juego cerrado). Es el fin
 # de la clase -- "a boxes, cierra la sesion y entrega" -- y la carpeta en curso se
 # cierra igual que al rotar. NO van aca la pausa (INGAME_PAUSED), el menu dentro
-# de la sesion (INMENU_TIME_TICKING), el reinicio (INGAME_RESTARTING) ni las
-# repeticiones: todos siguen dentro de la sesion. Enum verificado el 2026-10-11
+# de la sesion (INMENU_TIME_TICKING), el reinicio (INGAME_RESTARTING) ni la
+# repeticion DENTRO de la sesion (INGAME_REPLAY): todos siguen dentro de la
+# sesion. Enum verificado el 2026-10-11
 # contra SharedMemory.h de CREST2-AMS2 (SHARED_MEMORY_VERSION 14): EXITED 0,
 # FRONT_END 1, PLAYING 2, PAUSED 3, INMENU_TIME_TICKING 4, RESTARTING 5,
 # INGAME_REPLAY 6, FRONT_END_REPLAY 7.
-_FUERA_DE_SESION = (ams2_shm.GAME_FRONT_END, ams2_shm.GAME_EXITED)
+# FRONT_END_REPLAY (7) tambien: es una repeticion vista DESDE el menu principal, con
+# la sesion ya terminada (visto en pista el 2026-10-11: carrera -> menu de sesion (4)
+# -> menu principal (1, mSessionState 0) -> repeticion desde el menu (7)).
+_FUERA_DE_SESION = (ams2_shm.GAME_FRONT_END, ams2_shm.GAME_EXITED,
+                    ams2_shm.GAME_FRONT_END_REPLAY)
 # Segundos seguidos en el menu principal antes de cerrar. Contra un parpadeo: la
 # shared memory se escribe sin lock y un frame a medio escribir puede traer
 # cualquier mGameState; cinco segundos son 250 frames seguidos a 50 Hz.
@@ -205,6 +210,14 @@ class TelemetryLogger:
         # dentro de una sesion. El reloj es inyectable para probar el debounce.
         self._menu_desde = None
         self._reloj = time.monotonic
+        # Vigilancia del JUEGO (no del menu): ultimo mSequenceNumber visto, desde
+        # cuando no cambia (o no se puede leer la memoria), y si ya se dio el juego
+        # por perdido. `_juego_vivo` es inyectable para los tests.
+        self._seq_prev = None
+        self._quieta_desde = None
+        self._chequeo_proc = 0.0
+        self._juego_perdido = False
+        self._juego_vivo = ams2_shm.juego_abierto
         # stats expuestas al frontend
         self._laps_logged = 0
         self._last_file = None
@@ -244,10 +257,18 @@ class TelemetryLogger:
 
     def set_mode(self, mode):
         """off = no graba; summary = solo resumen por vuelta (liviano, ~10Hz);
-        full = resumen + traza completa de 71 canales (~50Hz)."""
+        full = resumen + traza completa de 71 canales (~50Hz).
+
+        Pasar a "off" CIERRA la carpeta en curso (igual que al rotar): apagado, el
+        hilo ni siquiera lee la memoria, asi que nada mas le va a entrar, y si se
+        quedaba abierta la bandeja la seguia viendo como "la actual" y no la
+        ofrecia nunca. Si se vuelve a encender en la misma sesion del juego, sigue
+        en una carpeta nueva."""
         if mode in ("off", "summary", "full"):
             with self._lock:
                 self._mode = mode
+                if mode == "off":
+                    self._cerrar_carpeta()
 
     def set_enabled(self, on):
         self.set_mode("full" if on else "off")   # compat con el toggle viejo
@@ -293,12 +314,15 @@ class TelemetryLogger:
             mode = self._mode
             if mode == "off":             # apagado: hilo dormido, no lee la memoria
                 self._recording = False
+                self._drenar_cerrada()    # la carpeta que cerro set_mode("off")
                 time.sleep(0.5)
                 continue
             if reader is None:
                 try:
                     reader = ams2_shm.Reader().open()
                 except ams2_shm.SharedMemoryUnavailable:
+                    self._vigilar_juego(None)
+                    self._drenar_cerrada()
                     time.sleep(1.0)
                     continue
             try:
@@ -306,12 +330,15 @@ class TelemetryLogger:
             except OSError:
                 reader.close()
                 reader = None
+                self._vigilar_juego(None)
+                self._drenar_cerrada()
                 time.sleep(1.0)
                 continue
-            try:
-                self._ingest(d)
-            except Exception:
-                pass                      # nunca tumbar el hilo por un error de I/O
+            if self._vigilar_juego(d.mSequenceNumber):
+                try:
+                    self._ingest(d)
+                except Exception:
+                    pass                  # nunca tumbar el hilo por un error de I/O
             self._drenar_cerrada()        # fuera del lock, y aunque _ingest haya retornado antes
             time.sleep(self._period if mode == "full" else 0.1)   # full 50Hz, summary ~10Hz
 
@@ -509,13 +536,66 @@ class TelemetryLogger:
         if ahora - self._menu_desde < MENU_CIERRE_S:
             return
         with self._lock:
-            if self._sess_dir is None and self._sig is None:
-                return                    # ya cerrada, o nunca se abrio: nada que hacer
-            self._write_rivals()
-            if self._sess_dir:
-                self._cerrada = self._sess_dir
-            self._soltar_sesion()
-            self._recording = False
+            self._cerrar_carpeta()
+
+    def _cerrar_carpeta(self):
+        """Cierra la carpeta en curso igual que al rotar: rivales volcados, carpeta
+        anotada en `_cerrada` (la drena _run hacia la bandeja), firma en blanco para
+        que la proxima entrada a pista abra carpeta nueva. LLAMAR CON EL LOCK.
+        Lo usan los tres cierres que no son rotacion: menu principal, juego cerrado
+        y grabador apagado. False si no habia nada abierto."""
+        if self._sess_dir is None and self._sig is None:
+            return False                  # ya cerrada, o nunca se abrio: nada que hacer
+        self._write_rivals()
+        if self._sess_dir:
+            self._cerrada = self._sess_dir
+        self._soltar_sesion()
+        self._recording = False
+        return True
+
+    def _vigilar_juego(self, seq):
+        """Cierra la carpeta si el JUEGO se fue (cerrado de golpe, sin pasar por el
+        menu principal), con el mismo debounce que el menu. Devuelve si el frame se
+        debe ingerir.
+
+        `seq` es el mSequenceNumber del frame, o None si la memoria no se pudo leer.
+        La memoria NO desaparece al cerrar el juego: el bridge tiene handles abiertos
+        y el mapeo sobrevive, asi que `snapshot()` sigue entregando el ULTIMO frame
+        congelado, sin error (ver ams2_shm.juego_abierto). La senal es entonces que
+        el frame no cambie: `MENU_CIERRE_S` segundos con el mismo mSequenceNumber (o
+        sin memoria legible). Como un juego vivo tambien podria dejar de escribir
+        (pausado, minimizado, colgado), antes de cerrar se mira la lista de procesos
+        -- a lo mas cada 2 s -- y solo se cierra si AMS2 ya no esta. Si el frame
+        vuelve a cambiar antes, se cancela todo.
+
+        Una vez perdido el juego, los frames congelados NO se ingieren: el ultimo
+        estado publicado suele ser "en pista", y re-ingerirlo abriria una carpeta
+        nueva y vacia apenas cerrada la anterior.
+        """
+        ahora = self._reloj()
+        if seq is not None and seq != self._seq_prev:
+            self._seq_prev = seq
+            self._quieta_desde = None
+            self._juego_perdido = False
+            return True
+        if self._juego_perdido:
+            return False
+        if self._quieta_desde is None:
+            self._quieta_desde = ahora
+            return True
+        if ahora - self._quieta_desde < MENU_CIERRE_S:
+            return True
+        if seq is not None:
+            # memoria legible pero quieta: solo el proceso dice si el juego sigue
+            if ahora - self._chequeo_proc < 2.0:
+                return True
+            self._chequeo_proc = ahora
+            if self._juego_vivo() is not False:
+                return True               # sigue abierto (o no se sabe): no se cierra
+        self._juego_perdido = True
+        with self._lock:
+            self._cerrar_carpeta()
+        return False
 
     def _soltar_sesion(self):
         """Estado por-sesion en blanco: lo comun a rotar y a cerrar en el menu.
@@ -544,7 +624,13 @@ class TelemetryLogger:
         self._sess_label = label
         name = (f"{_safe(bytes(d.mTrackLocation))}__{_safe(bytes(d.mCarName))}"
                 f"__{label}__{datetime.now():%Y%m%d_%H%M%S}")
-        self._sess_dir = os.path.join(self._base, name)
+        # Nunca reabrir una carpeta que ya se cerro: el nombre va al segundo, y apagar
+        # y prender el grabador dentro del mismo segundo (o una rotacion igual de
+        # rapida) volvia a escribir en la carpeta que la bandeja ya tenia en cola.
+        ruta, k = os.path.join(self._base, name), 2
+        while os.path.exists(ruta):
+            ruta, k = os.path.join(self._base, f"{name}_{k}"), k + 1
+        self._sess_dir = ruta
         try:
             os.makedirs(self._sess_dir, exist_ok=True)
             meta = {
@@ -738,12 +824,17 @@ class TelemetryLogger:
         # resumen: eso mantiene intacto el corpus de las herramientas de analisis,
         # que se apoyan en que summary.jsonl solo tiene vueltas representativas.
         if tname:
+            # A .tmp y despues os.replace: la linea de tiempo ya anuncio este nombre,
+            # y con el visor abierto sobre la sesion en curso un lector podia abrir
+            # el gzip a medio volcar (EOFError). Con el rename, bajo el nombre final
+            # solo existe la traza COMPLETA; la .tmp no la lista nadie (ni la bandeja).
+            ruta = os.path.join(self._sess_dir, tname)
             try:
-                with gzip.open(os.path.join(self._sess_dir, tname), "wt",
-                               newline="", encoding="utf-8") as f:
+                with gzip.open(ruta + ".tmp", "wt", newline="", encoding="utf-8") as f:
                     f.write(",".join(HEADER) + "\n")
                     f.write("\n".join(self._buf))
                     f.write("\n")
+                os.replace(ruta + ".tmp", ruta)
             except OSError:
                 tname = None
         if self._invalid:     # vuelta sucia: sectores y traza guardados, sin resumen

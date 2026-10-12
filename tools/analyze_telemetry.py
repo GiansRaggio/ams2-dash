@@ -21,6 +21,7 @@ import os
 import shutil
 import statistics as st
 import sys
+import zlib
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TELEM = os.path.join(HERE, "telemetry")
@@ -170,6 +171,20 @@ def _read_trace(path):
     return data
 
 
+def _read_trace_o_none(path):
+    """`_read_trace` que devuelve None si el gzip esta incompleto o corrupto.
+
+    Para los lectores que recorren las trazas que anuncia la LINEA DE TIEMPO (no el
+    resumen): esa linea se escribe antes de volcar la traza, y en sesiones grabadas
+    antes del volcado atomico (o cortadas por un taskkill) puede quedar un gzip a
+    medias que tira EOFError. Una vuelta ilegible se salta; no tumba el reporte.
+    """
+    try:
+        return _read_trace(path)
+    except (OSError, EOFError, zlib.error):
+        return None
+
+
 def load_trace(folder, lap_no, laps=None):
     """Carga la traza de una vuelta por NUMERO. Si varias comparten numero (el contador se
     resetea al volver al garage), usa la mas rapida (la representativa)."""
@@ -184,8 +199,9 @@ def load_trace(folder, lap_no, laps=None):
 
 def _lap_trace(folder, rec):
     """Carga la traza de un REGISTRO de vuelta por su nombre de archivo (identidad unica,
-    inmune a numeros de vuelta repetidos por reset del garage)."""
-    return _read_trace(os.path.join(folder, rec["trace"])) if rec and rec.get("trace") else None
+    inmune a numeros de vuelta repetidos por reset del garage). None si no existe o
+    si el gzip quedo cortado: una traza rota es "sin traza", no un 500 del visor."""
+    return _read_trace_o_none(os.path.join(folder, rec["trace"])) if rec and rec.get("trace") else None
 
 
 def _mono(dist, *cols):
@@ -758,7 +774,7 @@ def _t_del_visor(folder, traza):
             [{k: c[k] for k in ("n", "metro", "inicio", "fin")} for c in ts], num)
 
 
-def corridas_struct(folder):
+def corridas_struct(folder, detalle=False):
     """Las corridas de pista de la sesion, para elegir sobre cual medir la frenada.
 
     Devuelve (corridas, partida). Cada corrida: {"n", "vueltas" (registros del
@@ -769,15 +785,20 @@ def corridas_struct(folder):
     `partida` False = no se pudo partir en corridas (sesion anterior a
     timeline.jsonl, o linea de tiempo que no cuadra con el resumen): ahi toda la
     sesion cuenta como UNA corrida y quien muestre el numero tiene que decirlo.
+
+    Con `detalle=True` devuelve ademas (motivo, huerfanas) de `_partir_corridas`:
+    por que no se partio, y cuantas vueltas quedaron fuera por no estar en la
+    linea de tiempo.
     """
     _, laps = _load(folder)
     crono = [l for l in laps if l.get("lap_time")]
-    cs = _corridas_cronometradas(folder, crono)
-    partida = bool(cs)
+    cs, motivo, huerfanas = _partir_corridas(folder, crono)
+    partida = motivo is None
     if not partida:
         cs = [crono]
-    return ([{"n": i, "vueltas": regs, "cronometradas": len(regs)}
-             for i, regs in enumerate(cs, 1)], partida)
+    out = ([{"n": i, "vueltas": regs, "cronometradas": len(regs)}
+            for i, regs in enumerate(cs, 1)], partida)
+    return out + (motivo, huerfanas) if detalle else out
 
 
 def corrida_del_frio(corridas):
@@ -812,11 +833,20 @@ def frenadas_struct(folder, corrida="frio", umbral=0.05):
     que dar, `curvas` va vacio y `sin_dato` dice por que y que hacer; un panel vacio
     sin explicacion se lee como que el visor esta roto.
     """
-    cs, partida = corridas_struct(folder)
+    cs, partida, motivo, huerfanas = corridas_struct(folder, detalle=True)
     out = {"corridas": [{k: c[k] for k in ("n", "cronometradas")} for c in cs],
-           "partida": partida, "corrida": None, "curvas": [], "ts": [], "numeracion": None,
+           "partida": partida, "sin_partir": motivo, "huerfanas": huerfanas,
+           "corrida": None, "curvas": [], "ts": [], "numeracion": None,
            "n_vueltas": 0, "n_candidatas": 0, "descartadas": 0, "sin_dato": None}
     vueltas = None
+    if corrida is not None and motivo and motivo != "sin linea de tiempo":
+        # Tiene linea de tiempo pero no se sabe donde va cada vuelta: medir la sesion
+        # entera como "la corrida" mezclaria el frio con la tanda y el numero
+        # saldria creible. Una sesion VIEJA (sin linea de tiempo) si se mide entera.
+        out["corridas"] = []
+        out["sin_dato"] = ("La línea de tiempo de esta sesión no cuadra con el resumen, así "
+                           "que no se puede separar una corrida de otra.")
+        return out
     if corrida is not None:
         if corrida == "frio":
             c = corrida_del_frio(cs)
@@ -913,6 +943,8 @@ def report_braking(folder, corrida=None):
     if fs["numeracion"] and fs["numeracion"]["fuente"] == "sesion":
         print("  ojo: la pista no tiene curvas fijadas (--fijar-curvas): la T es la de ESTA "
               "sesion y puede no coincidir con la de otra")
+    if fs["numeracion"] and fs["numeracion"].get("aviso"):
+        print(f"  ojo: {fs['numeracion']['aviso']}")
     # T = la del visor (analisis.html), para que instructor y alumno digan la misma curva;
     # ANTES = metros antes del apex, el "frenas X m antes del apex" del panel del alumno
     print(f"  {'T':>4} {'APEX':>7} {'FRENAS EN':>10} {'ANTES':>6} {'SIGMA':>7} {'RANGO':>7}  {'n':>2}"
@@ -1013,29 +1045,54 @@ def _corridas_cronometradas(folder, crono):
     no cuadra con el resumen. Fallar aca es barato -- quien llama cae a las
     primeras n de la sesion y lo DICE -- y adivinar es lo caro.
     """
+    return _partir_corridas(folder, crono)[0]
+
+
+def _partir_corridas(folder, crono):
+    """`_corridas_cronometradas` con el detalle: (corridas, motivo, huerfanas).
+
+    `motivo` None = se pudo partir; si no, "sin linea de tiempo" (sesion anterior a
+    timeline.jsonl) o "la linea de tiempo no cuadra con el resumen". Son cosas
+    DISTINTAS y quien muestre el numero no las puede confundir: una sesion vieja se
+    mide entera y se dice; una con linea de tiempo que no cuadra NO es una sesion
+    vieja -- tiene corridas, solo que no se sabe donde va cada vuelta.
+
+    `huerfanas` = vueltas del resumen con uid que la linea de tiempo no trae (su
+    linea se corto en un taskkill, o no se alcanzo a escribir). Antes UNA sola de
+    esas tumbaba el corte entero: la sesion pasaba a ser una corrida, el panel
+    mezclaba el frio con la tanda y la rubrica caia a las primeras 8 de la sesion.
+    Ahora se reparten las que si se pueden ubicar y la huerfana queda fuera de toda
+    corrida, contada.
+    """
     tl = [r for r in _load_timeline(folder) if r.get("type") == "lap"]
     if not tl:
-        return []
+        return [], "sin linea de tiempo", 0
     cor = _numerar_corridas(tl)               # cor[i] = corrida de la vuelta i de `tl`
-    por_uid = {r["uid"]: c for r, c in zip(tl, cor)
-               if r.get("uid") is not None and c is not None}
-    orden = [c for r, c in zip(tl, cor) if r.get("kind") == "flying" and c is not None]
-    if crono and all(l.get("uid") in por_uid for l in crono):
-        nums = [por_uid[l["uid"]] for l in crono]
-    elif len(orden) == len(crono):
+    huerfanas = 0
+    if any(r.get("uid") is not None for r in tl):
+        por_uid = {r["uid"]: c for r, c in zip(tl, cor)
+                   if r.get("uid") is not None and c is not None}
+        nums = [por_uid.get(l.get("uid")) for l in crono]
+        huerfanas = sum(1 for c in nums if c is None)
+        if crono and huerfanas == len(crono):
+            return [], "la linea de tiempo no cuadra con el resumen", huerfanas
+    else:
         # Sesiones viejas: la linea de tiempo no trae uid. Se emparejan en orden, y
         # SOLO si la cuenta cuadra exacto. Un desfase silencioso pondria vueltas en
         # la corrida equivocada, que es peor que no cortar: el numero saldria igual
         # y saldria creible.
+        orden = [c for r, c in zip(tl, cor) if r.get("kind") == "flying" and c is not None]
+        if len(orden) != len(crono):
+            return [], "la linea de tiempo no cuadra con el resumen", 0
         nums = orden
-    else:
-        return []
     out = []
     for l, c in zip(crono, nums):
+        if c is None:
+            continue                          # huerfana: fuera de toda corrida
         while len(out) < c:                   # corridas sin vueltas cronometradas
             out.append([])                    # (solo out/pit) conservan su lugar
         out[c - 1].append(l)
-    return out
+    return out, None, huerfanas
 
 
 def vueltas_de_la_tanda(folder, n=8, tanda=None):
@@ -1064,19 +1121,22 @@ def vueltas_de_la_tanda(folder, n=8, tanda=None):
     """
     _, laps = _load(folder)
     crono = [l for l in laps if l.get("lap_time")]
-    cs = _corridas_cronometradas(folder, crono)
+    cs, motivo, huerfanas = _partir_corridas(folder, crono)
+    # una vuelta sin ubicar no se calla: el numero sale de las que si se ubicaron
+    nota = (f"; {huerfanas} vuelta{'s' if huerfanas != 1 else ''} sin ubicar en la linea "
+            f"de tiempo, fuera" if huerfanas else "")
     if cs:
         if tanda is not None:
             if 1 <= tanda <= len(cs) and cs[tanda - 1]:
                 return (cs[tanda - 1][:n],
-                        f"corrida {tanda} de {len(cs)}, {len(cs[tanda - 1])} vueltas", tanda)
+                        f"corrida {tanda} de {len(cs)}, {len(cs[tanda - 1])} vueltas{nota}", tanda)
         else:
             for k in range(len(cs) - 1, -1, -1):
                 if len(cs[k]) >= n:
                     return (cs[k][:n],
-                            f"corrida {k + 1} de {len(cs)}, {len(cs[k])} vueltas", k + 1)
-    porque = f"sin corrida de {n}+" if cs else "sin linea de tiempo"
-    return crono[:n], f"primeras {n} de la sesion ({porque})", None
+                            f"corrida {k + 1} de {len(cs)}, {len(cs[k])} vueltas{nota}", k + 1)
+    porque = motivo or f"sin corrida de {n}+"
+    return crono[:n], f"primeras {n} de la sesion ({porque}{nota})", None
 
 
 def consistency_struct(folder, n=8, minimo=6, n_califica=8, tanda=None):
@@ -1599,8 +1659,12 @@ def contactos_struct(folder, corrida=None):
 
     eventos, n_trazas, crash_laps = [], 0, []
     aero0 = aero1 = motor0 = motor1 = None
+    ilegibles = 0
     for r in recs:
-        t = _read_trace(os.path.join(folder, r["trace"]))
+        t = _read_trace_o_none(os.path.join(folder, r["trace"]))
+        if t is None and os.path.exists(os.path.join(folder, r["trace"])):
+            ilegibles += 1                     # gzip a medias: se salta y se dice
+            continue
         if not t or "coll_mag" not in t:
             continue
         n_trazas += 1
@@ -1651,6 +1715,9 @@ def contactos_struct(folder, corrida=None):
     if motor0 is not None and motor1 - motor0 > _DMG_MOTOR_AVISO:
         avisos.append(f"dano de motor: subio {100 * (motor1 - motor0):.1f}% en la sesion "
                       "(muy por encima del desgaste normal por vueltas)")
+    if ilegibles:
+        avisos.append(f"{ilegibles} traza(s) ilegibles (a medio escribir o cortadas): esas "
+                      "vueltas no se contaron")
 
     inv = tasa_invalidacion(folder, corrida)    # UNA sola definicion de la tasa: la de evaluar()
     return {

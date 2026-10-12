@@ -275,6 +275,10 @@ def _archivos(carpeta):
     la sesion y lo que va al zip tienen que salir de la MISMA lista."""
     out = []
     for nombre in sorted(os.listdir(carpeta)):
+        # .tmp = escritura a medias que el grabador iba a renombrar (traza o
+        # rivals.json): no es parte de la sesion, y si quedo es porque se corto
+        if nombre.endswith(".tmp"):
+            continue
         ruta = os.path.join(carpeta, nombre)
         if os.path.isfile(ruta):
             out.append((nombre, ruta))

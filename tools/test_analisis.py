@@ -953,7 +953,8 @@ def test_curvas_fijadas():
            sorted(c["t"] for c in f1["curvas"]) == [7, 9] and sorted(c["t"] for c in f2["curvas"]) == [7, 9],
            ([c["t"] for c in f1["curvas"]], [c["t"] for c in f2["curvas"]]))
         ok("y declaran de donde sale la T", f1["numeracion"] == {"fuente": "pista",
-                                                                  "archivo": os.path.basename(ruta)})
+                                                                  "archivo": os.path.basename(ruta),
+                                                                  "aviso": None}, f1["numeracion"])
         tr = A.traza(d, A.mapa(d)["traza"])
         ok("la tabla por curva del visor (eventos) tambien", [e["n"] for e in tr["eventos"]] == [7, 9])
         p = A.emparejar_frenadas(f1, f2)
@@ -1072,6 +1073,236 @@ def test_medicion_y_corridas():
         shutil.rmtree(base, ignore_errors=True)
 
 
+def _reescribir_timeline(d, filtro=None, cola=""):
+    """Reescribe timeline.jsonl dejando solo las lineas que pasan `filtro` y con
+    `cola` pegada al final (una linea a medio escribir)."""
+    p = os.path.join(d, "timeline.jsonl")
+    with open(p, encoding="utf-8") as f:
+        recs = [json.loads(x) for x in f if x.strip()]
+    if filtro:
+        recs = [r for r in recs if filtro(r)]
+    with open(p, "w", encoding="utf-8") as f:
+        f.write("".join(json.dumps(r) + "\n" for r in recs) + cola)
+
+
+def test_timeline_cortada():
+    """Una vuelta que el resumen tiene y la linea de tiempo no (su linea se corto en
+    un taskkill): antes la sesion entera pasaba a ser UNA corrida y el panel mezclaba
+    el frio con la tanda. Ahora esa vuelta queda fuera y el resto se reparte igual."""
+    print("\nlinea de tiempo cortada: se conservan las corridas, la huerfana queda fuera:")
+    import shutil
+    import tempfile
+    base = tempfile.mkdtemp(prefix="ams2tlcort_")
+    try:
+        d = _sesion_frenadas(base, "Estadio__Auto__practice__20261001_190000", [_FRIO, _TANDA])
+        # la ultima vuelta de la tanda (uid 13) pierde su linea, y la siguiente quedo
+        # escrita a medias
+        _reescribir_timeline(d, lambda r: r.get("uid") != 13, cola='{"type": "lap", "lap": 2')
+        cs, partida, motivo, huerf = AT.corridas_struct(d, detalle=True)
+        ok("sigue partida en sus 2 corridas", partida and [c["cronometradas"] for c in cs] == [5, 7],
+           (partida, [c["cronometradas"] for c in cs], motivo))
+        ok("y cuenta la vuelta que quedo sin ubicar", huerf == 1, huerf)
+        f = AT.frenadas_struct(d)
+        ok("el frio sigue siendo SOLO el frio (5 vueltas, no 12)",
+           f["corrida"] == 1 and f["n_vueltas"] == 5 and f["huerfanas"] == 1, (f["corrida"], f["n_vueltas"]))
+        # una del FRIO sin su linea: el frio queda con 4, nunca con la tanda mezclada
+        d2 = _sesion_frenadas(base, "Estadio__Auto__practice__20261002_190000", [_FRIO, _TANDA])
+        _reescribir_timeline(d2, lambda r: r.get("uid") != 3)
+        f2 = AT.frenadas_struct(d2)
+        ok("una huerfana del frio: el frio se mide con 4, sin mezclar la tanda",
+           f2["corrida"] == 1 and f2["n_vueltas"] == 4, f2["n_vueltas"])
+        d3 = _sesion_frenadas(base, "Estadio__Auto__practice__20261003_190000",
+                              [_FRIO, [(160, 100, 1.0)] * 9])
+        _reescribir_timeline(d3, lambda r: r.get("uid") != 14)
+        v, origen, k = AT.vueltas_de_la_tanda(d3)
+        ok("la rubrica sigue en la tanda (corrida 2), no en las primeras 8 de la sesion",
+           k == 2 and len(v) == 8 and "sin ubicar" in origen, (k, origen))
+        # linea de tiempo SIN uid (formato viejo) que no cuadra: no se sabe donde va
+        # cada vuelta. Eso NO es una sesion sin linea de tiempo.
+        d4 = _sesion_frenadas(base, "Estadio__Auto__practice__20261004_190000", [_FRIO, _TANDA])
+        p = os.path.join(d4, "timeline.jsonl")
+        with open(p, encoding="utf-8") as fh:
+            recs = [json.loads(x) for x in fh if x.strip()]
+        recs = [dict(r, uid=None) for r in recs]
+        recs = [r for i, r in enumerate(recs) if i != 3]          # una flying de menos
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write("".join(json.dumps(r) + "\n" for r in recs))
+        f4 = AT.frenadas_struct(d4)
+        ok("timeline sin uid que no cuadra: el panel NO mide la sesion entera como 'la corrida'",
+           f4["curvas"] == [] and f4["corridas"] == [] and "no cuadra" in (f4["sin_dato"] or ""),
+           f4["sin_dato"])
+        v4, origen4, k4 = AT.vueltas_de_la_tanda(d4)
+        ok("y la rubrica dice POR QUE cae a las primeras 8 (no 'sin linea de tiempo')",
+           k4 is None and "no cuadra" in origen4 and "sin linea de tiempo" not in origen4, origen4)
+        ok("la medicion tambien lo dice", "no cuadra" in A.medicion(d4).get("falta", ""))
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def _gzip_cortado(ruta, filas):
+    import gzip
+    import io
+    import ams2_telemetry as T
+    buf = io.BytesIO()
+    with gzip.GzipFile(fileobj=buf, mode="wb") as g:
+        g.write((",".join(T.HEADER) + "\n" + "\n".join(filas)).encode("utf-8"))
+    with open(ruta, "wb") as f:
+        f.write(buf.getvalue()[: len(buf.getvalue()) // 2])
+
+
+def test_curvas_fijadas_robustas():
+    """Archivos de curvas fijadas editados a mano: duplicados (manda el de largo mas
+    parecido, con aviso) e invalidos (se rechazan con aviso y se cae a la sesion)."""
+    print("\ncurvas fijadas: duplicados y archivos que no validan:")
+    import shutil
+    import tempfile
+    base = tempfile.mkdtemp(prefix="ams2pistas2_")
+    pistas_orig = A.PISTAS
+    A.PISTAS = os.path.join(base, "pistas")
+    try:
+        d = _sesion_frenadas(base, "Estadio__Auto__practice__20261001_190000", [_FRIO[:2]])
+        ruta, doc = A.fijar_curvas(d)
+        largo = doc["largo_m"]
+
+        def escribir(nombre, cambio):
+            j = json.loads(json.dumps(doc))
+            cambio(j)
+            with open(os.path.join(A.PISTAS, nombre), "w", encoding="utf-8") as f:
+                json.dump(j, f)
+        # otro archivo de la misma pista, alfabeticamente ANTES y con largo 4 m distinto
+        escribir("curvas__Estadio__Estadio_GP__0aaa.json",
+                 lambda j: (j.update(largo_m=largo + 4), j["curvas"][0].update(n=1),
+                            j["curvas"][1].update(n=5)))
+        n = A.numeracion(d)
+        ok("con dos archivos manda el de largo mas parecido, no el primero alfabetico",
+           n["archivo"] == os.path.basename(ruta), n)
+        ok("y avisa que hay dos", n["aviso"] and "2 archivos" in n["aviso"], n["aviso"])
+        escribir("curvas__Estadio__Estadio_GP__0aaa.json", lambda j: None)   # mismo largo
+        n = A.numeracion(d)
+        ok("empate exacto de largo: lo dice", n["aviso"] and "empatan" in n["aviso"], n["aviso"])
+        os.remove(os.path.join(A.PISTAS, "curvas__Estadio__Estadio_GP__0aaa.json"))
+
+        malos = {
+            "n repetida": lambda j: j["curvas"][1].update(n=j["curvas"][0]["n"]),
+            "n no entero": lambda j: j["curvas"][0].update(n="T1"),
+            "metro fuera del tramo": lambda j: j["curvas"][0].update(metro=j["curvas"][0]["fin"] + 10),
+            "fuera de orden": lambda j: j["curvas"].reverse(),
+            "numero no finito": lambda j: j["curvas"][0].update(inicio=float("nan")),
+            "mas alla del largo": lambda j: j["curvas"][1].update(fin=largo + 50),
+            "sin curvas": lambda j: j.update(curvas=[]),
+        }
+        for nombre, cambio in malos.items():
+            escribir(os.path.basename(ruta), cambio)
+            n = A.numeracion(d)
+            m = A.mapa(d)
+            ok(f"archivo invalido ({nombre}): se rechaza, cae a la sesion y avisa",
+               n["fuente"] == "sesion" and n["aviso"] and m["numeracion"] == "sesion"
+               and m["curvas_aviso"], (n, m.get("curvas_aviso")))
+        with open(ruta, "w", encoding="utf-8") as f:
+            f.write("{ esto no es json")
+        ok("JSON roto: tambien", A.numeracion(d)["fuente"] == "sesion" and A.numeracion(d)["aviso"])
+    finally:
+        A.PISTAS = pistas_orig
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_trazas_a_medias():
+    """Trazas que quedaron a medio escribir (sesiones de antes del volcado atomico, o
+    un taskkill): los lectores no revientan, y la API contesta 'reintenta' (503)."""
+    print("\ntrazas a medio escribir: lectores tolerantes y 503 reintentable:")
+    import http.server
+    import shutil
+    import tempfile
+    import bridge_shm
+    base = tempfile.mkdtemp(prefix="ams2medias_")
+    raices = A.RAICES
+    A.RAICES = (base,) + tuple(raices)
+    srv = http.server.ThreadingHTTPServer(
+        ("127.0.0.1", PUERTO + 2), lambda *a, **kw: bridge_shm._NoCacheHandler(*a, directory=HERE, **kw))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    def get(ruta):
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{PUERTO + 2}{ruta}", timeout=60) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+    try:
+        d = _sesion_frenadas(base, "Estadio__Auto__race__20261001_190000", [
+            [(150, 100, 1.0), (150, 100, 1.0, {"contacto": True}),
+             (150, 100, 1.0, {"invalida": True})]])
+        x = next(f for f in os.listdir(d) if f.startswith("X"))
+        filas, _ = _vuelta_estadio((150, 100), 1.0)
+        _gzip_cortado(os.path.join(d, x), filas)
+        try:
+            cs, _ = AT.contactos_struct(d)
+            ok("--contactos con una traza cortada no revienta: la salta y lo dice",
+               cs["n_contactos"] == 1 and any("ilegible" in a for a in cs["avisos"]), cs["avisos"])
+        except Exception as e:                       # noqa: BLE001
+            ok("--contactos con una traza cortada no revienta", False, repr(e))
+        s = os.path.basename(d)
+        c, j = get(f"/api/traza?s={s}&t={x}")
+        ok("/api/traza sobre un gzip a medias: 503 y 'reintentar', no 500",
+           c == 503 and j.get("reintentar") is True, (c, j))
+        c, j = get(f"/api/mapa?s={s}&t={x}")
+        ok("/api/mapa con t= sobre un gzip a medias: tambien 503", c == 503 and j.get("reintentar"), (c, j))
+        c, j = get(f"/api/mapa?s={s}")
+        ok("/api/mapa sin t= usa otra vuelta y responde", c == 200 and j["traza"] != x, c)
+        # el CSV de la corrida salta la vuelta cortada entera, no la deja a medias
+        filas_csv = list(A.stint_csv(d, 1))
+        vueltas_csv = {ln.split(",", 1)[0] for ln in filas_csv[1:]}
+        ok("el CSV salta la vuelta cortada entera", len(vueltas_csv) == 2, sorted(vueltas_csv))
+        # la bandeja no empaqueta .tmp (escrituras que el grabador iba a renombrar)
+        import entrega as E
+        with open(os.path.join(d, "L099_70.000s.csv.gz.tmp"), "wb") as f:
+            f.write(b"a medias")
+        ok("la bandeja no mete .tmp en el zip ni en la huella",
+           not any(n.endswith(".tmp") for n, _ in E._archivos(d)))
+        with open(os.path.join(HERE, "analisis.html"), encoding="utf-8") as f:
+            src = f.read()
+        ok("el visor no se cae si una traza no se puede leer (try/catch, suelta la letra)",
+           'try { S.trazas.set(n, await api("traza"' in src and "S[cual] = null;" in src)
+    finally:
+        srv.shutdown()
+        A.RAICES = raices
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_indice_de_sesiones():
+    """`/api/sesiones?pista=` recorre todas las carpetas: el session.json de cada una
+    se lee una vez y se reusa mientras no cambie."""
+    print("\nindice de sesiones memorizado:")
+    import shutil
+    import tempfile
+    base = tempfile.mkdtemp(prefix="ams2idx_")
+    raices, meta_orig = A.RAICES, A._meta
+    A.RAICES = (base,)
+    leidas = []
+    A._meta = lambda folder: (leidas.append(folder), meta_orig(folder))[1]
+    try:
+        d = _sesion_frenadas(base, "Estadio__Auto__practice__20261001_190000", [_FRIO[:2]])
+        _sesion_frenadas(base, "Estadio__Auto__practice__20261002_190000", [_FRIO[:2]])
+        A.sesiones(None, "Estadio", "Estadio_GP")
+        n1 = len(leidas)
+        A.sesiones(None, "Estadio", "Estadio_GP")
+        ok("la segunda pasada no relee ningun session.json", len(leidas) == n1 and n1 == 2, (n1, len(leidas)))
+        p = os.path.join(d, "session.json")
+        with open(p, encoding="utf-8") as f:
+            m = json.load(f)
+        m["track"] = "Otra"
+        import time as _t
+        _t.sleep(0.05)
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(m, f)
+        res = A.sesiones(None, "Estadio", "Estadio_GP")
+        ok("si el session.json cambia, se relee", len(res) == 1 and len(leidas) == n1 + 1,
+           ([s["carpeta"] for s in res], len(leidas)))
+    finally:
+        A.RAICES, A._meta = raices, meta_orig
+        A._CACHE_META.clear()
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def test_frenadas_en_vivo():
     """En clase el alumno abre el panel en el debrief SIN haber salido de la sesion:
     la carpeta sigue abierta en el grabador. Se simula lo peor que puede encontrar
@@ -1163,6 +1394,8 @@ def test_modo_compartir():
        re.search(r"try \{ S\.ocultar = localStorage\.getItem", src) is not None)
     ok("y se puede pedir por URL (&ocultar=1), que las fichas del curso pueden citar",
        'get("ocultar") === "1"' in src)
+    ok("con el modo puesto el CSV (que trae el reloj de cada muestra) no se ofrece",
+       "csv.disabled = S.ocultar" in src and "if (S.ocultar) return;" in src)
 
 
 def test_redondeo_panel_igual_cli():
@@ -1332,6 +1565,10 @@ def main():
     test_frenadas()
     test_curvas_fijadas()
     test_medicion_y_corridas()
+    test_timeline_cortada()
+    test_curvas_fijadas_robustas()
+    test_trazas_a_medias()
+    test_indice_de_sesiones()
     test_frenadas_en_vivo()
     test_panel_sin_sigma()
     test_modo_compartir()

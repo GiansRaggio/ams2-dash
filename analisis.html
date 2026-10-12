@@ -50,6 +50,7 @@
   #ocultar{flex:none;white-space:nowrap}
   #ocultar.on{border-color:var(--amber);color:var(--amber)}
   .oculto{color:var(--dim);font-weight:400;letter-spacing:.1em}
+  #csv:disabled{opacity:.4;cursor:not-allowed}   /* sin CSV en modo compartir: trae tiempos */
   #meta{font-size:max(11px,1.4vh);color:var(--dim);display:flex;gap:10px;flex-wrap:wrap}
   #meta b{color:var(--txt);font-weight:700}
 
@@ -697,14 +698,21 @@ function urlEstado(){
 }
 
 async function asegurarTrazas(){
+  const av = [];
   for (const [cual] of VUELTAS){
     const n = S[cual];
     if (n && !S.trazas.has(n)){
       const {s, t} = partesClave(n);        // "<carpeta>|<traza>" si es de otra sesion
-      S.trazas.set(n, await api("traza", {s, t}));
+      // Una traza que no se puede leer (la vuelta recien cerrada de la sesion en
+      // curso todavia se esta escribiendo: el bridge contesta 503) suelta esa
+      // letra y lo dice; antes la excepcion cortaba el pintado de todo el visor.
+      try { S.trazas.set(n, await api("traza", {s, t})); }
+      catch(e){
+        S[cual] = null;
+        av.push(`⚠ la vuelta ${cual} no se pudo leer: ${escH(String(e.message || e))}. Reintenta con ↻.`);
+      }
     }
   }
-  const av = [];
   for (const [cual] of VUELTAS){
     const tr = S[cual] && S.trazas.get(S[cual]);
     if (tr && tr.cierre_s > 0.05 && !S.ocultar)      // son milisegundos: tambien se ocultan
@@ -1183,9 +1191,11 @@ function pintarChips(){
   // De donde sale la T. Con las curvas fijadas de la pista (pistas/) es la misma
   // para el instructor y todos los alumnos, todas las semanas; sin ellas sale de la
   // vuelta mas rapida de ESTA sesion y otra sesion puede numerar distinto.
-  $("numeracion").textContent = M && M.numeracion === "sesion"
-    ? "T de esta sesión: la pista no tiene curvas fijadas, así que otra sesión puede numerar distinto"
-    : "";
+  $("numeracion").textContent = !M ? "" :
+    (M.numeracion === "sesion"
+      ? "T de esta sesión: la pista no tiene curvas fijadas, así que otra sesión puede numerar distinto"
+      : "")
+    + (M.curvas_aviso ? (M.numeracion === "sesion" ? " · " : "") + "⚠ " + M.curvas_aviso : "");
   if (!M || !M.curvas || !M.curvas.length){ cont.innerHTML = ""; sigChips = ""; return; }
   const sig = M.traza + "|" + M.curvas.length;
   if (sig !== sigChips){
@@ -1581,7 +1591,11 @@ function pintarFrenada(){
   const sub = [];
   sub.push("cuánto cambia tu punto de frenada de una vuelta a otra"
            + (d.n_vueltas >= 2 ? ` · ${d.n_vueltas} vueltas medidas` : ""));
-  if (!d.partida) sub.push("esta sesión no tiene línea de tiempo: se mide entera");
+  if (!d.partida && d.sin_partir === "sin linea de tiempo")
+    sub.push("esta sesión no tiene línea de tiempo: se mide entera");
+  if (d.huerfanas)
+    sub.push(`${d.huerfanas} vuelta${d.huerfanas > 1 ? "s" : ""} sin ubicar en su corrida `
+             + `(la línea de tiempo quedó cortada): no se cuenta${d.huerfanas > 1 ? "n" : ""}`);
   // la sesion que el grabador sigue escribiendo: si vuelves a pista, la corrida
   // que se esta girando crece y el panel se pone al dia solo
   const act = S.sesiones.find(x => x.carpeta === S.sesion);
@@ -1673,6 +1687,11 @@ function pintarOcultar(){
   const b = $("ocultar");
   b.classList.toggle("on", S.ocultar);
   b.textContent = S.ocultar ? "⏱ mostrar tiempos" : "⏱ ocultar tiempos";
+  // el CSV trae el reloj de cada muestra (y con eso el tiempo de vuelta): con el
+  // modo compartir no se ofrece
+  const csv = $("csv");
+  csv.disabled = S.ocultar;
+  csv.title = S.ocultar ? "desactivado mientras los tiempos están ocultos" : "";
 }
 $("ocultar").onclick = async () => {
   S.ocultar = !S.ocultar;
@@ -1693,6 +1712,7 @@ $("zoombtns").onclick = ev => {
   else if (S.zoomEn) S.zoomEn(w/2, h/2, b.dataset.z === "in" ? 1.5 : 1/1.5);
 };
 $("csv").onclick = () => {
+  if (S.ocultar) return;              // modo compartir: el CSV lleva tiempos
   const t = S.tandas[S.tanda];
   const q = new URLSearchParams({s: S.sesion, tanda: t.n, validas: $("solovalidas").checked ? "1" : "0"});
   location.href = "/api/export?" + q;

@@ -273,8 +273,9 @@ vueltas invalidadas van como `X###`).
 **Si eres alumno de la escuela, la entrega va desde el dash.** Una vez (con la
 credencial que te dio tu instructor): `python entrega.py --configurar`. Desde
 ahí, cada sesión que cierras queda **lista en la bandeja** (se cierra cuando
-pasas a otra sesión, o cuando sales al **menú principal** del juego y te quedas
-ahí unos 5 segundos; la pausa y el menú dentro de la sesión no la cierran): en el dash, en ⚙,
+pasas a otra sesión, cuando sales al **menú principal** del juego y te quedas
+ahí unos 5 segundos, cuando cierras el juego, o cuando apagas el grabador; la
+pausa y el menú dentro de la sesión no la cierran): en el dash, en ⚙,
 aparece "1 lista para entregar" y un botón **Entregar**. La tocas, confirmas, y
 listo — el dash empaqueta, sube, reintenta si no hay internet, y marca
 "✓ entregada". Nunca sube la sesión en curso, y nunca sube nada que tú no

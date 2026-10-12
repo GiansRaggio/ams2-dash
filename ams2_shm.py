@@ -330,6 +330,51 @@ class Reader:
             self._handle = None
 
 
+class _PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD), ("th32DefaultHeapID", ctypes.c_size_t),
+                ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", ctypes.c_long),
+                ("dwFlags", wintypes.DWORD), ("szExeFile", ctypes.c_wchar * 260)]
+
+
+def juego_abierto():
+    """True si hay un proceso de AMS2 corriendo (AMS2AVX.exe / AMS2.exe), False si
+    no, None si no se puede saber.
+
+    Hace falta porque la shared memory NO desaparece cuando el juego se cierra: el
+    mapeo es un objeto con nombre que vive mientras alguien tenga un handle abierto,
+    y el propio bridge tiene varios (el pump, el grabador, los dampers). Cerrado el
+    juego, `snapshot()` sigue devolviendo el ULTIMO frame, congelado y sin error.
+    Desde adentro de la memoria no hay forma de distinguir "el juego se cerro" de
+    "el juego no esta escribiendo"; la lista de procesos si.
+    """
+    try:
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        k.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
+        k.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+        k.Process32FirstW.argtypes = [ctypes.c_void_p, ctypes.POINTER(_PROCESSENTRY32W)]
+        k.Process32NextW.argtypes = [ctypes.c_void_p, ctypes.POINTER(_PROCESSENTRY32W)]
+        k.CloseHandle.argtypes = [ctypes.c_void_p]
+        h = k.CreateToolhelp32Snapshot(0x00000002, 0)          # TH32CS_SNAPPROCESS
+        if not h or h == ctypes.c_void_p(-1).value:
+            return None
+        try:
+            pe = _PROCESSENTRY32W()
+            pe.dwSize = ctypes.sizeof(_PROCESSENTRY32W)
+            ok = k.Process32FirstW(h, ctypes.byref(pe))
+            while ok:
+                nombre = pe.szExeFile.lower()
+                if nombre.startswith("ams2") and nombre.endswith(".exe"):
+                    return True
+                ok = k.Process32NextW(h, ctypes.byref(pe))
+            return False
+        finally:
+            k.CloseHandle(h)
+    except (OSError, AttributeError):
+        return None
+
+
 def _s(b):
     return b.decode("utf-8", "replace") if isinstance(b, bytes) else b
 
