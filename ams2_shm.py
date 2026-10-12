@@ -330,6 +330,13 @@ class Reader:
             self._handle = None
 
 
+# Los ejecutables del JUEGO, por nombre exacto (no por prefijo: "ams2*.exe" tambien
+# calzaria con un dash o una herramienta que se llame asi). Verificado el 2026-10-11
+# en la instalacion de Steam: AMS2.exe y AMS2AVX.exe; los otros .exe de la carpeta
+# son el reportero de crashes (BsSndRpt64, BugSplatHD64, PatchMiniDump).
+EXES_JUEGO = frozenset({"ams2.exe", "ams2avx.exe"})
+
+
 class _PROCESSENTRY32W(ctypes.Structure):
     _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
                 ("th32ProcessID", wintypes.DWORD), ("th32DefaultHeapID", ctypes.c_size_t),
@@ -364,8 +371,7 @@ def juego_abierto():
             pe.dwSize = ctypes.sizeof(_PROCESSENTRY32W)
             ok = k.Process32FirstW(h, ctypes.byref(pe))
             while ok:
-                nombre = pe.szExeFile.lower()
-                if nombre.startswith("ams2") and nombre.endswith(".exe"):
+                if pe.szExeFile.lower() in EXES_JUEGO:
                     return True
                 ok = k.Process32NextW(h, ctypes.byref(pe))
             return False

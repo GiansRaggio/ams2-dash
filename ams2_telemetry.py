@@ -231,6 +231,9 @@ class TelemetryLogger:
         self._sig = None
         self._sess_dir = None
         self._sess_label = None
+        self._creada = False
+        self._meta_sesion = None
+        self._eventos_pend = []
         self._cap = 100.0
         self._last_lap = -1
         self._buf = []            # filas CSV (str) de la vuelta en curso
@@ -372,8 +375,9 @@ class TelemetryLogger:
                 # cerrada: nada mas le va a entrar. El otro es la vuelta al menu
                 # principal (_vigilar_menu_principal). Por eso la bandeja se engancha
                 # aca y no en un timer -- una sesion que se sube mientras crece se
-                # duplica en el servidor.
-                if self._sess_dir:
+                # duplica en el servidor. Y solo si tiene vueltas: una sin vueltas la
+                # bandeja la rechazaria igual (ver _entregable).
+                if self._entregable():
                     self._cerrada = self._sess_dir
                 self._rotate_session(d, sig)
             self._track_rivals(d, v)      # acumula en memoria; se escribe al cerrar vuelta
@@ -547,7 +551,7 @@ class TelemetryLogger:
         if self._sess_dir is None and self._sig is None:
             return False                  # ya cerrada, o nunca se abrio: nada que hacer
         self._write_rivals()
-        if self._sess_dir:
+        if self._entregable():            # sin vueltas no se le ofrece a la bandeja
             self._cerrada = self._sess_dir
         self._soltar_sesion()
         self._recording = False
@@ -563,10 +567,11 @@ class TelemetryLogger:
         y el mapeo sobrevive, asi que `snapshot()` sigue entregando el ULTIMO frame
         congelado, sin error (ver ams2_shm.juego_abierto). La senal es entonces que
         el frame no cambie: `MENU_CIERRE_S` segundos con el mismo mSequenceNumber (o
-        sin memoria legible). Como un juego vivo tambien podria dejar de escribir
-        (pausado, minimizado, colgado), antes de cerrar se mira la lista de procesos
-        -- a lo mas cada 2 s -- y solo se cierra si AMS2 ya no esta. Si el frame
-        vuelve a cambiar antes, se cancela todo.
+        sin memoria legible). Como un juego vivo tambien deja de escribir (medido: en
+        el menu principal la memoria queda quieta 70 s seguidos) o puede no dejarse
+        leer un rato (cargando), antes de cerrar se mira la lista de procesos -- a lo
+        mas cada 2 s -- y solo se cierra si AMS2 explicitamente ya no esta. Si el
+        frame vuelve a cambiar antes, se cancela todo.
 
         Una vez perdido el juego, los frames congelados NO se ingieren: el ultimo
         estado publicado suele ser "en pista", y re-ingerirlo abriria una carpeta
@@ -585,13 +590,14 @@ class TelemetryLogger:
             return True
         if ahora - self._quieta_desde < MENU_CIERRE_S:
             return True
-        if seq is not None:
-            # memoria legible pero quieta: solo el proceso dice si el juego sigue
-            if ahora - self._chequeo_proc < 2.0:
-                return True
-            self._chequeo_proc = ahora
-            if self._juego_vivo() is not False:
-                return True               # sigue abierto (o no se sabe): no se cierra
+        # Quieta o ilegible: en los DOS casos decide el proceso. Que la memoria no se
+        # pueda leer no prueba que el juego se fue (puede estar cargando una sesion),
+        # asi que solo se cierra si AMS2 explicitamente NO esta; si no se sabe, no.
+        if ahora - self._chequeo_proc < 2.0:
+            return True
+        self._chequeo_proc = ahora
+        if self._juego_vivo() is not False:
+            return True                   # sigue abierto (o no se sabe): no se cierra
         self._juego_perdido = True
         with self._lock:
             self._cerrar_carpeta()
@@ -607,6 +613,9 @@ class TelemetryLogger:
         self._sig = None
         self._sess_dir = None
         self._sess_label = None
+        self._creada = False          # la carpeta ya existe en disco (ver _crear_carpeta)
+        self._meta_sesion = None
+        self._eventos_pend = []       # eventos de linea de tiempo antes de crear la carpeta
         self._last_lap = -1
         self._buf = []
         self._invalid = False
@@ -615,6 +624,39 @@ class TelemetryLogger:
         self._agg = None
         self._compound_prev = None    # sesion nueva -> no emitir tyre_change espurio
         self._in_pit_prev = False      # ni pit_in/out espurio del estado anterior
+
+    def _crear_carpeta(self):
+        """Crea en disco la carpeta de la sesion, la PRIMERA vez que hay algo que
+        guardar: el primer cruce de meta (la vuelta de salida ya cuenta).
+
+        Antes se creaba al entrar a la sesion, con el auto todavia en el garage. Con
+        los cierres nuevos (menu principal, juego cerrado, grabador apagado) cada
+        vuelta a la misma sesion abre carpeta nueva, y entrar y salir sin girar
+        dejaba carpetas con un session.json y nada mas, que la bandeja encolaba
+        para rechazarlas despues. Los eventos que pasan en el garage (goma de
+        largada, entrada y salida de boxes) se guardan en memoria y se vuelcan aca,
+        en orden."""
+        if self._sess_dir is None or self._creada:
+            return
+        try:
+            os.makedirs(self._sess_dir, exist_ok=True)
+            with open(os.path.join(self._sess_dir, "session.json"), "w", encoding="utf-8") as f:
+                json.dump(self._meta_sesion, f, ensure_ascii=False, indent=2)
+        except OSError:
+            self._sess_dir = None
+            return
+        self._creada = True
+        pend, self._eventos_pend = self._eventos_pend, []
+        for rec in pend:
+            self._write_timeline(rec)
+
+    def _entregable(self):
+        """La carpeta en curso vale para la bandeja: existe y tiene al menos una
+        vuelta en el resumen. Sin vueltas la bandeja la rechazaria igual ("no hay
+        ninguna vuelta cronometrada limpia"), despues de dejarla dos minutos como
+        pendiente y de listarla como invalida."""
+        return bool(self._creada and self._sess_dir
+                    and os.path.exists(os.path.join(self._sess_dir, "summary.jsonl")))
 
     def _rotate_session(self, d, sig):
         # cambio de pista/auto/tipo-de-sesion -> nueva carpeta; la vuelta en curso se descarta
@@ -631,31 +673,27 @@ class TelemetryLogger:
         while os.path.exists(ruta):
             ruta, k = os.path.join(self._base, f"{name}_{k}"), k + 1
         self._sess_dir = ruta
-        try:
-            os.makedirs(self._sess_dir, exist_ok=True)
-            meta = {
-                "track": _safe(bytes(d.mTrackLocation)),
-                "track_variation": _safe(bytes(d.mTrackVariation)),
-                "car": _safe(bytes(d.mCarName)),
-                "car_class": _safe(bytes(d.mCarClassName)),
-                # Nombres TRADUCIDOS: son los que el juego muestra en pantalla y los que
-                # usan las apps de telemetria de terceros para decidir que sesiones son
-                # comparables entre si. No son iguales a los crudos -- la variante cruda
-                # de Spielberg es "Spielberg_Modern" y la traducida es "Spielberg" --
-                # asi que exportar con la cruda deja nuestras sesiones sin pareja.
-                # Se guardan SIN sanear: tienen que salir tal cual para que matcheen.
-                "track_tr": _txt(bytes(d.mTranslatedTrackLocation)),
-                "track_variation_tr": _txt(bytes(d.mTranslatedTrackVariation)),
-                "session": label,
-                "track_length_m": round(d.mTrackLength, 1),
-                "started": datetime.now().isoformat(timespec="seconds"),
-                "rate_hz": round(1.0 / self._period),
-                "channels": HEADER,
-            }
-            with open(os.path.join(self._sess_dir, "session.json"), "w", encoding="utf-8") as f:
-                json.dump(meta, f, ensure_ascii=False, indent=2)
-        except OSError:
-            self._sess_dir = None
+        # La carpeta NO se crea aca: recien con el primer cruce de meta
+        # (_crear_carpeta). Los metadatos si se toman ahora, con la hora de ENTRADA.
+        self._meta_sesion = {
+            "track": _safe(bytes(d.mTrackLocation)),
+            "track_variation": _safe(bytes(d.mTrackVariation)),
+            "car": _safe(bytes(d.mCarName)),
+            "car_class": _safe(bytes(d.mCarClassName)),
+            # Nombres TRADUCIDOS: son los que el juego muestra en pantalla y los que
+            # usan las apps de telemetria de terceros para decidir que sesiones son
+            # comparables entre si. No son iguales a los crudos -- la variante cruda
+            # de Spielberg es "Spielberg_Modern" y la traducida es "Spielberg" --
+            # asi que exportar con la cruda deja nuestras sesiones sin pareja.
+            # Se guardan SIN sanear: tienen que salir tal cual para que matcheen.
+            "track_tr": _txt(bytes(d.mTranslatedTrackLocation)),
+            "track_variation_tr": _txt(bytes(d.mTranslatedTrackVariation)),
+            "session": label,
+            "track_length_m": round(d.mTrackLength, 1),
+            "started": datetime.now().isoformat(timespec="seconds"),
+            "rate_hz": round(1.0 / self._period),
+            "channels": HEADER,
+        }
 
     # ---------------- linea de tiempo (aditiva, no toca vueltas limpias) ----------------
     def _track_rivals(self, d, v):
@@ -702,8 +740,8 @@ class TelemetryLogger:
     def _write_rivals(self):
         """Vuelca el registro de rivales. Se llama al cerrar vuelta y al rotar sesion,
         NO por frame: escribir a 50Hz stutearia el broadcast."""
-        if self._sess_dir is None or not self._rivals_dirty or not self._rivals:
-            return
+        if self._sess_dir is None or not self._creada or not self._rivals_dirty or not self._rivals:
+            return                        # sin carpeta todavia: queda pendiente (dirty)
         try:
             path = os.path.join(self._sess_dir, "rivals.json")
             tmp = path + ".tmp"
@@ -715,9 +753,17 @@ class TelemetryLogger:
             pass
 
     def _write_timeline(self, rec):
-        """Append de un registro a timeline.jsonl. Guarda ante OSError y sin carpeta de sesion."""
+        """Append de un registro a timeline.jsonl. Guarda ante OSError y sin carpeta de sesion.
+        Antes de crear la carpeta, los eventos se guardan en memoria y una vuelta la crea."""
         if self._sess_dir is None:
             return
+        if not self._creada:
+            if rec.get("type") != "lap":
+                self._eventos_pend.append(rec)
+                return
+            self._crear_carpeta()
+            if not self._creada:
+                return
         try:
             with open(os.path.join(self._sess_dir, "timeline.jsonl"), "a", encoding="utf-8") as f:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
@@ -738,6 +784,10 @@ class TelemetryLogger:
         """Cierra la vuelta. SIEMPRE (si es vuelta de pista, no out/in/pit) guarda un
         registro de sectores con validez por sector -> permite rescatar sectores limpios
         de vueltas invalidadas. La traza+resumen completos solo si la vuelta es 100% limpia."""
+        # El primer cruce de meta de la sesion es lo que crea la carpeta en disco (ver
+        # _crear_carpeta): antes de eso no habia nada que guardar.
+        if self._sess_dir is not None and self._mode != "off":
+            self._crear_carpeta()
         # Los mejores de cada piloto solo pueden haber mejorado al cruzar meta -> es el
         # momento natural de volcarlos, y saca la escritura del camino de los 50Hz.
         if self._mode != "off":
@@ -762,6 +812,7 @@ class TelemetryLogger:
         if flying and self._mode == "full":
             tname = (f"{'X' if self._invalid else 'L'}{lap_no:03d}"
                      f"_{(lap_time if lap_time else 0):.3f}s.csv.gz")
+        linea_tl = None
         if self._sess_dir is not None and self._mode != "off":
             if self._pit_this:
                 kind = "pit"
@@ -775,7 +826,11 @@ class TelemetryLogger:
                 kind = "flying"
             a = self._agg
             n = max(1, a["n"]) if a else 1
-            self._write_timeline({
+            # Se ARMA aca pero se escribe despues de la traza: la linea de tiempo es
+            # la que le anuncia la traza a los lectores (el visor sobre la sesion en
+            # curso), y anunciarla antes de que exista daba "no existe esa traza"
+            # justo mientras se volcaba.
+            linea_tl = {
                 "type": "lap", "lap": lap_no, "lap_time": round(lap_time, 3) if lap_time else None,
                 "kind": kind, "pit": bool(self._pit_this), "out": bool(self._pit_prev),
                 "invalid": bool(self._invalid), "samples": n_samples,
@@ -790,8 +845,10 @@ class TelemetryLogger:
                 "rain": round(d.mRainDensity, 3), "track_t": round(d.mTrackTemperature, 1),
                 "tyre_temp_avg": [round(a["tsum"][i] / n, 1) for i in range(4)] if a else None,
                 "ts": datetime.now().isoformat(timespec="seconds"),
-            })
+            }
         if not flying:
+            if linea_tl:
+                self._write_timeline(linea_tl)
             return
         self._lap_uid += 1                 # identidad unica (el numero de vuelta se repite tras el garage)
         # sectores: S1/S2 capturados en vivo (estables), S3 = total - S1 - S2 (robusto)
@@ -801,6 +858,32 @@ class TelemetryLogger:
         else:
             sectors = [round(d.mCurrentSector1Time, 3), round(d.mCurrentSector2Time, 3),
                        round(d.mCurrentSector3Time, 3)]
+        # La TRAZA se guarda tambien si la vuelta se invalido (como X###). Una
+        # vuelta invalidada por pisar un piano sigue teniendo la frenada, la
+        # trazada y los cambios buenos: para comparar una tanda vuelta por vuelta
+        # descartarla es perder la mitad de la sesion. Lo que NO se guarda es su
+        # resumen: eso mantiene intacto el corpus de las herramientas de analisis,
+        # que se apoyan en que summary.jsonl solo tiene vueltas representativas.
+        #
+        # Orden de escritura: traza (a .tmp y os.replace) -> linea de tiempo ->
+        # sectores -> resumen. Asi, bajo su nombre final solo existe la traza
+        # COMPLETA, y para cuando la linea de tiempo la anuncia ya esta; y el
+        # resumen sigue escribiendose despues de la linea de tiempo, que es lo que
+        # evita vueltas "huerfanas" (ver analyze_telemetry._partir_corridas).
+        if tname:
+            ruta = os.path.join(self._sess_dir, tname)
+            try:
+                with gzip.open(ruta + ".tmp", "wt", newline="", encoding="utf-8") as f:
+                    f.write(",".join(HEADER) + "\n")
+                    f.write("\n".join(self._buf))
+                    f.write("\n")
+                os.replace(ruta + ".tmp", ruta)
+            except OSError:
+                tname = None
+                if linea_tl:
+                    linea_tl["trace"] = None      # no anunciar una traza que no existe
+        if linea_tl:
+            self._write_timeline(linea_tl)
         # registro de sectores para TODA vuelta de pista (limpia o invalidada) -> rescate
         try:
             with open(os.path.join(self._sess_dir, "sectors.jsonl"), "a", encoding="utf-8") as f:
@@ -817,26 +900,6 @@ class TelemetryLogger:
                 }, ensure_ascii=False) + "\n")
         except OSError:
             pass
-        # La TRAZA se guarda tambien si la vuelta se invalido (como X###). Una
-        # vuelta invalidada por pisar un piano sigue teniendo la frenada, la
-        # trazada y los cambios buenos: para comparar una tanda vuelta por vuelta
-        # descartarla es perder la mitad de la sesion. Lo que NO se guarda es su
-        # resumen: eso mantiene intacto el corpus de las herramientas de analisis,
-        # que se apoyan en que summary.jsonl solo tiene vueltas representativas.
-        if tname:
-            # A .tmp y despues os.replace: la linea de tiempo ya anuncio este nombre,
-            # y con el visor abierto sobre la sesion en curso un lector podia abrir
-            # el gzip a medio volcar (EOFError). Con el rename, bajo el nombre final
-            # solo existe la traza COMPLETA; la .tmp no la lista nadie (ni la bandeja).
-            ruta = os.path.join(self._sess_dir, tname)
-            try:
-                with gzip.open(ruta + ".tmp", "wt", newline="", encoding="utf-8") as f:
-                    f.write(",".join(HEADER) + "\n")
-                    f.write("\n".join(self._buf))
-                    f.write("\n")
-                os.replace(ruta + ".tmp", ruta)
-            except OSError:
-                tname = None
         if self._invalid:     # vuelta sucia: sectores y traza guardados, sin resumen
             return
         a, st = self._agg, self._start

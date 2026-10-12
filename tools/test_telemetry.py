@@ -381,7 +381,9 @@ def main():
         test_report_timeline_reader()
         test_cierre_en_menu_principal()
         test_juego_cerrado_de_golpe()
+        test_procesos_del_juego()
         test_apagar_cierra()
+        test_carpeta_diferida()
         test_traza_atomica()
         test_corridas_por_boxes()
 
@@ -595,7 +597,7 @@ def test_cierre_en_menu_principal():
         log3 = T.TelemetryLogger(base_dir=tempfile.mkdtemp(prefix="ams2tel8b_"))
         r3 = [0.0]
         log3._reloj = lambda: r3[0]
-        feed_lap(log3, 0); cross_to(log3, 1)
+        feed_lap(log3, 0); cross_to(log3, 1); feed_lap(log3, 1); cross_to(log3, 2)
         c3 = log3.sess_dir()
         _menu(log3, 10.0, estado=0, reloj=r3)
         _menu(log3, 15.5, estado=0, reloj=r3)
@@ -608,7 +610,7 @@ def test_cierre_en_menu_principal():
         log4 = T.TelemetryLogger(base_dir=tempfile.mkdtemp(prefix="ams2tel8c_"))
         r4 = [0.0]
         log4._reloj = lambda: r4[0]
-        feed_lap(log4, 0); cross_to(log4, 1)
+        feed_lap(log4, 0); cross_to(log4, 1); feed_lap(log4, 1); cross_to(log4, 2)
         c4 = log4.sess_dir()
         _menu(log4, 10.0, estado=7, reloj=r4)
         _menu(log4, 15.5, estado=7, reloj=r4)
@@ -677,9 +679,11 @@ def test_juego_cerrado_de_golpe():
         # si vuelve antes
         log2 = T.TelemetryLogger(base_dir=tempfile.mkdtemp(prefix="ams2tel10b_"))
         r2 = [0.0]
+        vivo2 = [True]
         log2._reloj = lambda: r2[0]
-        log2._juego_vivo = lambda: True
+        log2._juego_vivo = lambda: vivo2[0]
         feed_lap(log2, 0); cross_to(log2, 1)
+        feed_lap(log2, 1); cross_to(log2, 2)
         b = log2.sess_dir()
         for t, seq in ((10.0, 1), (11.0, None), (14.0, None), (15.5, 2)):
             r2[0] = t
@@ -688,11 +692,33 @@ def test_juego_cerrado_de_golpe():
         for t in (20.0, 22.0, 25.1):
             r2[0] = t
             log2._vigilar_juego(None)
-        _ok("memoria perdida 5 s: se cierra (sin memoria no entra nada mas)",
+        _ok("memoria ilegible 5 s pero AMS2 vivo (cargando): NO se cierra", log2.sess_dir() == b)
+        vivo2[0] = None
+        r2[0] = 27.2
+        log2._vigilar_juego(None)
+        _ok("ilegible y no se sabe si el juego esta: tampoco", log2.sess_dir() == b)
+        vivo2[0] = False
+        r2[0] = 29.3
+        log2._vigilar_juego(None)
+        _ok("ilegible y AMS2 explicitamente cerrado: se cierra",
             log2.sess_dir() is None and log2._cerrada == b)
         shutil.rmtree(log2._base, ignore_errors=True)
     finally:
         shutil.rmtree(base, ignore_errors=True)
+
+
+def test_procesos_del_juego():
+    """El juego se reconoce por nombre EXACTO de ejecutable, no por prefijo: un
+    'ams2-dash.exe' o una herramienta 'ams2tools.exe' no pueden pasar por el juego
+    (y dejar abierta para siempre la carpeta de una sesion que ya termino)."""
+    print("test_procesos_del_juego (nombres exactos de AMS2):")
+    import ams2_shm
+    _ok("AMS2.exe y AMS2AVX.exe son el juego",
+        {"ams2.exe", "ams2avx.exe"} <= ams2_shm.EXES_JUEGO)
+    _ok("otros 'ams2*.exe' no (dash, herramientas, reportero de crashes)",
+        not ({"ams2-dash.exe", "ams2tools.exe", "bugsplathd64.exe"} & ams2_shm.EXES_JUEGO))
+    r = ams2_shm.juego_abierto()
+    _ok("la consulta responde True/False/None sin reventar", r in (True, False, None), r)
 
 
 def test_apagar_cierra():
@@ -721,6 +747,51 @@ def test_apagar_cierra():
         shutil.rmtree(base, ignore_errors=True)
 
 
+def test_carpeta_diferida():
+    """Entrar a una sesion y salir sin girar no deja carpeta: se crea con el primer
+    cruce de meta. Y la bandeja solo recibe carpetas con vueltas."""
+    print("test_carpeta_diferida (sin cruzar meta no hay carpeta; sin vueltas no hay entrega):")
+    base = tempfile.mkdtemp(prefix="ams2tel13_")
+    try:
+        reloj = [0.0]
+        log = T.TelemetryLogger(base_dir=base)
+        log._reloj = lambda: reloj[0]
+        cerradas = []
+        log.set_on_close(cerradas.append)
+        # en el garage, con la goma ya poblada (evento 'start') y el reloj corriendo
+        for k in range(100):
+            s = Snap(laps_completed=0, dist=0.0, pit=4)
+            s.mGameState = 4
+            log._ingest(s)
+        _ok("en el garage, sin cruzar meta: NO hay carpeta en disco",
+            not [d for d in os.listdir(base) if os.path.isdir(os.path.join(base, d))])
+        _ok("aunque el grabador ya sabe como se va a llamar", log.sess_dir() is not None)
+        _menu(log, 10.0, reloj=reloj)
+        _menu(log, 15.5, reloj=reloj)
+        log._drenar_cerrada()
+        _ok("vuelve al menu: nada en disco y nada para la bandeja",
+            not os.listdir(base) and cerradas == [], (os.listdir(base), cerradas))
+        # ahora si gira: el primer cruce crea la carpeta, con los eventos del garage
+        feed_lap(log, 0, pit=2); cross_to(log, 1)
+        sd = log.sess_dir()
+        _ok("el primer cruce de meta crea la carpeta", sd and os.path.isdir(sd))
+        recs = [json.loads(x) for x in open(os.path.join(sd, "timeline.jsonl"), encoding="utf-8")]
+        orden = [r.get("event") or r.get("kind") for r in recs]
+        primera_vuelta = next(i for i, r in enumerate(recs) if r.get("type") == "lap")
+        _ok("con los eventos del garage (goma de largada, boxes) volcados ANTES de la vuelta",
+            "start" in orden[:primera_vuelta] and "pit_in" in orden[:primera_vuelta], orden)
+        _ok("y su session.json con la hora de ENTRADA a la sesion",
+            os.path.exists(os.path.join(sd, "session.json")))
+        reloj[0] = 100.0
+        _menu(log, 100.0, reloj=reloj)
+        _menu(log, 105.5, reloj=reloj)
+        log._drenar_cerrada()
+        _ok("carpeta con solo la vuelta de salida (sin resumen): no se le ofrece a la bandeja",
+            cerradas == [], cerradas)
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def test_traza_atomica():
     """La linea de tiempo anuncia el nombre de la traza antes del volcado: bajo ese
     nombre tiene que existir solo la traza COMPLETA (se escribe a .tmp y se renombra)."""
@@ -735,9 +806,20 @@ def test_traza_atomica():
     try:
         T.os.replace = replace
         log = T.TelemetryLogger(base_dir=base)
+        anuncios = []
+        escribir = log._write_timeline
+
+        def write_timeline(rec):
+            # cuando la linea de tiempo ANUNCIA una traza, esa traza ya tiene que existir
+            if rec.get("trace"):
+                anuncios.append(os.path.exists(os.path.join(log._sess_dir, rec["trace"])))
+            return escribir(rec)
+        log._write_timeline = write_timeline
         feed_lap(log, 0); cross_to(log, 1)
         feed_lap(log, 1); cross_to(log, 2)
         sd = session_dir(base)
+        _ok("la linea de tiempo anuncia la traza recien cuando la traza ya existe",
+            anuncios == [True], anuncios)
         gz = [x for x in vistos if x[1].endswith(".csv.gz")]
         _ok("la traza se escribe a .tmp y se renombra a su nombre final",
             len(gz) == 1 and gz[0][0] == gz[0][1] + ".tmp", gz)

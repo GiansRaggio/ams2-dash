@@ -887,10 +887,17 @@ def _buscar_curvas(folder: str):
     if not validos:
         return None, avisos
     validos.sort(key=lambda x: (x[0], x[1]))
+    if len(validos) > 1 and validos[0][0] == validos[1][0]:
+        # Empate de largo: no hay criterio para elegir, y elegir por nombre de archivo
+        # le daria a unos alumnos una T y a otros otra segun que copia les llego. Se
+        # rechazan los dos y se dice: lo arregla quien versiona el repo.
+        empatados = [f for dif, f, _ in validos if dif == validos[0][0]]
+        avisos.append(f"{len(empatados)} archivos de curvas empatan para esta pista "
+                      f"({', '.join(empatados)}): no se usa ninguno hasta que quede uno")
+        return None, avisos
     if len(validos) > 1:
-        empate = " (empatan en largo: se toma el primero por nombre)" if validos[0][0] == validos[1][0] else ""
         avisos.append(f"hay {len(validos)} archivos de curvas para esta pista; se usa "
-                      f"{validos[0][1]}, el de largo mas parecido{empate}")
+                      f"{validos[0][1]}, el de largo mas parecido")
     return validos[0][2], avisos
 
 

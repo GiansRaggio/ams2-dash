@@ -1179,7 +1179,9 @@ def test_curvas_fijadas_robustas():
         ok("y avisa que hay dos", n["aviso"] and "2 archivos" in n["aviso"], n["aviso"])
         escribir("curvas__Estadio__Estadio_GP__0aaa.json", lambda j: None)   # mismo largo
         n = A.numeracion(d)
-        ok("empate exacto de largo: lo dice", n["aviso"] and "empatan" in n["aviso"], n["aviso"])
+        ok("empate exacto de largo: no elige por nombre, rechaza los dos, cae a la sesion y avisa",
+           n["fuente"] == "sesion" and n["aviso"] and "empatan" in n["aviso"]
+           and A.mapa(d)["numeracion"] == "sesion", n)
         os.remove(os.path.join(A.PISTAS, "curvas__Estadio__Estadio_GP__0aaa.json"))
 
         malos = {
@@ -1248,6 +1250,15 @@ def test_trazas_a_medias():
         ok("/api/mapa con t= sobre un gzip a medias: tambien 503", c == 503 and j.get("reintentar"), (c, j))
         c, j = get(f"/api/mapa?s={s}")
         ok("/api/mapa sin t= usa otra vuelta y responde", c == 200 and j["traza"] != x, c)
+        # una vuelta que la linea de tiempo anuncia y cuyo archivo no esta (grabaciones
+        # de antes de publicar la linea DESPUES de la traza): 400, nunca 500
+        _reescribir_timeline(d, cola=json.dumps({"type": "lap", "lap": 9, "kind": "flying",
+                                                 "lap_time": 70.0, "uid": 9,
+                                                 "trace": "L009_70.000s.csv.gz"}) + "\n")
+        c, j = get(f"/api/traza?s={s}&t=L009_70.000s.csv.gz")
+        ok("traza anunciada que no existe: 4xx con motivo, no 500", c == 400 and j.get("error"), (c, j))
+        c, j = get(f"/api/mapa?s={s}&t=L009_70.000s.csv.gz")
+        ok("mapa con esa t=: tambien 4xx, no 500", c == 400, (c, j))
         # el CSV de la corrida salta la vuelta cortada entera, no la deja a medias
         filas_csv = list(A.stint_csv(d, 1))
         vueltas_csv = {ln.split(",", 1)[0] for ln in filas_csv[1:]}
