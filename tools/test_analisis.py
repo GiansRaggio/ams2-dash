@@ -543,6 +543,775 @@ def test_bordes():
             ok("ancho del corredor plausible (1.5-25 m)", 1.5 <= med <= 25, f"mediana {med:.1f} m")
 
 
+# ------------------------------------------------- tu frenada (por corrida) ---
+# Pista de laboratorio: un estadio (dos rectas de 1500 m y dos semicirculos de
+# 80 m de radio). Los semicirculos dan dos T por curvatura en el visor, y la
+# velocidad baja en el medio de cada uno, asi que el apex de la frenada y el de la
+# T caen en el mismo metro: el etiquetado T se puede probar de punta a punta.
+_R, _RECTA = 80.0, 1500.0
+_LARGO_E = 2 * _RECTA + 2 * math.pi * _R
+_APEX_E = (_RECTA + math.pi * _R / 2, 2 * _RECTA + math.pi * _R + math.pi * _R / 2)
+
+
+def _pos_estadio(d):
+    arco = math.pi * _R
+    if d < _RECTA:
+        return d, 0.0
+    d -= _RECTA
+    if d < arco:
+        a = d / _R
+        return _RECTA + _R * math.sin(a), _R - _R * math.cos(a)
+    d -= arco
+    if d < _RECTA:
+        return _RECTA - d, 2 * _R
+    d -= _RECTA
+    a = d / _R
+    return -_R * math.sin(a), _R + _R * math.cos(a)
+
+
+def _vuelta_estadio(frena, ritmo=1.0, n=1800, contacto=False):
+    """Filas CSV de una vuelta que EMPIEZA a frenar `frena` = (m1, m2) metros antes
+    de cada apex. `ritmo` escala la velocidad entera: cambia el tiempo de vuelta
+    sin mover ni el apex ni la frenada. `n` < 1000 = traza truncada. `contacto` =
+    un toque a mitad de vuelta (coll_mag cambia de valor UNA vez, como en AMS2)."""
+    import ams2_telemetry as T
+    idx = {h: i for i, h in enumerate(T.HEADER)}
+    filas, t, ds = [], 0.0, _LARGO_E / n
+    for k in range(n):
+        d = k * ds
+        v = 200.0
+        for ap in _APEX_E:
+            v -= 120.0 * math.exp(-((d - ap) / 120.0) ** 2)
+        v *= ritmo
+        frenando = any(ap - f <= d < ap - 30.0 for ap, f in zip(_APEX_E, frena))
+        x, z = _pos_estadio(d)
+        r = [0.0] * len(T.HEADER)
+        r[idx["t"]] = round(t, 4)
+        r[idx["lap_dist"]] = round(d, 2)
+        r[idx["speed_kmh"]] = round(v, 2)
+        r[idx["brake"]] = 1.0 if frenando else 0.0
+        r[idx["throttle"]] = 0.0 if frenando else 1.0
+        r[idx["gear"]] = 4.0
+        r[idx["pos_x"]] = round(x, 2)
+        r[idx["pos_z"]] = round(z, 2)
+        r[idx["coll_idx"]] = 5.0 if contacto and k >= n // 2 else -1.0
+        r[idx["coll_mag"]] = 0.3 if contacto and k >= n // 2 else 0.0
+        filas.append(",".join(map(str, r)))
+        t += ds / (v / 3.6)
+    return filas, t
+
+
+def _sesion_frenadas(base, nombre, corridas, con_timeline=True, n=1800):
+    """Sesion sintetica con CORRIDAS de verdad: cada corrida es una lista de
+    (frena_m1, frena_m2, ritmo[, extras]); se escribe la vuelta de salida que la abre
+    y la de boxes que la cierra, igual que el grabador. `extras` = {"contacto": True,
+    "invalida": True}: una invalidada va como X### y solo en la linea de tiempo."""
+    import gzip
+
+    import ams2_telemetry as T
+    d = os.path.join(base, nombre)
+    os.makedirs(d, exist_ok=True)
+    fecha = nombre.split("__")[-1]
+    with open(os.path.join(d, "session.json"), "w", encoding="utf-8") as f:
+        json.dump({"track": "Estadio", "track_variation": "Estadio_GP", "car": "Auto",
+                   "session": "practice", "track_length_m": round(_LARGO_E, 1),
+                   "started": f"{fecha[:4]}-{fecha[4:6]}-{fecha[6:8]}T{fecha[9:11]}:{fecha[11:13]}:00",
+                   "channels": T.HEADER}, f)
+    tl, res, uid, lap = [], [], 0, 0
+    for c, vueltas in enumerate(corridas):
+        if c:
+            lap += 1
+            tl.append({"type": "lap", "lap": lap, "lap_time": 120.0, "kind": "pit", "pit": True})
+        lap += 1
+        tl.append({"type": "lap", "lap": lap, "lap_time": 110.0, "kind": "out", "out": True})
+        for frena1, frena2, ritmo, *extra in vueltas:
+            ex = extra[0] if extra else {}
+            filas, lt = _vuelta_estadio((frena1, frena2), ritmo, n, ex.get("contacto", False))
+            lap += 1
+            inval = ex.get("invalida", False)
+            nom = f"{'X' if inval else 'L'}{lap:03d}_{lt:.3f}s.csv.gz"
+            with gzip.open(os.path.join(d, nom), "wt", encoding="utf-8") as f:
+                f.write(",".join(T.HEADER) + "\n" + "\n".join(filas) + "\n")
+            if inval:                     # como el grabador: traza X y linea de tiempo, sin resumen
+                tl.append({"type": "lap", "lap": lap, "lap_time": round(lt, 3), "kind": "invalid",
+                           "invalid": True, "trace": nom})
+                continue
+            uid += 1
+            reg = {"uid": uid, "lap": lap, "lap_time": round(lt, 3), "valid": True, "trace": nom}
+            res.append(reg)
+            tl.append({"type": "lap", "lap": lap, "lap_time": round(lt, 3), "kind": "flying",
+                       "uid": uid, "trace": nom})
+    lap += 1
+    tl.append({"type": "lap", "lap": lap, "lap_time": 120.0, "kind": "pit", "pit": True})
+    with open(os.path.join(d, "summary.jsonl"), "w", encoding="utf-8") as f:
+        f.write("".join(json.dumps(r) + "\n" for r in res))
+    if con_timeline:
+        with open(os.path.join(d, "timeline.jsonl"), "w", encoding="utf-8") as f:
+            f.write("".join(json.dumps(r) + "\n" for r in tl))
+    return d
+
+
+# el frio: 5 vueltas, frenada de T1 a 150 m +-, la de T2 a 100 m +-, 5% mas lento
+_OFF_FRIO = ((-10, 0), (10, 4), (-5, -4), (15, 2), (0, -2))
+_FRIO = [(150 + a, 100 + b, 0.95) for a, b in _OFF_FRIO]
+# despues del coaching: 8 vueltas clavadas en el mismo punto, a ritmo
+_TANDA = [(160, 100, 1.0)] * 8
+
+
+def _sin_t(cs):
+    """Las curvas sin lo que frenadas_struct les agrega (t, antes_m)."""
+    return [{k: v for k, v in c.items() if k not in ("t", "antes_m")} for c in cs]
+
+
+def _braking_original(folder, umbral=0.05):
+    """`braking_struct` TAL COMO ERA antes de aceptar un subconjunto de vueltas
+    (copia literal del calculo, 2026-09). Es la vara contra la que se cuida que
+    `--frenadas` sobre la sesion entera no cambie sus numeros: comparar la funcion
+    nueva consigo misma no cuidaria nada."""
+    import statistics as stt
+    cl = AT.clean_laps(folder)
+    if cl["n_clean"] < 2:
+        return None
+    traces = [(rec, AT._lap_trace(folder, rec)) for rec in cl["clean"]]
+    traces = [(rec, t) for rec, t in traces if t and t.get("brake") and t.get("lap_dist")]
+    completas = [(rec, t) for rec, t in traces if len(t.get("lap_dist") or []) >= 1000]
+    descartadas = len(traces) - len(completas)
+    traces = completas
+    if len(traces) < 2:
+        return {"curvas": [], "descartadas": descartadas, "n_vueltas": len(traces)}
+    rt = traces[0][1]
+    d, sp = AT._mono(rt["lap_dist"], rt["speed_kmh"])[:2]
+    out = []
+    for c in AT._corners(d, sp):
+        puntos = [x for x in (AT._punto_frenada(t, c["apex"], umbral) for _, t in traces)
+                  if x is not None]
+        if len(puntos) < 2:
+            continue
+        buenos, fuera = AT._split_anomalas(puntos)
+        if len(buenos) < 2:
+            continue
+        out.append({"apex": round(c["apex"], 1), "n": len(buenos), "fuera": len(fuera),
+                    "media_m": round(stt.mean(buenos), 1),
+                    "sigma_m": round(stt.pstdev(buenos), 1),
+                    "rango_m": round(max(buenos) - min(buenos), 1),
+                    "vmin_kmh": round(c["vmin"], 1) if c.get("vmin") is not None else None})
+    return {"curvas": out, "descartadas": descartadas, "n_vueltas": len(traces)}
+
+
+def _cli_frenadas(folder, corrida):
+    """Lo que IMPRIME `--frenadas` (la tabla), parseado: [(T, apex, frena_en, sigma,
+    rango, n)] como texto, tal cual sale en pantalla."""
+    import contextlib
+    import io
+    import re
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        AT.report_braking(folder, corrida)
+    filas = []
+    for ln in buf.getvalue().splitlines():
+        m = re.match(r"\s+(T\d+|--)\s+(-?\d+)m\s+(-?\d+)m\s+(-?\d+)m\s+([\d.]+)m\s+(\d+)m\s+(\d+)", ln)
+        if m:
+            filas.append(m.groups())
+    return filas
+
+
+def _como_cli(curvas):
+    """Las curvas del JSON formateadas con los MISMOS f-strings que el CLI."""
+    return [(f"T{c['t']}" if c["t"] is not None else "--", f"{c['apex']:.0f}",
+             f"{c['media_m']:.0f}", f"{c['antes_m']:.0f}", f"{c['sigma_m']:.1f}",
+             f"{c['rango_m']:.0f}", f"{c['n']}")
+            for c in curvas]
+
+
+def test_frenadas():
+    print("\ntu frenada: dispersion por corrida, con la T del visor (sintetico):")
+    import shutil
+    import tempfile
+    base = tempfile.mkdtemp(prefix="ams2fren_")
+    try:
+        d = _sesion_frenadas(base, "Estadio__Auto__practice__20261001_190000", [_FRIO, _TANDA])
+        cs, partida = AT.corridas_struct(d)
+        ok("parte la sesion en las 2 corridas", partida and [c["cronometradas"] for c in cs] == [5, 8],
+           [(c["n"], c["cronometradas"]) for c in cs])
+        ok("la Corrida N del panel es la tanda N del visor",
+           [s["n_cronometradas"] for s in A.stints(d)][:2] == [5, 8])
+
+        f = AT.frenadas_struct(d)                       # por defecto: el frio
+        ok("abre en el frio (la primera corrida con 2+ cronometradas)", f["corrida"] == 1, f["corrida"])
+        ok("mide las 5 vueltas del frio", f["n_vueltas"] == 5 and not f["sin_dato"], f["n_vueltas"])
+        por_t = {c["t"]: c for c in f["curvas"]}
+        ok("las dos curvas frenadas llevan la T del visor (T1 y T2)", sorted(por_t) == [1, 2],
+           [(c["t"], c["apex"]) for c in f["curvas"]])
+        if sorted(por_t) == [1, 2]:
+            t1, t2 = por_t[1], por_t[2]
+            # en pista: T1 entre 140 y 165 m (rango 25), T2 entre 96 y 104 (rango 8);
+            # la grilla de la traza es de ~2 m, de ahi la holgura
+            ok("T1 se mueve lo que se movio en pista (25 m)", abs(t1["rango_m"] - 25) <= 4, t1["rango_m"])
+            ok("T2 se mueve 8 m", abs(t2["rango_m"] - 8) <= 4, t2["rango_m"])
+            ok("'frenas X m antes del apex' = la media de las 5 (152 m en T1)",
+               abs(t1["antes_m"] - 152) <= 4, t1["antes_m"])
+            ok("n = las 5 vueltas, ninguna apartada", t1["n"] == 5 and t1["fuera"] == 0, (t1["n"], t1["fuera"]))
+            ok("la sigma va en el dato (es del instructor: el panel no la muestra)",
+               abs(t1["sigma_m"] - 9.3) <= 1.5, t1["sigma_m"])
+        f2 = AT.frenadas_struct(d, 2)
+        ok("la corrida 2 no se mezcla con el frio: ahi no se mueve nada",
+           f2["curvas"] and all(c["rango_m"] <= 3 for c in f2["curvas"]),
+           [c["rango_m"] for c in f2["curvas"]])
+        ses = AT.frenadas_struct(d, None)
+        ok("sesion entera = braking_struct de siempre (mismos numeros, T aparte)",
+           _sin_t(ses["curvas"]) == AT.braking_struct(d)["curvas"])
+        ok("y es la vara vieja tal cual (copia del calculo previo al refactor)",
+           _sin_t(ses["curvas"]) == _braking_original(d)["curvas"])
+        ok("en la sesion entera el frio cae por el 3% contra la mejor del dia "
+           "(por eso se mide por corrida)", ses["n_vueltas"] == 8, ses["n_vueltas"])
+        try:
+            AT.frenadas_struct(d, 9)
+            ok("una corrida que no existe -> ValueError", False)
+        except ValueError:
+            ok("una corrida que no existe -> ValueError", True)
+
+        # el caso medido en pista (P3 en Goiania): 85.9 / 81.1 / 85.0. Con el corte del
+        # 3% quedaba UNA vuelta y el frio salia sin dato; una vuelta lenta por un error
+        # en otra curva tiene un punto de frenada valido en esta
+        dp = _sesion_frenadas(base, "Estadio__Auto__practice__20261005_190000",
+                              [[(150, 100, 0.944), (160, 100, 1.0), (140, 100, 0.954)]])
+        f = AT.frenadas_struct(dp)
+        t1 = next((c for c in f["curvas"] if c["t"] == 1), None)
+        ok("frio de 85.9 / 81.1 / 85.0: entran las 3, sin el corte del 3%",
+           f["corrida"] == 1 and f["n_vueltas"] == 3 and t1 is not None and t1["n"] == 3,
+           (f["n_vueltas"], f["sin_dato"]))
+        ok("y el numero es el de las 3 (frenadas a 140 / 150 / 160 -> se mueve 20 m)",
+           t1 is not None and abs(t1["rango_m"] - 20) <= 4, t1 and t1["rango_m"])
+        ok("la sesion entera (sin --corrida) SI conserva el corte del 3%",
+           AT.frenadas_struct(dp, None)["sin_dato"] is not None)
+
+        print("\ntu frenada: sin dato, con el porque:")
+        d1 = _sesion_frenadas(base, "Estadio__Auto__practice__20261002_190000", [[_FRIO[0]], _FRIO[:1]])
+        f = AT.frenadas_struct(d1)
+        ok("ninguna corrida con 2 cronometradas: sin curvas y con mensaje",
+           f["curvas"] == [] and f["corrida"] is None and "2 vueltas" in (f["sin_dato"] or ""),
+           f["sin_dato"])
+        f = AT.frenadas_struct(d, None)
+        ok("con dato, sin_dato es None", f["sin_dato"] is None)
+        f = AT.frenadas_struct(d1, 1)
+        ok("corrida con 1 vuelta: dice cuantas tiene y cuantas hacen falta",
+           f["curvas"] == [] and "1 vuelta" in f["sin_dato"] and "2 o más" in f["sin_dato"],
+           f["sin_dato"])
+        dt = _sesion_frenadas(base, "Estadio__Auto__practice__20261003_190000", [_FRIO], n=500)
+        f = AT.frenadas_struct(dt)
+        ok("trazas truncadas: lo dice (y no es un panel vacio)",
+           f["curvas"] == [] and f["descartadas"] == 5 and "incompletas" in (f["sin_dato"] or ""),
+           f["sin_dato"])
+        dn = _sesion_frenadas(base, "Estadio__Auto__practice__20261004_190000", [_FRIO, _TANDA],
+                              con_timeline=False)
+        f = AT.frenadas_struct(dn)
+        ok("sin linea de tiempo: la sesion es UNA corrida y se marca",
+           f["partida"] is False and len(f["corridas"]) == 1 and f["corridas"][0]["cronometradas"] == 13,
+           (f["partida"], f["corridas"]))
+
+        print("\nla T: etiquetado y numeraciones entre sesiones:")
+        cs_ = [{"apex": 100}, {"apex": 500}, {"apex": 900}]
+        AT._etiquetar_t(cs_, [(1, 103.0), (2, 480.0), (3, 1200.0)])
+        ok("cada curva toma la T de apex mas cercano, dentro de la tolerancia",
+           [c["t"] for c in cs_] == [1, 2, None], [c["t"] for c in cs_])
+        cs_ = [{"apex": 100}, {"apex": 125}]
+        AT._etiquetar_t(cs_, [(1, 110.0)])
+        ok("una T no se repite: la lleva la curva mas cercana, la otra queda sin T",
+           [c["t"] for c in cs_] == [1, None], [c["t"] for c in cs_])
+        cs_ = [{"apex": 100}]
+        AT._etiquetar_t(cs_, [(1, 100.0 + AT.TOL_T_M + 1)])
+        ok("fuera de la tolerancia no se inventa la T", cs_[0]["t"] is None)
+        ok("sin apices (sesion sin posicion) nada lleva T",
+           [c["t"] for c in AT._etiquetar_t([{"apex": 1}], [])] == [None])
+
+        ta = [{"n": 1, "metro": 200, "inicio": 150, "fin": 260},
+              {"n": 2, "metro": 800, "inicio": 760, "fin": 830}]
+        tb = [{"n": 1, "metro": 278, "inicio": 160, "fin": 300},
+              {"n": 2, "metro": 790, "inicio": 770, "fin": 820}]
+        ok("misma numeracion aunque el pico de curvatura se pasee por el arco",
+           A._ts_comparables(ta, tb))
+        ok("una T de mas en la otra sesion: NO es la misma numeracion",
+           not A._ts_comparables(ta, tb + [{"n": 3, "metro": 900, "inicio": 880, "fin": 930}]))
+        tc = [{"n": 1, "metro": 500, "inicio": 470, "fin": 530}, tb[1]]
+        ok("misma cantidad pero corrida: NO", not A._ts_comparables(ta, tc))
+        ok("sin numeracion de un lado: NO", not A._ts_comparables(ta, []))
+
+        hoy = {"ts": ta, "curvas": [{"t": 1, "apex": 210}, {"t": 2, "apex": 805}]}
+        otra = {"ts": tb, "curvas": [{"t": 1, "apex": 270}, {"t": 2, "apex": 800}]}
+        p = A.emparejar_frenadas(hoy, otra)
+        ok("numeraciones iguales: empareja por T (aunque el apex se corra 60 m)",
+           p["por"] == "T" and p["aviso"] is None and len(p["filas"]) == 2
+           and all(f["hoy"]["t"] == f["otra"]["t"] for f in p["filas"]), p)
+        otra2 = {"ts": tb + [{"n": 3, "metro": 900, "inicio": 880, "fin": 930}],
+                 "curvas": [{"t": 2, "apex": 220}, {"t": 3, "apex": 790}, {"t": 4, "apex": 1500}]}
+        p = A.emparejar_frenadas(hoy, otra2)
+        pares = [((f["hoy"] or {}).get("apex"), (f["otra"] or {}).get("apex")) for f in p["filas"]]
+        ok("numeraciones distintas: empareja por metro del apex y avisa",
+           p["por"] == "metro" and p["aviso"] and pares == [(210, 220), (805, 790), (None, 1500)],
+           (p["por"], pares))
+        lejos = {"ts": [], "curvas": [{"t": None, "apex": 210 + A.TOL_APEX_SESIONES_M + 5}]}
+        p = A.emparejar_frenadas({"ts": [], "curvas": [{"t": None, "apex": 210}]}, lejos)
+        ok("dos apex mas lejos que la tolerancia no son la misma curva",
+           len(p["filas"]) == 2 and all(not (f["hoy"] and f["otra"]) for f in p["filas"]),
+           [(bool(f["hoy"]), bool(f["otra"])) for f in p["filas"]])
+
+        # dos sesiones de la misma pista sintetica: misma geometria, misma numeracion
+        raices = A.RAICES
+        A.RAICES = (base,) + tuple(raices)
+        try:
+            d2 = _sesion_frenadas(base, "Estadio__Auto__practice__20261008_190000", [_TANDA[:4]])
+            j = A.frenadas(d, None, os.path.basename(d2))
+            ok("hoy contra la clase pasada: la otra sesion va al lado",
+               j["otra"]["corrida"] == 1 and j["otra"]["n_vueltas"] == 4, j["otra"]["corrida"])
+            ok("misma pista y geometria: se empareja por T",
+               j["pares"]["por"] == "T" and all(f["hoy"] and f["otra"] for f in j["pares"]["filas"]),
+               j["pares"]["por"])
+        finally:
+            A.RAICES = raices
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_frenadas_corpus():
+    """Contra sesiones reales: el refactor no movio los numeros de la sesion
+    entera, y la Corrida N del panel es la tanda N del visor."""
+    print("\ntu frenada contra el corpus:")
+    if not _hay_corpus():
+        print("  (sin corpus grabado; nada que medir)")
+        return
+    ses = sorted(AT._sessions(), key=os.path.getmtime, reverse=True)
+    iguales, n = 0, 0
+    for d in ses:
+        if AT.clean_laps(d)["n_clean"] < 2:
+            continue
+        n += 1
+        vieja, nueva = _braking_original(d), AT.frenadas_struct(d, None)
+        if vieja and _sin_t(nueva["curvas"]) == vieja["curvas"] \
+                and nueva["n_vueltas"] == vieja["n_vueltas"] and nueva["descartadas"] == vieja["descartadas"]:
+            iguales += 1
+        if n >= 15:
+            break
+    ok(f"--frenadas de sesion entera: mismos numeros que antes del refactor ({iguales}/{n})",
+       n > 0 and iguales == n)
+    # la Corrida N del panel tiene que ser la tanda TN de arriba del visor
+    malas, partidas = [], 0
+    for d in AT._sessions():
+        cs, partida = AT.corridas_struct(d)
+        if not partida:
+            continue
+        partidas += 1
+        st = A.stints(d)
+        if [c["cronometradas"] for c in cs] != [s["n_cronometradas"] for s in st][:len(cs)]:
+            malas.append(os.path.basename(d))
+    ok(f"en {partidas} sesiones partidas, cada corrida tiene las vueltas de su tanda del visor",
+       partidas > 0 and not malas, malas[:3])
+
+
+def test_curvas_fijadas():
+    """La T tiene que ser la MISMA curva para el instructor y diez alumnos, cada uno
+    en su PC, todas las semanas: las curvas se fijan por pista en pistas/ y mandan
+    sobre la numeracion de cada sesion."""
+    print("\ncurvas fijadas por pista (la T de todos):")
+    import shutil
+    import tempfile
+    base = tempfile.mkdtemp(prefix="ams2pistas_")
+    pistas_orig, raices = A.PISTAS, A.RAICES
+    A.PISTAS = os.path.join(base, "pistas")
+    A.RAICES = (base,) + tuple(raices)
+    try:
+        d = _sesion_frenadas(base, "Estadio__Auto__practice__20261001_190000", [_FRIO, _TANDA])
+        d2 = _sesion_frenadas(base, "Estadio__Auto__practice__20261008_190000", [_TANDA[:4]])
+        ok("sin archivo: la numeracion es la de la sesion", A.numeracion(d)["fuente"] == "sesion")
+        ruta, doc = A.fijar_curvas(d)
+        ok("fijar crea pistas/curvas__<pista>__<variante>__<largo>m.json",
+           os.path.basename(ruta) == f"curvas__Estadio__Estadio_GP__{round(_LARGO_E)}m.json"
+           and os.path.exists(ruta), os.path.basename(ruta))
+        ok("con la vuelta valida mas rapida y el algoritmo del visor (las 2 curvas del estadio)",
+           [c["n"] for c in doc["curvas"]] == [1, 2] and doc["fuente"]["sesion"] == os.path.basename(d),
+           [c["metro"] for c in doc["curvas"]])
+        try:
+            A.fijar_curvas(d2)
+            ok("no pisa curvas ya fijadas sin --forzar (cambiaria la T de todos)", False)
+        except ValueError as e:
+            ok("no pisa curvas ya fijadas sin --forzar (cambiaria la T de todos)", "forzar" in str(e))
+        ok("con --forzar si (y sobre el MISMO archivo, sin duplicar)",
+           A.fijar_curvas(d2, forzar=True)[0] == ruta and len(os.listdir(A.PISTAS)) == 1)
+
+        # El instructor lo corrige a mano (numeracion del catalogo del circuito, por
+        # ejemplo): lo que quede escrito es lo que ven todos.
+        with open(ruta, encoding="utf-8") as f:
+            j = json.load(f)
+        j["curvas"][0]["n"], j["curvas"][1]["n"] = 7, 9
+        with open(ruta, "w", encoding="utf-8") as f:
+            json.dump(j, f)
+        m = A.mapa(d)
+        ok("el mapa del visor usa las curvas fijadas", m["numeracion"] == "pista"
+           and [c["n"] for c in m["curvas"]] == [7, 9] and m["curvas_archivo"] == os.path.basename(ruta),
+           (m["numeracion"], [c["n"] for c in m["curvas"]]))
+        f1, f2 = AT.frenadas_struct(d), AT.frenadas_struct(d2)
+        ok("el panel y --frenadas nombran con la T fijada, en las DOS sesiones",
+           sorted(c["t"] for c in f1["curvas"]) == [7, 9] and sorted(c["t"] for c in f2["curvas"]) == [7, 9],
+           ([c["t"] for c in f1["curvas"]], [c["t"] for c in f2["curvas"]]))
+        ok("y declaran de donde sale la T", f1["numeracion"] == {"fuente": "pista",
+                                                                  "archivo": os.path.basename(ruta)})
+        tr = A.traza(d, A.mapa(d)["traza"])
+        ok("la tabla por curva del visor (eventos) tambien", [e["n"] for e in tr["eventos"]] == [7, 9])
+        p = A.emparejar_frenadas(f1, f2)
+        ok("dos sesiones con las curvas fijadas se emparejan por T, sin aviso",
+           p["por"] == "T" and p["aviso"] is None
+           and all(x["hoy"]["t"] == x["otra"]["t"] for x in p["filas"] if x["hoy"] and x["otra"]))
+
+        # otro LARGO (otra version del trazado) u otra variante: el archivo no aplica
+        meta_p = os.path.join(d2, "session.json")
+        with open(meta_p, encoding="utf-8") as f:
+            meta = json.load(f)
+        meta["track_length_m"] += 20
+        with open(meta_p, "w", encoding="utf-8") as f:
+            json.dump(meta, f)
+        ok("pista de otro largo (20 m): no usa las fijadas, cae a la de la sesion",
+           A.numeracion(d2)["fuente"] == "sesion" and A.mapa(d2)["numeracion"] == "sesion")
+        meta["track_length_m"] -= 20 - 3
+        meta["track_variation"] = "Estadio_Corto"
+        with open(meta_p, "w", encoding="utf-8") as f:
+            json.dump(meta, f)
+        ok("otra variante con el mismo nombre de pista: tampoco", A.numeracion(d2)["fuente"] == "sesion")
+        meta["track_variation"] = "Estadio_GP"
+        with open(meta_p, "w", encoding="utf-8") as f:
+            json.dump(meta, f)
+        ok("3 m de diferencia de largo (redondeo del juego): si aplica",
+           A.numeracion(d2)["fuente"] == "pista")
+        sin = _sesion_frenadas(base, "Estadio__Auto__practice__20261009_190000", [_FRIO[:2]], n=500)
+        A.PISTAS = os.path.join(base, "pistas_vacio")
+        try:
+            A.fijar_curvas(sin)
+            ok("sin una vuelta completa no se fija nada", False)
+        except ValueError as e:
+            ok("sin una vuelta completa no se fija nada (y dice por que)", "completa" in str(e), str(e))
+    finally:
+        A.PISTAS, A.RAICES = pistas_orig, raices
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_medicion_y_corridas():
+    """Clase 8: la vuelta B de "tu clase 2 contra la de hoy" es la de la MEDICION
+    (la mas rapida de las primeras 8 de la tanda puntuada), la sesion de la clase 2
+    tiene que aparecer aunque haya 60 mas nuevas, y la compuerta de la clase 7
+    cuenta contactos e invalidadas SOLO del convoy (una corrida)."""
+    print("\nmedicion, todas las sesiones de la pista y --contactos --corrida:")
+    import contextlib
+    import io
+    import shutil
+    import tempfile
+    base = tempfile.mkdtemp(prefix="ams2med_")
+    raices = A.RAICES
+    A.RAICES = (base,) + tuple(raices)
+    try:
+        # corrida 2 de 10: la 3a es la mas rapida de las PRIMERAS 8; la 9a es la mas
+        # rapida de todas, pero queda fuera de la tanda puntuada
+        ritmos = [1.0, 1.0, 1.02, 1.0, 1.0, 1.0, 1.0, 1.0, 1.05, 1.0]
+        d = _sesion_frenadas(base, "Estadio__Auto__practice__20261001_190000",
+                             [_FRIO, [(160, 100, r) for r in ritmos]])
+        m = A.medicion(d)
+        regs = AT.corridas_struct(d)[0][1]["vueltas"]
+        ok("la medicion es la mas rapida de las primeras 8 de la tanda puntuada",
+           m.get("corrida") == 2 and m.get("traza") == regs[2]["trace"], (m.get("corrida"), m.get("traza")))
+        ok("no la mas rapida de la sesion (la 9a, fuera de las 8)", m.get("traza") != regs[8]["trace"])
+        ok("y es la misma vuelta que usa la rubrica (mejor_de_la_tanda)",
+           m.get("traza") == AT.mejor_de_la_tanda(d)["trace"])
+        d0 = _sesion_frenadas(base, "Estadio__Auto__practice__20261002_190000", [_FRIO])
+        m0 = A.medicion(d0)
+        ok("sin corrida de 8: no inventa una medicion, dice que falta y por que",
+           "traza" not in m0 and "8 vueltas" in (m0.get("falta") or ""), m0)
+
+        # todas las sesiones de la pista, sin el tope del selector de arriba
+        for k in range(3):                 # tres sesiones MAS NUEVAS, de otra pista
+            do = _sesion_frenadas(base, f"Otra__Auto__practice__2026100{k + 3}_190000", [_FRIO[:2]])
+            mp = os.path.join(do, "session.json")
+            with open(mp, encoding="utf-8") as f:
+                mo = json.load(f)
+            mo["track"] = "Otra"
+            with open(mp, "w", encoding="utf-8") as f:
+                json.dump(mo, f)
+        todas = A.sesiones(None, "Estadio", "Estadio_GP")
+        ok("sesiones(pista=...) trae TODAS las de esa pista y solo esas",
+           sorted(s["carpeta"] for s in todas) == sorted([os.path.basename(d), os.path.basename(d0)]),
+           [s["carpeta"] for s in todas])
+        ok("aunque el selector de arriba (con tope, aca 1) ya no las alcance",
+           not any(s["pista"] == "Estadio" for s in A.sesiones(1)) and len(todas) == 2,
+           [s["carpeta"] for s in A.sesiones(1)])
+
+        # la compuerta de la clase 7: el convoy es la corrida 2
+        dc = _sesion_frenadas(base, "Estadio__Auto__race__20261009_190000", [
+            [(150, 100, 1.0), (150, 100, 1.0, {"contacto": True}), (150, 100, 1.0, {"invalida": True})],
+            [(150, 100, 1.0, {"contacto": True}), (150, 100, 1.0), (150, 100, 1.0, {"contacto": True}),
+             (150, 100, 1.0, {"invalida": True}), (150, 100, 1.0)]])
+        todo, _ = AT.contactos_struct(dc)
+        c2, _ = AT.contactos_struct(dc, 2)
+        c1, _ = AT.contactos_struct(dc, 1)
+        ok("sesion entera: 3 contactos y 2 invalidadas (lo de siempre)",
+           todo["n_contactos"] == 3 and todo["invalidadas"] == 2, (todo["n_contactos"], todo["invalidadas"]))
+        ok("--corrida 2: solo los 2 contactos y la 1 invalidada del convoy",
+           c2["n_contactos"] == 2 and c2["invalidadas"] == 1 and c2["n_vueltas_con_traza"] == 5,
+           (c2["n_contactos"], c2["invalidadas"], c2["n_vueltas_con_traza"]))
+        ok("la tasa de invalidacion es la de la corrida (1 de 6 vueltas de pista, salida incluida)",
+           c2["n_vueltas_pista"] == 6 and abs(c2["tasa_invalidacion_pct"] - 16.7) < 0.1,
+           (c2["n_vueltas_pista"], c2["tasa_invalidacion_pct"]))
+        ok("--corrida 1 cuenta lo suyo", c1["n_contactos"] == 1 and c1["invalidadas"] == 1)
+        try:
+            AT.contactos_struct(dc, 7)
+            ok("una corrida que no existe -> ValueError (no la sesion entera callada)", False)
+        except ValueError:
+            ok("una corrida que no existe -> ValueError (no la sesion entera callada)", True)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            AT.report_contactos(dc, 2)
+        ok("el CLI dice que corrida mide", "corrida 2" in buf.getvalue()
+           and "2 contacto(s)" in buf.getvalue(), buf.getvalue()[:120])
+    finally:
+        A.RAICES = raices
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_frenadas_en_vivo():
+    """En clase el alumno abre el panel en el debrief SIN haber salido de la sesion:
+    la carpeta sigue abierta en el grabador. Se simula lo peor que puede encontrar
+    el visor en ese momento: la linea de tiempo ya anuncio una vuelta cuyo resumen
+    todavia no se escribio, su traza a medio volcar (gzip cortado), y la ultima
+    linea de timeline.jsonl partida por la mitad."""
+    print("\ntu frenada sobre la sesion que se sigue grabando:")
+    import gzip
+    import shutil
+    import tempfile
+    base = tempfile.mkdtemp(prefix="ams2frenvivo_")
+    try:
+        d = _sesion_frenadas(base, "Estadio__Auto__practice__20261001_190000", [_FRIO, _TANDA[:3]])
+        # la vuelta que se esta cerrando AHORA: timeline primero (el grabador la
+        # anota antes de volcar la traza y el resumen), traza a medio escribir
+        filas, lt = _vuelta_estadio((160, 100), 1.02)
+        nom = f"L099_{lt:.3f}s.csv.gz"
+        import io
+        buf = io.BytesIO()
+        with gzip.GzipFile(fileobj=buf, mode="wb") as g:
+            g.write(("\n".join(filas)).encode("utf-8"))
+        with open(os.path.join(d, nom), "wb") as f:
+            f.write(buf.getvalue()[: len(buf.getvalue()) // 2])
+        with open(os.path.join(d, "timeline.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps({"type": "lap", "lap": 99, "lap_time": round(lt, 3),
+                                "kind": "flying", "uid": 9, "trace": nom}) + "\n")
+            f.write('{"type": "lap", "lap": 100, "kind": "fl')      # escritura a medias
+        try:
+            cs, partida = AT.corridas_struct(d)
+            ok("las corridas se leen igual (la vuelta sin resumen todavia no cuenta)",
+               partida and [c["cronometradas"] for c in cs] == [5, 3],
+               (partida, [c["cronometradas"] for c in cs]))
+            f = AT.frenadas_struct(d)
+            ok("el frio sale entero mientras la sesion sigue creciendo",
+               f["corrida"] == 1 and f["n_vueltas"] == 5 and len(f["curvas"]) == 2, f["sin_dato"])
+            ok("y con los mismos metros que con la carpeta quieta",
+               f["curvas"] == AT.frenadas_struct(d, 1)["curvas"])
+            # la traza a medio volcar era la MAS RAPIDA: el mapa (y con el la T)
+            # tiene que salir de la siguiente, no caerse
+            ok("la T sigue saliendo aunque la vuelta mas rapida este a medio escribir",
+               sorted(c["t"] for c in f["curvas"]) == [1, 2], [c["t"] for c in f["curvas"]])
+            m = A.mapa(d)
+            ok("el mapa usa la siguiente mas rapida y avisa que es de respaldo",
+               m["traza"] != nom and m["respaldo"] is True, (m["traza"], m.get("respaldo")))
+        except Exception as e:                    # noqa: BLE001
+            ok("la sesion en curso no revienta el panel", False, repr(e))
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_panel_sin_sigma():
+    """El panel "Tu frenada" lo abre y lo comparte el ALUMNO, y el Nivel 1 no ve σ
+    (regla del curso). La sigma viaja en el JSON para el instructor, pero el codigo
+    del visor no puede leerla ni escribirla, ni pintar veredictos del CLI."""
+    import re
+    print("\npanel del visor: sin sigma ni veredictos a la vista del alumno:")
+    with open(os.path.join(HERE, "analisis.html"), encoding="utf-8") as f:
+        src = f.read()
+    # fuera los comentarios (ahi SI se explica por que no va)
+    codigo = re.sub(r"/\*.*?\*/|<!--.*?-->", "", src, flags=re.DOTALL)
+    codigo = re.sub(r"(?m)^\s*//.*$|\s//\s.*$", "", codigo)
+    for prohibido in ("sigma", "σ", "SIN REFERENCIA", "inconsistente"):
+        ok(f"el visor no usa {prohibido!r}", prohibido not in codigo)
+
+
+def test_modo_compartir():
+    """En clase el alumno comparte el visor por Discord y la regla del curso es que
+    en los canales no se muestran tiempos. Todo tiempo de vuelta y todo delta en
+    segundos que pinte el visor tiene que pasar por el modo compartir: uno pintado
+    por fuera se filtra a la transmision sin que nadie lo note. Se revisa el codigo:
+    cada t2s() / toFixed(3) fuera de las funciones del modo tiene que tener la
+    guarda S.ocultar en su linea o en las 6 anteriores."""
+    import re
+    print("\nmodo compartir: ningun tiempo se pinta sin pasar por 'ocultar tiempos':")
+    with open(os.path.join(HERE, "analisis.html"), encoding="utf-8") as f:
+        lineas = f.read().splitlines()
+    sueltas = []
+    for i, ln in enumerate(lineas):
+        if not re.search(r"\bt2s\(|toFixed\(3\)", ln):
+            continue
+        if re.search(r"const (t2s|tVuelta|tTexto) =", ln) or ln.lstrip().startswith("(t >= 60"):
+            continue                                  # las definiciones del propio modo
+        if not any("S.ocultar" in x for x in lineas[max(0, i - 6): i + 1]):
+            sueltas.append(f"{i + 1}: {ln.strip()[:70]}")
+    ok("todos los tiempos y deltas en segundos pasan por la guarda", not sueltas, sueltas[:3])
+    src = "\n".join(lineas)
+    ok("hay un interruptor visible ('ocultar tiempos')", 'id="ocultar"' in src and "ocultar tiempos" in src)
+    ok("se recuerda en localStorage, con try/catch",
+       re.search(r"try \{ S\.ocultar = localStorage\.getItem", src) is not None)
+    ok("y se puede pedir por URL (&ocultar=1), que las fichas del curso pueden citar",
+       'get("ocultar") === "1"' in src)
+
+
+def test_redondeo_panel_igual_cli():
+    """El panel pinta los metros con JS y el CLI con f"{x:.0f}" de Python. Math.round
+    redondea 12.5 a 13 y Python a 12: con el mismo dato, el alumno diria un numero y
+    el instructor leeria otro. Se corre la funcion del panel TAL CUAL esta en
+    analisis.html (con node) contra el formato del CLI, sobre todos los valores con
+    un decimal hasta 400 m, que es como vienen en el JSON."""
+    import re
+    import shutil
+    import subprocess
+    print("\nel panel redondea los metros igual que --frenadas:")
+    node = shutil.which("node")
+    if not node:
+        print("  (sin node en este PC: se salta)")
+        return
+    with open(os.path.join(HERE, "analisis.html"), encoding="utf-8") as f:
+        m = re.search(r"const mFr = v => \{.*?\n\};", f.read(), flags=re.DOTALL)
+    if not ok("la funcion de redondeo del panel esta donde se la busca", m is not None):
+        return
+    valores = [round(k / 10, 1) for k in range(4001)]
+    js = m.group(0) + "\nconsole.log(JSON.stringify(JSON.parse(process.argv[1]).map(mFr)));"
+    r = subprocess.run([node, "-e", js, json.dumps(valores)], capture_output=True, text=True,
+                       check=False)
+    try:
+        panel = json.loads(r.stdout)
+    except ValueError:
+        ok("node corre la funcion del panel", False, r.stderr[:200])
+        return
+    cli = [f"{v:.0f}" for v in valores]
+    distintos = [(v, p, c) for v, p, c in zip(valores, panel, cli) if p != c]
+    ok(f"{len(valores)} valores: el panel y el CLI dicen el mismo entero", not distintos, distintos[:5])
+    ok("incluido el empate (12.5 -> 12, como Python)", panel[125] == "12", panel[125])
+
+
+def test_api_frenadas():
+    """/api/frenadas: forma del JSON, sin dato, errores, y que el numero que llega
+    al panel sea EXACTAMENTE el que imprime `--frenadas --corrida`."""
+    print("\nAPI /api/frenadas (y el CLI dice lo mismo):")
+    try:
+        import bridge_shm
+    except Exception as e:                       # noqa: BLE001
+        ok("bridge_shm importa", False, e)
+        return
+    import http.server
+    import shutil
+    import tempfile
+    base = tempfile.mkdtemp(prefix="ams2frenapi_")
+    raices = A.RAICES
+    A.RAICES = (base,) + tuple(raices)
+    h = lambda *a, **kw: bridge_shm._NoCacheHandler(*a, directory=HERE, **kw)
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", PUERTO + 1), h)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    def jget(ruta):
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{PUERTO + 1}{ruta}", timeout=60) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+    try:
+        d = _sesion_frenadas(base, "Estadio__Auto__practice__20261001_190000", [_FRIO, _TANDA])
+        s = os.path.basename(d)
+        c, j = jget(f"/api/frenadas?s={s}")
+        ok("responde 200", c == 200, c)
+        ok("trae la lista de corridas (n, vueltas cronometradas)",
+           [(x["n"], x["cronometradas"]) for x in j.get("corridas", [])]
+           == [(1, 5), (2, 8)], j.get("corridas"))
+        ok("y dice de donde sale la T (aca, sin curvas fijadas: de la sesion)",
+           (j.get("numeracion") or {}).get("fuente") == "sesion", j.get("numeracion"))
+        ok("sin corrida pedida abre en el frio", j.get("corrida") == 1)
+        claves = {"t", "apex", "antes_m", "media_m", "rango_m", "sigma_m", "n", "fuera"}
+        ok("cada curva trae T, apex, donde frena, rango, sigma, n y fuera",
+           j["curvas"] and all(claves <= set(x) for x in j["curvas"]),
+           j["curvas"][0] if j["curvas"] else None)
+        ok("con dato no hay sin_dato", j.get("sin_dato") is None)
+        ok("la ruta da lo mismo que frenadas_struct (un solo calculo)",
+           j["curvas"] == AT.frenadas_struct(d)["curvas"])
+        for k in (1, 2):
+            _, jk = jget(f"/api/frenadas?s={s}&corrida={k}")
+            ok(f"corrida {k}: lo que imprime --frenadas --corrida {k} == lo que recibe el panel",
+               _cli_frenadas(d, k) == _como_cli(jk["curvas"]) and jk["curvas"],
+               (_cli_frenadas(d, k), _como_cli(jk["curvas"])))
+        ok("--corrida frio imprime lo mismo que el panel por defecto",
+           _cli_frenadas(d, "frio") == _como_cli(j["curvas"]))
+        c, _ = jget(f"/api/frenadas?s={s}&corrida=9")
+        ok("corrida que no existe -> 400", c == 400, c)
+        c, _ = jget(f"/api/frenadas?s={s}&corrida=abc")
+        ok("corrida que no es numero -> 400", c == 400, c)
+        d1 = _sesion_frenadas(base, "Estadio__Auto__practice__20261002_190000", [_FRIO[:1]])
+        c, j1 = jget(f"/api/frenadas?s={os.path.basename(d1)}")
+        ok("sin dato: 200 con curvas vacias y el porque",
+           c == 200 and j1["curvas"] == [] and j1["sin_dato"], (c, j1.get("sin_dato")))
+        d2 = _sesion_frenadas(base, "Estadio__Auto__practice__20261008_190000", [_TANDA[:4]])
+        c, jv = jget(f"/api/frenadas?s={s}&vs={os.path.basename(d2)}&vc=1")
+        ok("con vs: trae la otra sesion y las filas emparejadas",
+           c == 200 and jv["otra"]["corrida"] == 1 and jv["pares"]["filas"]
+           and set(jv["pares"]) >= {"por", "aviso", "filas"}, c)
+        c, _ = jget(f"/api/frenadas?s={s}&vs=..")
+        ok("vs con path traversal -> 400", c == 400, c)
+        c, js = jget(f"/api/sesion?s={s}")
+        ok("/api/sesion trae la vuelta de la medicion (corrida 2, la de 8)",
+           c == 200 and js.get("medicion", {}).get("corrida") == 2 and js["medicion"].get("traza"),
+           js.get("medicion"))
+        c, js = jget("/api/sesiones?pista=Estadio&variante=Estadio_GP")
+        ok("/api/sesiones?pista= trae todas las de la pista, sin tope",
+           c == 200 and len(js["sesiones"]) == 3 and all(x["pista"] == "Estadio" for x in js["sesiones"]),
+           [x["carpeta"] for x in js.get("sesiones", [])])
+
+        # la sesion que el grabador tiene abierta va marcada "en curso"
+        class _Grabador:
+            def sess_dir(self):
+                return d
+        antes = bridge_shm.telemetry
+        bridge_shm.telemetry = _Grabador()
+        try:
+            c, js = jget("/api/sesiones?n=200")
+            marca = {x["carpeta"]: x.get("en_curso") for x in js["sesiones"]}
+            ok("/api/sesiones marca en curso la carpeta abierta del grabador, y solo esa",
+               marca.get(s) is True and sum(1 for v in marca.values() if v) == 1,
+               marca.get(s))
+        finally:
+            bridge_shm.telemetry = antes
+        c, js = jget("/api/sesiones?n=5")
+        ok("sin grabador (bridge sin AMS2) ninguna va en curso",
+           c == 200 and not any(x.get("en_curso") for x in js["sesiones"]))
+
+        # en sesiones REALES: cada corrida medible, CLI contra ruta
+        if _hay_corpus():
+            vistas = 0
+            for dr in sorted(AT._sessions(), key=os.path.getmtime, reverse=True):
+                cs, partida = AT.corridas_struct(dr)
+                med = [x["n"] for x in cs if x["cronometradas"] >= 2]
+                if not partida or len(med) < 2:
+                    continue
+                for k in med:
+                    _, jr = jget(f"/api/frenadas?s={os.path.basename(dr)}&corrida={k}")
+                    cli = _cli_frenadas(dr, k)
+                    ok(f"{os.path.basename(dr)[:40]} corrida {k}: CLI == panel",
+                       cli == _como_cli(jr["curvas"]), (cli[:2], _como_cli(jr["curvas"])[:2]))
+                vistas += 1
+                if vistas >= 2:
+                    break
+    finally:
+        srv.shutdown()
+        A.RAICES = raices
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def main():
     print("=== tests del visor de telemetria ===")
     if _hay_corpus():
@@ -551,6 +1320,7 @@ def main():
         test_remuestreo()
         test_delta()
         test_curvas()
+        test_frenadas_corpus()
     else:
         print("(sin telemetry/ grabado -- normal en un clon fresco: se saltan los")
         print(" tests que comparan contra el corpus y corren los independientes)")
@@ -559,6 +1329,14 @@ def main():
     test_tanda_de_verdad()
     test_frontera()
     test_api()
+    test_frenadas()
+    test_curvas_fijadas()
+    test_medicion_y_corridas()
+    test_frenadas_en_vivo()
+    test_panel_sin_sigma()
+    test_modo_compartir()
+    test_redondeo_panel_igual_cli()
+    test_api_frenadas()
     print(f"\n{'TODO VERDE' if not _fallos else str(_fallos) + ' FALLO(S)'}")
     return 1 if _fallos else 0
 

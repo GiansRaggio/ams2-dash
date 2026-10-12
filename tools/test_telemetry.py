@@ -379,6 +379,8 @@ def main():
         test_timeline()
         test_compound_empty_start()
         test_report_timeline_reader()
+        test_cierre_en_menu_principal()
+        test_corridas_por_boxes()
 
         print("done.")
     finally:
@@ -506,6 +508,123 @@ def test_compound_empty_start():
         tcs2 = [r for r in recs2 if r.get("type") == "event" and r["event"] == "tyre_change"]
         _ok("torn frame (goma vacia) no genera cambio de goma", len(tcs2) == 0, len(tcs2))
         shutil.rmtree(log2._base, ignore_errors=True)
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def _menu(log, t, estado=1, reloj=None):
+    """Un frame fuera de pista en el instante `t` del reloj falso. En el menu
+    principal el juego no publica participantes: se manda asi a proposito, que es
+    justo el caso que el return temprano de _ingest se comia."""
+    reloj[0] = t
+    s = Snap(laps_completed=0)
+    s.mGameState = estado
+    s.mNumParticipants = 0 if estado in (0, 1) else 5
+    log._ingest(s)
+
+
+def test_cierre_en_menu_principal():
+    """Al terminar la clase el alumno sale al MENU PRINCIPAL: la carpeta tiene que
+    cerrarse ahi (y quedar lista para entregar), no recien al entrar a otra sesion."""
+    print("test_cierre_en_menu_principal (menu principal sostenido -> carpeta cerrada):")
+    import time as _time
+    base = tempfile.mkdtemp(prefix="ams2tel8_")
+    try:
+        reloj = [0.0]
+        log = T.TelemetryLogger(base_dir=base)
+        log._reloj = lambda: reloj[0]
+        cerradas = []
+        log.set_on_close(cerradas.append)
+        feed_lap(log, 0); cross_to(log, 1)
+        feed_lap(log, 1); cross_to(log, 2)
+        a = log.sess_dir()
+        _ok("girando: hay carpeta en curso", a is not None and os.path.isdir(a), a)
+
+        _menu(log, 100.0, reloj=reloj)
+        _menu(log, 104.9, reloj=reloj)
+        log._drenar_cerrada()
+        _ok("4.9 s en el menu principal: todavia NO se cierra (debounce)",
+            log.sess_dir() == a and not cerradas, log.sess_dir())
+        _menu(log, 105.1, reloj=reloj)
+        log._drenar_cerrada()
+        _ok("5 s seguidos en el menu principal: la carpeta se cierra", log.sess_dir() is None)
+        _ok("y la bandeja la recibe (via _cerrada, como al rotar)", cerradas == [a], cerradas)
+        _ok("la firma queda en blanco (la proxima entrada abre carpeta nueva)", log._sig is None)
+        _ok("los rivales de la sesion quedan escritos", os.path.exists(os.path.join(a, "rivals.json")))
+        _menu(log, 200.0, reloj=reloj)
+        log._drenar_cerrada()
+        _ok("seguir en el menu no la vuelve a anunciar", cerradas == [a], cerradas)
+
+        # volver a entrar a la MISMA pista con el mismo auto: es otra sesion del juego
+        _time.sleep(1.1)                  # el nombre de carpeta lleva la hora al segundo
+        feed_lap(log, 0); cross_to(log, 1)
+        b = log.sess_dir()
+        _ok("al volver a pista se abre una carpeta NUEVA (no se pega a la cerrada)",
+            b is not None and b != a, (a, b))
+        tl = os.path.join(a, "timeline.jsonl")
+        n_antes = len(open(tl, encoding="utf-8").read().splitlines())
+        feed_lap(log, 1); cross_to(log, 2)
+        _ok("y a la cerrada no le entra nada mas",
+            len(open(tl, encoding="utf-8").read().splitlines()) == n_antes)
+
+        # Lo que NO cierra: pausa, menu dentro de la sesion, reinicio, repeticion.
+        for estado, nombre in ((3, "pausa"), (4, "menu con el reloj corriendo"),
+                               (5, "reinicio de sesion"), (6, "repeticion")):
+            for t in range(0, 61, 5):
+                _menu(log, 1000.0 + t, estado=estado, reloj=reloj)
+            log._drenar_cerrada()
+            _ok(f"60 s en {nombre}: la carpeta sigue abierta", log.sess_dir() == b, log.sess_dir())
+            reloj[0] = 0.0
+
+        # un parpadeo NO acumula: el debounce exige 5 s SEGUIDOS en el menu principal
+        _menu(log, 2000.0, reloj=reloj)
+        _menu(log, 2003.0, reloj=reloj)
+        _menu(log, 2003.5, estado=2, reloj=reloj)   # vuelve a pista un instante
+        _menu(log, 2004.0, reloj=reloj)
+        _menu(log, 2008.5, reloj=reloj)             # 4.5 s desde que volvio al menu
+        log._drenar_cerrada()
+        _ok("menu-pista-menu: el contador se reinicia, no se cierra", log.sess_dir() == b)
+        _menu(log, 2009.1, reloj=reloj)
+        log._drenar_cerrada()
+        _ok("con 5 s seguidos desde el ultimo regreso, si", log.sess_dir() is None and cerradas[-1] == b)
+
+        # el juego cerrado (GAME_EXITED) tambien es fin de sesion
+        log3 = T.TelemetryLogger(base_dir=tempfile.mkdtemp(prefix="ams2tel8b_"))
+        r3 = [0.0]
+        log3._reloj = lambda: r3[0]
+        feed_lap(log3, 0); cross_to(log3, 1)
+        c3 = log3.sess_dir()
+        _menu(log3, 10.0, estado=0, reloj=r3)
+        _menu(log3, 15.5, estado=0, reloj=r3)
+        _ok("juego cerrado (GAME_EXITED) 5 s: tambien se cierra",
+            log3.sess_dir() is None and log3._cerrada == c3)
+        shutil.rmtree(log3._base, ignore_errors=True)
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_corridas_por_boxes():
+    """El frio y la tanda de despues son DOS corridas de la MISMA carpeta: las separa
+    solo la pasada por boxes (mPitMode), sin cerrar la sesion."""
+    print("test_corridas_por_boxes (frio -> boxes -> tanda: una carpeta, dos corridas):")
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
+    import analyze_telemetry as A
+    base = tempfile.mkdtemp(prefix="ams2tel9_")
+    try:
+        log = T.TelemetryLogger(base_dir=base)
+        feed_lap(log, 0, pit=2); cross_to(log, 1)          # sale de boxes: out-lap
+        feed_lap(log, 1); cross_to(log, 2)                 # (out-lap)
+        for n in range(2, 7):                              # el frio: 5 vueltas
+            feed_lap(log, n); cross_to(log, n + 1)
+        feed_lap(log, 7, pit=1); cross_to(log, 8)          # entra a boxes
+        for n in range(8, 11):                             # vuelve a salir: out + 2
+            feed_lap(log, n); cross_to(log, n + 1)
+        carpetas = [d for d in os.listdir(base) if os.path.isdir(os.path.join(base, d))]
+        _ok("una sola carpeta (la sesion no se cerro en boxes)", len(carpetas) == 1, carpetas)
+        cs, partida = A.corridas_struct(os.path.join(base, carpetas[0]))
+        _ok("dos corridas: el frio (5) y la de despues de boxes (2)",
+            partida and [c["cronometradas"] for c in cs] == [5, 2],
+            (partida, [c["cronometradas"] for c in cs]))
     finally:
         shutil.rmtree(base, ignore_errors=True)
 

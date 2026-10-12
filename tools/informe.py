@@ -105,6 +105,19 @@ def _m(x):
     return f"{int(round(x)):,}".replace(",", ".")
 
 
+def _curva_frenada(r):
+    """Como se nombra una curva de frenada: 'la T5 (metro 1.234)' o, si el visor no
+    la numera, 'la curva del metro 1.234'.
+
+    La T es la del visor (analisis.html), la misma que el alumno ve en el mapa y en
+    su panel de frenada: las curvas fijadas de la pista (pistas/) si existen, y si
+    no, la numeracion de esta sesion. El metro va siempre al lado porque sin curvas
+    fijadas otra sesion puede numerar distinto."""
+    if r.get("t") is not None:
+        return f"la T{r['t']} (metro {_m(r['apex'])})"
+    return f"la curva del metro {_m(r['apex'])}"
+
+
 def _t(s):
     if s is None:
         return "--"
@@ -503,15 +516,16 @@ def una_cosa(folder, per, num):
     desempeno (bajar el tiempo): el alumno las controla en la proxima vuelta, y la
     evidencia sobre metas es la parte mas solida de todo lo que revisamos.
     """
-    bs = A.braking_struct(folder)
-    peor = max(bs["curvas"], key=lambda r: r["sigma_m"]) if (bs and bs["curvas"]) else None
+    # sesion entera (corrida None): los mismos numeros de siempre, ahora con la T
+    bs = A.frenadas_struct(folder, None)
+    peor = max(bs["curvas"], key=lambda r: r["sigma_m"]) if bs["curvas"] else None
     quiere_consistencia = num.get("foco") in ("consistencia", "las dos parejo", "fundamentos")
 
     # 1. Falta de referencia de frenada: proceso puro, y ademas es la causa raiz
     #    tipica del alumno rapido pero disperso.
     if peor and peor["sigma_m"] >= 10 and (quiere_consistencia or peor["sigma_m"] >= 20):
         return {
-            "titulo": f"Frena siempre en el mismo punto en la curva del metro {_m(peor['apex'])}",
+            "titulo": f"Frena siempre en el mismo punto en {_curva_frenada(peor)}",
             "porque": (f"Hoy frenas en un rango de {_m(peor['rango_m'])} m entre vueltas "
                        f"(en promedio, en el metro {_m(peor['media_m'])}). No es que frenes mal: "
                        f"es que cada vuelta frenas en otro lado, y por eso el auto te llega "
@@ -519,7 +533,10 @@ def una_cosa(folder, per, num):
             "como": ("Busca una referencia FIJA antes de esa curva —un cartel, una junta del "
                      "pavimento, un cambio de piso— y frena siempre ahí, aunque las primeras "
                      "vueltas te queden lentas. Primero el mismo punto; después, más tarde."),
-            "medida": f"σ de {peor['sigma_m']:.0f} m en el punto de frenada"}
+            # "se mueve N m" (el rango), igual que el panel del visor: el informe lo
+            # recibe el alumno, y el Nivel 1 no ve σ (regla del curso). La σ sigue
+            # decidiendo POR DENTRO cual curva va aca; la lee el instructor en --frenadas.
+            "medida": f"tu frenada se mueve {_m(peor['rango_m'])} m entre vueltas"}
 
     # 2. Si hay un tramo con causa clara, esa es la cosa.
     if per["tramos"]:
@@ -593,12 +610,13 @@ def logros(folder, per, num, entrada=None):
         if baja > 0.15:
             out.append(f"Dentro de esta tanda bajaste {baja:.2f} s desde tu primera vuelta: "
                        f"estás aprendiendo el circuito mientras giras.")
-    bs = A.braking_struct(folder)
-    if bs and bs["curvas"]:
+    bs = A.frenadas_struct(folder, None)
+    if bs["curvas"]:
         firmes = [r for r in bs["curvas"] if r["sigma_m"] < 5 and r["n"] >= 3]
         if firmes:
             mejor = min(firmes, key=lambda r: r["sigma_m"])
-            out.append(f"En la curva del metro {_m(mejor['apex'])} ya tienes referencia firme: "
+            c = _curva_frenada(mejor)
+            out.append(f"En {c} ya tienes referencia firme: "
                        f"frenas siempre dentro de {_m(max(mejor['rango_m'], 1))} m.")
     for g in per.get("ganancias", [])[:1]:
         out.append(f"Entre el metro {_m(g['ini'])} y el {_m(g['fin'])} le ganas "
@@ -1024,8 +1042,9 @@ def _sec_tramos(d):
               f'dejas entre tu vuelta típica y tu propia mejor vuelta. Ya lo hiciste más rápido.')
     return (f'<section><div class="ojo"><b>2</b> {titulo}</div>'
             f'<ol class="tramos">{filas}</ol>'
-            f'<p class="nota">{contra} Las curvas se nombran por su distancia en metros y no por '
-            f'número, porque las herramientas del dash las numeran distinto entre sí. El delta se '
+            f'<p class="nota">{contra} Los tramos se nombran por su distancia en metros. Cuando '
+            f'se habla de tu frenada va además la T con que la numera el visor (la de las curvas '
+            f'fijadas de la pista, si las tiene; el metro va siempre al lado). El delta se '
             f'interpola sobre una grilla de {int(PASO_M)} m: sirve para ubicar dónde se pierde, '
             f'no como cronómetro exacto al milésimo.</p></section>')
 

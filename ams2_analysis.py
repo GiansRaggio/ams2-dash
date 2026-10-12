@@ -30,6 +30,7 @@ Solo stdlib. Los primitivos de lectura/interpolacion se reusan de
 """
 from __future__ import annotations
 
+import datetime
 import json
 import math
 import os
@@ -78,11 +79,22 @@ def _meta(folder: str) -> dict:
         return {}
 
 
-def sesiones(limite: int = 40) -> list[dict]:
-    """Sesiones grabadas, de la mas reciente a la mas vieja."""
+def sesiones(limite: int | None = 40, pista: str | None = None,
+             variante: str | None = None) -> list[dict]:
+    """Sesiones grabadas, de la mas reciente a la mas vieja.
+
+    Con `pista` (y su `variante`) solo las de esa pista, y `limite` None = TODAS. Es
+    lo que pide "comparar con otra sesion": en la clase 8 el alumno busca su
+    medicion de la clase 2, un mes atras, y si giro por su cuenta entre medio ya no
+    esta entre las 60 mas recientes del selector de arriba."""
     out = []
-    for d in sorted(_dirs(), key=os.path.getmtime, reverse=True)[:limite]:
+    for d in sorted(_dirs(), key=os.path.getmtime, reverse=True):
+        if limite and len(out) >= limite:
+            break
         m = _meta(d)
+        if pista is not None and (m.get("track"), m.get("track_variation") or None) \
+                != (pista, variante or None):
+            continue
         vueltas = AT._read_jsonl(os.path.join(d, "summary.jsonl"))
         out.append({
             "carpeta": os.path.basename(d),
@@ -350,13 +362,22 @@ def _curvas_cacheadas(folder: str) -> list:
     trazas nuevas, la vuelta de referencia puede cambiar y el cache tiene que
     caducar solo en vez de congelar la numeracion de la primera consulta.
     """
+    fij = curvas_de_pista(folder)          # fijadas: no hay nada que calcular
+    if fij:
+        return fij["curvas"]
     try:
         llave = (folder, os.path.getmtime(folder))
     except OSError:
         return mapa(folder)["curvas"]
     if llave not in _CACHE_CURVAS:
+        m = mapa(folder)
+        # una numeracion sacada de la segunda mas rapida (la primera estaba a medio
+        # escribir) no se guarda: cuando la traza termine de volcarse la carpeta no
+        # cambia de mtime y el cache serviria la numeracion vieja hasta otra vuelta
+        if m.get("respaldo"):
+            return m["curvas"]
         _CACHE_CURVAS.clear()        # una sesion a la vez; no hay nada que acumular
-        _CACHE_CURVAS[llave] = mapa(folder)["curvas"]
+        _CACHE_CURVAS[llave] = m["curvas"]
     return _CACHE_CURVAS[llave]
 
 
@@ -476,6 +497,144 @@ def eventos(tr: dict, curvas: list) -> list[dict]:
     return out
 
 
+# ------------------------------------------------- tu frenada (por corrida) ---
+# Emparejar una curva de hoy con la de otra sesion por el metro del apex: hasta
+# cuanto se puede mover el apex de la MISMA curva entre dos sesiones. Medido sobre
+# 799 curvas frenadas de sesiones de la misma pista (autos distintos incluidos):
+# p50 14 m, y la masa de "misma curva" se acaba a los ~50 m (0-10: 316, 10-20: 168,
+# 20-30: 74, 30-40: 24, 40-50: 12, 50-60: 2); lo que sigue son curvas que la otra
+# sesion no frena. Dos curvas frenadas estan a 80 m o mas (`_corners`), asi que con
+# 45 m una curva sin pareja no alcanza a robarse la de al lado.
+TOL_APEX_SESIONES_M = 45.0
+
+
+def medicion(folder: str) -> dict:
+    """La vuelta de la MEDICION de la sesion: la mas rapida de las primeras 8 de la
+    tanda puntuada (`analyze_telemetry.vueltas_de_la_tanda` / `mejor_de_la_tanda`,
+    la misma muestra con que se calculan el gap% y el CV%).
+
+    Es la vuelta B del grafico "tu clase 2 contra la de hoy" de la clase 8: si el
+    alumno la elige a ojo, elige la mas rapida de la sesion -- que no es la que
+    puntuo, y el informe y el visor contarian dos historias. Sin tanda puntuada
+    (ninguna corrida llega a 8, o sesion sin linea de tiempo) NO se elige otra:
+    se dice que falta, con el motivo.
+    """
+    regs, origen, k = AT.vueltas_de_la_tanda(folder)
+    if k is None or not regs:
+        return {"falta": ("esta sesión no tiene tanda puntuada: ninguna corrida llega a 8 "
+                          "vueltas cronometradas seguidas" if "sin corrida" in origen else
+                          "esta sesión no tiene tanda puntuada (es anterior a la línea de "
+                          "tiempo y no se puede partir en corridas)")}
+    mejor = min(regs, key=lambda l: l["lap_time"])
+    return {"corrida": k, "traza": mejor.get("trace"), "vuelta": mejor.get("lap"),
+            "tiempo": mejor.get("lap_time"), "origen": origen}
+
+
+def _corrida_param(v):
+    """El parametro `corrida` tal como llega por HTTP: vacio = el frio, o un numero."""
+    if v in (None, "", "frio"):
+        return "frio"
+    if not str(v).isdigit():
+        raise ValueError("corrida invalida")
+    return int(v)
+
+
+def _ts_comparables(ta, tb):
+    """True si "T5" significa la misma curva en las dos sesiones.
+
+    La numeracion del visor se calcula POR SESION (`mapa()`: la curvatura de la
+    vuelta mas rapida de esa carpeta), asi que una curva de apoyo que un dia pasa
+    el umbral y otro no corre todas las T que vienen despues. No se asume: se
+    compara la lista entera -- mismo largo, y cada T solapando el tramo
+    (inicio..fin) de su homonima.
+
+    Por solape y no por distancia entre picos: en una curva larga el pico de
+    curvatura se pasea por el arco segun la trazada (Mosport, misma pista y auto:
+    T1 en el metro 200 un dia y en el 278 otro, misma curva), y un tope de 40 m
+    entre picos declaraba distintas numeraciones que eran la misma. Medido el
+    2026-10-11 sobre 642 pares de sesiones de la misma pista y largo: 38% tienen la
+    misma cantidad de T, 25% numeran igual por solape (32% si ademas es el mismo
+    auto) contra 7% con el tope de 40 m; ningun par que solapa tiene picos a mas
+    de 150 m.
+    O sea: lo normal es que NO coincidan, y el emparejado por metro es el de
+    todos los dias.
+    """
+    if not ta or not tb or len(ta) != len(tb):
+        return False
+    try:
+        return all(a["inicio"] <= b["fin"] and b["inicio"] <= a["fin"] for a, b in zip(ta, tb))
+    except (KeyError, TypeError):
+        return False
+
+
+def emparejar_frenadas(hoy: dict, otra: dict) -> dict:
+    """Filas "hoy contra la clase pasada": cada curva de hoy con la misma curva de la
+    otra sesion.
+
+    Por T si las dos numeraciones son la misma (`_ts_comparables`); si no, por el
+    metro del apex, y se avisa -- emparejar por T dos numeraciones distintas pone
+    lado a lado curvas distintas con el mismo nombre, y el numero sale creible. Las
+    curvas sin pareja quedan igual en la tabla, con el otro lado vacio: que una
+    curva hoy no tenga dato tambien es informacion.
+    """
+    ca, cb = hoy.get("curvas") or [], otra.get("curvas") or []
+    # con las curvas fijadas de la pista las dos usan EL MISMO archivo: misma T por
+    # construccion, sin nada que comparar
+    na, nb = hoy.get("numeracion") or {}, otra.get("numeracion") or {}
+    misma_pista = (na.get("fuente") == "pista" and nb.get("fuente") == "pista"
+                   and na.get("archivo") == nb.get("archivo"))
+    por_t = misma_pista or _ts_comparables(hoy.get("ts"), otra.get("ts"))
+    pareja, usadas = {}, set()
+    if por_t:
+        idx_b = {c["t"]: j for j, c in enumerate(cb) if c.get("t") is not None}
+        for i, c in enumerate(ca):
+            j = idx_b.get(c.get("t")) if c.get("t") is not None else None
+            if j is not None:
+                pareja[i] = j
+                usadas.add(j)
+    # lo que quedo (todo, si las T no son comparables): por metro, la pareja mas
+    # cercana primero y cada curva una sola vez
+    cand = sorted((abs(a["apex"] - b["apex"]), i, j)
+                  for i, a in enumerate(ca) if i not in pareja
+                  for j, b in enumerate(cb) if j not in usadas
+                  and abs(a["apex"] - b["apex"]) <= TOL_APEX_SESIONES_M)
+    for _, i, j in cand:
+        if i in pareja or j in usadas:
+            continue
+        pareja[i] = j
+        usadas.add(j)
+    filas = [{"hoy": c, "otra": cb[pareja[i]] if i in pareja else None}
+             for i, c in enumerate(ca)]
+    filas += [{"hoy": None, "otra": c} for j, c in enumerate(cb) if j not in usadas]
+    filas.sort(key=lambda f: (f["hoy"] or f["otra"])["apex"])
+    aviso = None
+    if not por_t and ca and cb:
+        aviso = ("Las dos sesiones no numeran las curvas igual (la pista no tiene curvas "
+                 "fijadas y cada sesión se numera con su propia vuelta más rápida), así que "
+                 "se emparejaron por distancia. La T es la de hoy.")
+    return {"por": "T" if por_t else "metro", "aviso": aviso, "filas": filas}
+
+
+def frenadas(folder: str, corrida=None, otra: str | None = None, otra_corrida=None) -> dict:
+    """Lo que pide el panel "Tu frenada" del visor (`/api/frenadas`).
+
+    El calculo es `analyze_telemetry.frenadas_struct`, el MISMO que imprime
+    `--frenadas --corrida`: aca solo se le agrega la otra sesion y el emparejado.
+    `corrida` vacia = el frio (la primera corrida con 2+ vueltas cronometradas).
+    """
+    out = {"carpeta": os.path.basename(folder),
+           **AT.frenadas_struct(folder, _corrida_param(corrida))}
+    if otra:
+        of = _carpeta(otra)
+        ma, mb = _meta(folder), _meta(of)
+        if (ma.get("track"), ma.get("track_variation")) != (mb.get("track"), mb.get("track_variation")):
+            raise ValueError("la otra sesion es de otra pista")
+        out["otra"] = {"carpeta": os.path.basename(of), "inicio": mb.get("started"),
+                       **AT.frenadas_struct(of, _corrida_param(otra_corrida))}
+        out["pares"] = emparejar_frenadas(out, out["otra"])
+    return out
+
+
 # --------------------------------------------------------- mapa de pista ---
 def _curvatura(xs, zs, paso, base_m=12.0):
     """Curvatura (rad/m) del trazado. El signo dice el lado: + izquierda.
@@ -575,6 +734,133 @@ def _curvas(metros, xs, zs, radio_max=250.0, giro_min=10.0, sep_min=45.0):
             for i, c in enumerate(out)]
 
 
+# ------------------------------------------- curvas fijadas por PISTA ---
+# La numeracion de `_curvas` sale de la vuelta mas rapida de CADA sesion, asi que
+# cambia de una sesion a otra (medido: solo 1 de cada 4 pares de sesiones de la
+# misma pista numera igual, ver _ts_comparables). En el curso el instructor y diez
+# alumnos, cada uno en su PC, tienen que decir "la T3" y hablar de la misma curva
+# todas las semanas. Por eso las curvas de una pista se FIJAN: un archivo por pista
+# en pistas/, versionado en el repo, que llega a todos con la actualizacion del
+# dash. Cuando existe manda en todo -- mapa, chips, tabla por curva, panel de
+# frenada, `--frenadas`, informe -- y solo si no existe se cae a la de la sesion.
+#
+# Se empareja por METRO de pista sin normalizar nada: `lap_dist` es la coordenada
+# del juego SOBRE LA PISTA, no la distancia que recorrio el auto. Medido el
+# 2026-10-11 en 91 pares de sesiones de la misma pista y largo (autos distintos
+# incluidos): el punto de pista mas cercano cae en el MISMO metro de la grilla de 2 m
+# en el 99% de los casos, y ningun par tiene corrimiento sistematico. Lo unico que
+# invalida un archivo es otro LARGO (otra version del trazado): por eso el largo va
+# en el nombre y se exige que cuadre.
+PISTAS = os.path.join(HERE, "pistas")
+TOL_LARGO_M = 5.0         # el mismo tope con que el visor acepta comparar dos sesiones
+_CACHE_PISTAS: dict = {}
+
+
+def _limpio(s) -> str:
+    return "".join(c if c.isalnum() else "_" for c in str(s or ""))
+
+
+def _leer_pista(ruta: str):
+    """Un archivo de curvas fijadas, memorizado por mtime (se pide en cada traza)."""
+    try:
+        llave = (ruta, os.path.getmtime(ruta))
+    except OSError:
+        return None
+    if llave not in _CACHE_PISTAS:
+        try:
+            with open(ruta, encoding="utf-8") as f:
+                j = json.load(f)
+        except (OSError, ValueError):
+            j = None
+        if j is not None:
+            j["_ruta"], j["_archivo"] = ruta, os.path.basename(ruta)
+        _CACHE_PISTAS[llave] = j
+    return _CACHE_PISTAS[llave]
+
+
+def curvas_de_pista(folder: str):
+    """Las curvas fijadas de la pista de esta sesion (pista, variante y largo), o None."""
+    meta = _meta(folder)
+    largo = meta.get("track_length_m")
+    if not meta.get("track") or not largo or not os.path.isdir(PISTAS):
+        return None
+    pre = f"curvas__{_limpio(meta['track'])}__{_limpio(meta.get('track_variation'))}__"
+    for f in sorted(os.listdir(PISTAS)):
+        if not (f.startswith(pre) and f.endswith(".json")):
+            continue
+        j = _leer_pista(os.path.join(PISTAS, f))
+        if (j and j.get("curvas") and j.get("pista") == meta["track"]
+                and j.get("variante") == meta.get("track_variation")
+                and abs((j.get("largo_m") or 0) - largo) <= TOL_LARGO_M):
+            return j
+    return None
+
+
+def numeracion(folder: str) -> dict:
+    """De donde sale la T de esta sesion: {"fuente": "pista"|"sesion", "archivo"}."""
+    j = curvas_de_pista(folder)
+    return {"fuente": "pista", "archivo": j["_archivo"]} if j else {"fuente": "sesion", "archivo": None}
+
+
+def fijar_curvas(folder: str, forzar: bool = False):
+    """Fija la numeracion de curvas de la pista de esta sesion en pistas/.
+
+    Usa la vuelta mas rapida VALIDA con traza completa y posicion, con el MISMO
+    algoritmo que el visor (`_curvas`): lo que se fija es exactamente lo que el
+    instructor esta mirando en el mapa de esa sesion. Si la pista ya tiene curvas
+    fijadas no las pisa sin `forzar`: reemplazarlas cambia la T de todos los alumnos
+    en la proxima actualizacion, y eso no puede pasar por un comando repetido.
+
+    El archivo es JSON legible a proposito: si una curva de apoyo sobra o falta, se
+    corrige a mano y se versiona, y el `n` que quede escrito es el que se usa.
+    Devuelve (ruta, documento). ValueError con el motivo si no se puede.
+    """
+    meta = _meta(folder)
+    largo = meta.get("track_length_m")
+    if not meta.get("track") or not largo:
+        raise ValueError("la sesion no dice en que pista es o cuanto mide")
+    existente = curvas_de_pista(folder)
+    if existente and not forzar:
+        raise ValueError(f"esta pista ya tiene curvas fijadas ({existente['_archivo']}); "
+                         f"reemplazarlas cambia la T de todos: usa --forzar si es a proposito")
+    vs = [v for v in _vueltas(folder) if v.get("traza") and v.get("valida") and v.get("tiempo")]
+    elegida = data = None
+    for v in sorted(vs, key=lambda v: v["tiempo"]):
+        try:
+            d = AT._read_trace(os.path.join(folder, v["traza"]))
+        except (OSError, EOFError):
+            continue
+        # completa (no truncada por CPU) y con posicion de verdad (las importadas de
+        # otras apps la traen en cero, y sin posicion no hay curvatura)
+        if d and len(d.get("lap_dist") or []) >= 1000 and any(abs(x) > 1.0 for x in d.get("pos_x") or []):
+            elegida, data = v, d
+            break
+    if elegida is None:
+        raise ValueError("ninguna vuelta valida con traza completa y posicion en esta sesion")
+    xs_m, (px, pz) = _rejilla(data["lap_dist"], [data["pos_x"], data["pos_z"]], PASO_M, largo)
+    curvas = _curvas(xs_m, px, pz)
+    if not curvas:
+        raise ValueError("la vuelta no tiene curvas que numerar")
+    doc = {
+        "pista": meta["track"], "variante": meta.get("track_variation"),
+        "largo_m": round(largo, 1),
+        "fijadas": datetime.date.today().isoformat(),
+        "fuente": {"sesion": os.path.basename(folder), "auto": meta.get("car"),
+                   "vuelta": elegida.get("vuelta"), "tiempo": elegida.get("tiempo"),
+                   "traza": elegida["traza"]},
+        "algoritmo": "curvatura del trazado (ams2_analysis._curvas: radio_max 250 m, "
+                     "giro_min 10 grados, sep_min 45 m)",
+        "curvas": curvas,
+    }
+    ruta = (existente["_ruta"] if existente else
+            os.path.join(PISTAS, f"curvas__{_limpio(meta['track'])}__"
+                                 f"{_limpio(meta.get('track_variation'))}__{round(largo)}m.json"))
+    os.makedirs(PISTAS, exist_ok=True)
+    with open(ruta, "w", encoding="utf-8") as f:
+        json.dump(doc, f, ensure_ascii=False, indent=1)
+    return ruta, doc
+
+
 def mapa(folder: str, nombre: str | None = None) -> dict:
     """Trazado de la pista en coordenadas de mundo + numeracion de curvas.
 
@@ -584,16 +870,33 @@ def mapa(folder: str, nombre: str | None = None) -> dict:
     vs = [v for v in _vueltas(folder) if v.get("traza")]
     if not vs:
         raise ValueError("la sesion no tiene ninguna traza guardada")
+    saltadas = 0
     if nombre:
         elegida = next((v for v in vs if v["traza"] == os.path.basename(nombre)), None)
         if elegida is None:
             raise ValueError("esa vuelta no tiene traza")
+        data = AT._read_trace(os.path.join(folder, elegida["traza"]))
     else:
-        elegida = min(vs, key=lambda v: v.get("tiempo") or 9e9)
-    data = AT._read_trace(os.path.join(folder, elegida["traza"]))
+        # La mas rapida que se pueda LEER. Con la sesion abierta en el grabador (el
+        # alumno mira el visor sin salir de la sesion), la linea de tiempo anuncia
+        # la traza de la vuelta recien cerrada ANTES de terminar de volcarla, y ese
+        # gzip a medias revienta al leerlo. Si justo era la mas rapida, el mapa y la
+        # numeracion T caian enteros por unos cientos de ms; ahora se usa la
+        # siguiente y la proxima consulta ya la encuentra completa.
+        data, saltadas = None, 0
+        for elegida in sorted(vs, key=lambda v: v.get("tiempo") or 9e9):
+            try:
+                data = AT._read_trace(os.path.join(folder, elegida["traza"]))
+                break
+            except (OSError, EOFError):
+                saltadas += 1
+        if data is None:
+            raise ValueError("ninguna traza de la sesion se puede leer")
     largo = _meta(folder).get("track_length_m")
     xs_m, (px, pz) = _rejilla(data["lap_dist"], [data["pos_x"], data["pos_z"]], PASO_M, largo)
-    curvas = _curvas(xs_m, px, pz)
+    # las curvas fijadas de la pista mandan; la numeracion de esta vuelta es el respaldo
+    fij = curvas_de_pista(folder)
+    curvas = fij["curvas"] if fij else _curvas(xs_m, px, pz)
 
     # a la pantalla va un trazado aligerado; las curvas se calculan con TODO el
     # detalle (aligerar antes de derivar se come las curvas cerradas)
@@ -606,6 +909,13 @@ def mapa(folder: str, nombre: str | None = None) -> dict:
         "x": [round(px[i], 1) for i in range(0, len(px), salto)],
         "z": [round(pz[i], 1) for i in range(0, len(pz), salto)],
         "curvas": curvas,
+        # "pista" = curvas fijadas en pistas/ (las mismas para todos); "sesion" = las
+        # de esta vuelta, que otra sesion puede numerar distinto (el visor lo avisa)
+        "numeracion": "pista" if fij else "sesion",
+        "curvas_archivo": fij["_archivo"] if fij else None,
+        # True = la mas rapida no se pudo leer (a medio volcar) y se uso otra: es
+        # una numeracion de paso, que _curvas_cacheadas no debe congelar
+        "respaldo": saltadas > 0 and not fij,
     }
 
 

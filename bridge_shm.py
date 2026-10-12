@@ -641,13 +641,30 @@ class _NoCacheHandler(http.server.SimpleHTTPRequestHandler):
             return self._json({"error": "el modulo de analisis no cargo; ver bridge.log"}, 503)
         try:
             if ruta == "sesiones":
-                return self._json({"sesiones": ams2_analysis.sesiones(int(q.get("n", 40)))})
+                # con `pista` van TODAS las de esa pista (sin tope): el selector de
+                # "comparar con otra sesion" tiene que encontrar la medicion de hace
+                # un mes aunque el alumno haya girado otras 60 cosas entre medio
+                if "pista" in q:
+                    ses = ams2_analysis.sesiones(None, q["pista"], q.get("variante") or None)
+                else:
+                    ses = ams2_analysis.sesiones(int(q.get("n", 40)))
+                # La carpeta que el grabador tiene ABIERTA: en clase el alumno abre el
+                # visor en el debrief sin haber salido de la sesion, y tiene que saber
+                # que esa sesion sigue creciendo (lo que ve puede cambiar si vuelve a
+                # pista). Solo el grabador lo sabe; el disco no lo dice.
+                actual = telemetry.sess_dir() if telemetry is not None else None
+                actual = os.path.basename(actual) if actual else None
+                for s in ses:
+                    s["en_curso"] = s["carpeta"] == actual
+                return self._json({"sesiones": ses})
             carpeta = ams2_analysis._carpeta(q.get("s", ""))
             if ruta == "sesion":
                 return self._json({
                     "meta": ams2_analysis._meta(carpeta),
                     "carpeta": os.path.basename(carpeta),
                     "tandas": ams2_analysis.stints(carpeta),
+                    # la vuelta que puntuo (o por que no hay): un toque en el visor
+                    "medicion": ams2_analysis.medicion(carpeta),
                 })
             if ruta == "mapa":
                 return self._json(ams2_analysis.mapa(carpeta, q.get("t")))
@@ -656,6 +673,10 @@ class _NoCacheHandler(http.server.SimpleHTTPRequestHandler):
             if ruta == "traza":
                 return self._json(ams2_analysis.traza(
                     carpeta, q.get("t", ""), paso=float(q.get("paso", ams2_analysis.PASO_M))))
+            if ruta == "frenadas":
+                # panel "Tu frenada": corrida vacia = el frio; vs/vc = la otra sesion
+                return self._json(ams2_analysis.frenadas(
+                    carpeta, q.get("corrida"), q.get("vs"), q.get("vc")))
             if ruta == "export":
                 return self._export(carpeta, int(q.get("tanda", 1)),
                                     q.get("validas") == "1")

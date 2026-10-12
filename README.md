@@ -26,7 +26,31 @@ Automobilista 2.
   (selector bajo la lista de vueltas: B y C pueden ser vueltas de otro día;
   `?s=<sesión>&vs=<otra>&b=<otra>|<traza>` arma el link "tu vuelta de entrada
   contra la de salida"); export a CSV. Es la herramienta con la que tu coach
-  revisa tu sesión.
+  revisa tu sesión. Las salidas a pista se llaman **corridas** (`Corrida 1`,
+  `Corrida 2`…) y las curvas **T1…Tn**, para que no se confundan.
+  - **★ medición**: en las dos listas (la sesión de hoy y la otra) va marcada
+    la vuelta que puntuó —la más rápida de las primeras 8 de la tanda
+    puntuada, la misma del gap% y el CV%— con un botón para ponerla como A o
+    como B. Es el gráfico "tu clase 2 contra la de hoy" de la clase 8. Si la
+    sesión no tiene tanda puntuada, lo dice.
+  - **⏱ ocultar tiempos** (modo compartir): oculta tiempos de vuelta y deltas
+    en segundos en todo el visor, para mostrarlo por Discord sin tiempos. Se
+    recuerda en el navegador; `&ocultar=1` en la URL lo abre ya puesto.
+  - "Comparar con otra sesión" lista **todas** las sesiones de la misma pista,
+    no sólo las 60 más recientes del selector de arriba.
+
+- **Tu frenada** (panel arriba del visor): cuánto se **mueve** tu punto de
+  frenada en cada curva dentro de UNA corrida (salida de boxes → vueltas →
+  entrada a boxes). Abre en la primera corrida con 2+ vueltas cronometradas,
+  que es el "frío" con que arranca cada clase, y se cambia con el selector
+  ("Corrida 1 · 5 vueltas"). El número grande es el rango (la vuelta que frena
+  más tarde menos la que frena más temprano), y abajo dónde frenas respecto del
+  ápex. **Sin σ y sin veredictos**: el panel lo comparte el alumno y el Nivel 1
+  no ve σ; la σ y las etiquetas siguen en `--frenadas`, que es del instructor.
+  Con otra sesión elegida abajo, pone al lado la misma tabla de esa
+  sesión ("hoy contra la clase pasada"). Es el mismo cálculo y la misma T que
+  `tools/analyze_telemetry.py --frenadas --corrida N` (ver más abajo), así que
+  el alumno lo comparte por pantalla y el instructor ve los mismos metros.
 
 - **Página principal**: tira de 20 LEDs de cambio (verde/ámbar/rojo + strobe azul al
   límite), marcha con glow y velocidad. Splits a coche de adelante/atrás, posición,
@@ -63,7 +87,31 @@ Automobilista 2.
   Si ninguna corrida llega a 8, o la sesión es anterior a `timeline.jsonl`, se cae
   a las primeras 8 de la sesión y el reporte lo dice (`tanda: primeras 8 de la
   sesion (...)`).
-- **Limpieza medida** (`--contactos`): contactos con otros autos (vuelta, metro,
+- **Referencias de frenada** (`--frenadas`): punto de frenada por curva y cuánto
+  se mueve entre vueltas, con la **T** en la primera columna (la misma del
+  visor) y `ANTES` = metros antes del ápex, el mismo número que el alumno lee en
+  su panel. Sin más, mide la sesión entera, como siempre (vueltas dentro del 3%
+  de la mejor del día); `--corrida N` mide sólo esa corrida y `--corrida frio` la
+  primera con 2+ vueltas cronometradas — los mismos números que muestra el panel
+  "Tu frenada". Por corrida entran **todas** las cronometradas, sin el corte del
+  3%: una vuelta lenta por un error en otra curva tiene un punto de frenada
+  válido en ésta, y las raras de cada curva se apartan solas ("+1 fuera").
+- **Curvas fijadas por pista** (`--fijar-curvas`): sin esto, el visor numera las
+  curvas con la vuelta más rápida de **cada** sesión, y la T5 de hoy puede ser la
+  T6 de la semana pasada. `python tools/analyze_telemetry.py <carpeta>
+  --fijar-curvas` guarda la numeración de esa pista en
+  `pistas/curvas__<pista>__<variante>__<largo>m.json` (la vuelta válida más
+  rápida de esa sesión, mismo algoritmo que el visor). Ese archivo va en el
+  repo: desde que existe, el visor, el panel, `--frenadas` y el informe usan
+  **esas** T en cualquier PC que lo tenga, y la T3 es la misma curva para el
+  instructor y todos los alumnos. Es JSON legible: si una T sobra o falta, se
+  corrige a mano. No se pisa sin `--forzar`. Se empareja por metro de pista
+  sin normalizar nada: el `lap_dist` del juego es una coordenada de la pista,
+  igual entre autos y sesiones (medido). Si la pista cambia de largo (otra
+  versión), el archivo no aplica y se cae a la numeración de la sesión, con
+  aviso.
+- **Limpieza medida** (`--contactos`, y `--contactos --corrida N` para medir
+  sólo esa corrida, p. ej. el convoy con tráfico de la clase 7): contactos con otros autos (vuelta, metro,
   magnitud y contra quién) + vueltas invalidadas y su tasa, sobre las vueltas
   limpias **y** las invalidadas. Un contacto se detecta por el **cambio** de
   `coll_mag`, no por muestra: AMS2 deja el último choque publicado y contar
@@ -224,7 +272,9 @@ vueltas invalidadas van como `X###`).
 
 **Si eres alumno de la escuela, la entrega va desde el dash.** Una vez (con la
 credencial que te dio tu instructor): `python entrega.py --configurar`. Desde
-ahí, cada sesión que cierras queda **lista en la bandeja**: en el dash, en ⚙,
+ahí, cada sesión que cierras queda **lista en la bandeja** (se cierra cuando
+pasas a otra sesión, o cuando sales al **menú principal** del juego y te quedas
+ahí unos 5 segundos; la pausa y el menú dentro de la sesión no la cierran): en el dash, en ⚙,
 aparece "1 lista para entregar" y un botón **Entregar**. La tocas, confirmas, y
 listo — el dash empaqueta, sube, reintenta si no hay internet, y marca
 "✓ entregada". Nunca sube la sesión en curso, y nunca sube nada que tú no
@@ -275,8 +325,11 @@ Lo que el informe **no** hace, a propósito:
   es un permiso que abren la limpieza, la percepción del entorno y una evaluación
   en vivo — no el cronómetro.
 - **No compara al alumno con nadie más.**
-- **No numera las curvas**: las dos herramientas del dash las numeran distinto
-  entre sí, así que todo se ubica por distancia en metros.
+- **Ubica todo por distancia en metros.** La única excepción es la frenada: ahí
+  va además la T del visor (la de las curvas fijadas de la pista, si las tiene;
+  la misma que ve el alumno en su panel), siempre con el metro al lado. Y la
+  frenada se dice como en el panel: "tu frenada se mueve N m", **sin σ** (el
+  informe lo recibe el alumno).
 
 Si la sesión mezcló condiciones a mitad de tanda (pista, compuesto, ayudas), no
 emite ningún número y lo dice: cualquier cifra saldría creíble y equivocada.

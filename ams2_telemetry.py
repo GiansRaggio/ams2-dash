@@ -49,6 +49,19 @@ MAX_LAP_SAMPLES = 60000
 TELEM_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "telemetry")
 
 _LIVE = (ams2_shm.GAME_INGAME_PLAYING, ams2_shm.GAME_INGAME_INMENU_TIME_TICKING)
+# Fuera de toda sesion: el menu principal del juego (y el juego cerrado). Es el fin
+# de la clase -- "a boxes, cierra la sesion y entrega" -- y la carpeta en curso se
+# cierra igual que al rotar. NO van aca la pausa (INGAME_PAUSED), el menu dentro
+# de la sesion (INMENU_TIME_TICKING), el reinicio (INGAME_RESTARTING) ni las
+# repeticiones: todos siguen dentro de la sesion. Enum verificado el 2026-10-11
+# contra SharedMemory.h de CREST2-AMS2 (SHARED_MEMORY_VERSION 14): EXITED 0,
+# FRONT_END 1, PLAYING 2, PAUSED 3, INMENU_TIME_TICKING 4, RESTARTING 5,
+# INGAME_REPLAY 6, FRONT_END_REPLAY 7.
+_FUERA_DE_SESION = (ams2_shm.GAME_FRONT_END, ams2_shm.GAME_EXITED)
+# Segundos seguidos en el menu principal antes de cerrar. Contra un parpadeo: la
+# shared memory se escribe sin lock y un frame a medio escribir puede traer
+# cualquier mGameState; cinco segundos son 250 frames seguidos a 50 Hz.
+MENU_CIERRE_S = 5.0
 _PIT_INSIDE = (1, 2, 4)       # mPitMode entrando/parado/garage -> en boxes
 _SESS = {0: "invalid", 1: "practice", 2: "test", 3: "qualify",
          4: "formation", 5: "race", 6: "hotlap"}
@@ -188,6 +201,10 @@ class TelemetryLogger:
         # metodo se saltaria. Ademas asi el callback nunca corre con el lock tomado.
         self._on_close = on_close
         self._cerrada = None
+        # desde cuando (reloj monotono) el juego esta en el menu principal; None =
+        # dentro de una sesion. El reloj es inyectable para probar el debounce.
+        self._menu_desde = None
+        self._reloj = time.monotonic
         # stats expuestas al frontend
         self._laps_logged = 0
         self._last_file = None
@@ -299,7 +316,13 @@ class TelemetryLogger:
             time.sleep(self._period if mode == "full" else 0.1)   # full 50Hz, summary ~10Hz
 
     def _ingest(self, d):
-        if d.mVersion != ams2_shm.SHARED_MEMORY_VERSION or d.mNumParticipants <= 0:
+        if d.mVersion != ams2_shm.SHARED_MEMORY_VERSION:
+            return
+        # Antes del filtro de participantes, a proposito: en el menu principal el
+        # juego puede publicar cero participantes, y ese return dejaba la carpeta
+        # abierta hasta la proxima sesion o hasta reiniciar el dash.
+        self._vigilar_menu_principal(d)
+        if d.mNumParticipants <= 0:
             return
         if d.mGameState not in _LIVE:
             with self._lock:
@@ -318,9 +341,11 @@ class TelemetryLogger:
             sig = (bytes(d.mTrackLocation), bytes(d.mCarName), int(d.mSessionState))
             if sig != self._sig:
                 self._write_rivals()      # cerrar el registro de la sesion que se va
-                # Este es el UNICO punto donde una carpeta esta demostrablemente cerrada:
-                # nada mas le va a entrar. Por eso la bandeja se engancha aca y no en un
-                # timer -- una sesion que se sube mientras crece se duplica en el servidor.
+                # Este es uno de los DOS puntos donde una carpeta esta demostrablemente
+                # cerrada: nada mas le va a entrar. El otro es la vuelta al menu
+                # principal (_vigilar_menu_principal). Por eso la bandeja se engancha
+                # aca y no en un timer -- una sesion que se sube mientras crece se
+                # duplica en el servidor.
                 if self._sess_dir:
                     self._cerrada = self._sess_dir
                 self._rotate_session(d, sig)
@@ -453,13 +478,55 @@ class TelemetryLogger:
                 a["bmax"][i] = b
         a["n"] += 1
 
-    def _rotate_session(self, d, sig):
-        # cambio de pista/auto/tipo-de-sesion -> nueva carpeta; la vuelta en curso se descarta
+    def _vigilar_menu_principal(self, d):
+        """Cierra la carpeta en curso cuando el juego VUELVE AL MENU PRINCIPAL y se
+        queda ahi `MENU_CIERRE_S` segundos seguidos.
+
+        Antes la carpeta solo se cerraba al cambiar la firma (pista, auto, tipo de
+        sesion), o sea al ENTRAR a la siguiente sesion: el alumno terminaba la clase,
+        salia al menu, y la bandeja seguia viendo esa carpeta como "la actual" -- no
+        la podia entregar hasta girar otra cosa o reiniciar el dash, cuando los
+        documentos del curso le dicen "a boxes, cierra la sesion y entrega".
+
+        Sigue siendo un cierre por HECHO del juego, no por reloj de inactividad: en
+        el menu principal no hay sesion, y si el alumno vuelve a entrar, el juego
+        carga una sesion nueva aunque sea la misma pista con el mismo auto (antes esa
+        se pegaba a la carpeta vieja). El debounce no decide QUE se cierra, solo
+        descarta un mGameState leido de un frame a medio escribir.
+
+        Se cierra igual que al rotar: rivales volcados, carpeta anotada en
+        `_cerrada` (la drena _run hacia la bandeja) y firma en blanco, para que la
+        proxima entrada a pista abra carpeta nueva. Se mira en cada _ingest, con el
+        estado del frame; no hay hilo ni timer aparte.
+        """
+        if d.mGameState not in _FUERA_DE_SESION:
+            self._menu_desde = None
+            return
+        ahora = self._reloj()
+        if self._menu_desde is None:
+            self._menu_desde = ahora
+            return
+        if ahora - self._menu_desde < MENU_CIERRE_S:
+            return
+        with self._lock:
+            if self._sess_dir is None and self._sig is None:
+                return                    # ya cerrada, o nunca se abrio: nada que hacer
+            self._write_rivals()
+            if self._sess_dir:
+                self._cerrada = self._sess_dir
+            self._soltar_sesion()
+            self._recording = False
+
+    def _soltar_sesion(self):
+        """Estado por-sesion en blanco: lo comun a rotar y a cerrar en el menu.
+        La vuelta en curso se descarta."""
         # Rivales: se vacian aca o el rivals.json de la carrera arrastraria a los que solo
         # corrieron la qualy, con tiempos de la sesion (o la PISTA) anterior.
         self._rivals = {}
         self._rivals_dirty = False
-        self._sig = sig
+        self._sig = None
+        self._sess_dir = None
+        self._sess_label = None
         self._last_lap = -1
         self._buf = []
         self._invalid = False
@@ -468,6 +535,11 @@ class TelemetryLogger:
         self._agg = None
         self._compound_prev = None    # sesion nueva -> no emitir tyre_change espurio
         self._in_pit_prev = False      # ni pit_in/out espurio del estado anterior
+
+    def _rotate_session(self, d, sig):
+        # cambio de pista/auto/tipo-de-sesion -> nueva carpeta; la vuelta en curso se descarta
+        self._soltar_sesion()
+        self._sig = sig
         label = _SESS.get(int(d.mSessionState), "session")
         self._sess_label = label
         name = (f"{_safe(bytes(d.mTrackLocation))}__{_safe(bytes(d.mCarName))}"

@@ -20,6 +20,7 @@ import math
 import os
 import shutil
 import statistics as st
+import sys
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TELEM = os.path.join(HERE, "telemetry")
@@ -615,7 +616,7 @@ def _punto_frenada(t, apex_m, umbral=0.05, max_atras_m=400.0, hueco_m=15.0):
     return d0 if 0.0 < apex_m - d0 <= max_atras_m else None
 
 
-def braking_struct(folder, umbral=0.05):
+def braking_struct(folder, umbral=0.05, vueltas=None):
     """Punto de frenada de cada curva y su DISPERSION entre vueltas, en metros.
 
     Es la medicion objetiva de "tener referencias", que es de lo primero que un
@@ -626,12 +627,35 @@ def braking_struct(folder, umbral=0.05):
     A diferencia del tiempo por vuelta, esto es una meta de PROCESO: el alumno la
     controla en la proxima vuelta, y por eso sirve para coaching y no solo para nota.
 
-    None si no hay al menos 2 vueltas limpias con canal de freno.
+    `vueltas` acota el calculo a esos registros del summary (una corrida: el "frio" de
+    la clase se mide SOLO sobre sus 5 vueltas). Es el mismo calculo, no una copia: el
+    panel del visor y `--frenadas` pasan por aca y por eso dan los mismos metros.
+
+    Con `vueltas` entran TODAS las cronometradas del conjunto (el summary ya deja
+    fuera la de salida, la de entrada y las invalidadas), SIN el corte del 3% contra
+    la mejor: una vuelta lenta por un error en otra curva tiene un punto de frenada
+    valido en esta, y las raras de CADA curva ya las aparta `_split_anomalas`. Medido
+    en pista (P3 en Goiania, frio de 85.9 / 81.1 / 85.0): con el 3% quedaba una
+    sola vuelta y el panel salia sin dato, justo en la corrida que mas importa.
+
+    None = toda la sesion, CON el corte del 3% (`clean_laps`), que es lo que
+    `--frenadas` hizo siempre: ahi se mezclan corridas de antes y de despues del
+    coaching, y el corte es lo unico que evita promediar ritmos distintos.
+
+    `ref_traza` es la vuelta cuyas curvas (minimos de velocidad) definen las filas; la
+    usa quien tenga que ponerle a cada fila la T del visor.
+
+    None si no hay al menos 2 vueltas con canal de freno.
     """
-    cl = clean_laps(folder)
-    if cl["n_clean"] < 2:
+    if vueltas is None:
+        cl = clean_laps(folder)
+        regs, n_regs = cl["clean"], cl["n_clean"]
+    else:
+        regs = sorted((l for l in vueltas if l.get("lap_time")), key=lambda l: l["lap_time"])
+        n_regs = len(regs)
+    if n_regs < 2:
         return None
-    traces = [(rec, _lap_trace(folder, rec)) for rec in cl["clean"]]
+    traces = [(rec, _lap_trace(folder, rec)) for rec in regs]
     traces = [(rec, t) for rec, t in traces if t and t.get("brake") and t.get("lap_dist")]
     # Una traza con pocas muestras es una grabacion truncada, no una vuelta corta: el
     # corpus tiene sesiones enteras con ~300 muestras (6 s a 50 Hz) por inanicion de CPU.
@@ -641,7 +665,8 @@ def braking_struct(folder, umbral=0.05):
     descartadas = len(traces) - len(completas)
     traces = completas
     if len(traces) < 2:
-        return {"curvas": [], "descartadas": descartadas, "n_vueltas": len(traces)}
+        return {"curvas": [], "descartadas": descartadas, "n_vueltas": len(traces),
+                "n_candidatas": n_regs, "ref_traza": None}
     rt = traces[0][1]
     d, sp = _mono(rt["lap_dist"], rt["speed_kmh"])[:2]
     out = []
@@ -662,33 +687,251 @@ def braking_struct(folder, umbral=0.05):
                     "sigma_m": round(st.pstdev(buenos), 1),
                     "rango_m": round(max(buenos) - min(buenos), 1),
                     "vmin_kmh": round(c["vmin"], 1) if c.get("vmin") is not None else None})
-    return {"curvas": out, "descartadas": descartadas, "n_vueltas": len(traces)}
+    return {"curvas": out, "descartadas": descartadas, "n_vueltas": len(traces),
+            "n_candidatas": n_regs, "ref_traza": traces[0][0].get("trace")}
 
 
-def report_braking(folder):
-    """Imprime el punto de frenada por curva y que tan repetible es."""
-    bs = braking_struct(folder)
-    if not bs or not bs["curvas"]:
-        n = bs["descartadas"] if bs else 0
-        extra = f" ({n} trazas descartadas por truncadas)" if n else ""
-        print(f"\n  (sin datos de frenada: se necesitan 2+ vueltas limpias completas{extra})")
+# Hasta cuantos metros puede estar una curva de frenada del apex de una T del visor
+# para llevar su nombre. Medido sobre el corpus (228 curvas de 40 sesiones, la misma
+# vuelta en los dos lados): p50 2 m, p95 6 m, 99% a 10 m o menos, y el 1% restante a
+# MAS de 100 m -- son curvas frenadas que el visor no numera, no T mal ubicadas. No
+# hay nada entre 10 y 100, asi que 30 m es holgura pura; y queda bajo los 45 m que
+# separan dos T del visor, asi que no alcanza a nombrar la de al lado.
+TOL_T_M = 30.0
+
+
+def _etiquetar_t(curvas, apices_t, tol_m=TOL_T_M):
+    """Le pone a cada curva de `braking_struct` la T del visor (analisis.html), en `t`.
+
+    Las dos numeraciones salen de cosas distintas y por eso no coinciden: aca una
+    curva es un minimo de velocidad (`_corners`, solo las que se frenan) y el visor
+    numera por CURVATURA del trazado (incluye las de apoyo). Con `--frenadas`
+    hablando de "la curva del metro 1.234" y el visor de "T5", en clase el
+    instructor y el alumno no decian la misma curva.
+
+    `apices_t` = [(n, apex_m)]: el apex de cada T del visor EN LA MISMA VUELTA de la
+    que salieron las curvas (el minimo de velocidad dentro de la T, lo que el visor
+    muestra en su columna apex). Se asigna la pareja mas cercana primero y cada T
+    una sola vez: dos filas con la misma T se leerian como una sola curva. Lo que no
+    cae a `tol_m` de ninguna T queda en None y se nombra por su metro: estirar la
+    tolerancia para que todo tenga T nombraria la curva de al lado.
+    """
+    for c in curvas:
+        c["t"] = None
+    pares = sorted((abs(c["apex"] - a), i, n)
+                   for i, c in enumerate(curvas) for n, a in apices_t
+                   if a is not None and abs(c["apex"] - a) <= tol_m)
+    con_t, t_usadas = set(), set()
+    for _, i, n in pares:
+        if i in con_t or n in t_usadas:
+            continue
+        curvas[i]["t"] = n
+        con_t.add(i)
+        t_usadas.add(n)
+    return curvas
+
+
+def _t_del_visor(folder, traza):
+    """Las T del visor para esta sesion: ([(n, apex_m)] en la vuelta `traza`,
+    [{"n", "metro", "inicio", "fin"}] de la numeracion, para saber si otra sesion
+    numera igual, y de donde sale: {"fuente": "pista"|"sesion", "archivo"}).
+    ([], [], None) si no se puede (sesion sin posicion, vuelta sin traza): la frenada
+    sale igual, nombrada por metro.
+
+    El import es perezoso porque `ams2_analysis` importa ESTE modulo; arriba seria
+    circular. Y la numeracion se pide alla y no se recalcula aca: es justamente la
+    que el alumno ve en el mapa (las curvas fijadas de la pista si existen), y dos
+    calculos de "la T5" serian dos verdades.
+    """
+    if not traza:
+        return [], [], None
+    try:
+        if HERE not in sys.path:
+            sys.path.insert(0, HERE)
+        import ams2_analysis
+        ev = ams2_analysis.traza(folder, traza).get("eventos") or []
+        ts = ams2_analysis._curvas_cacheadas(folder)
+        num = ams2_analysis.numeracion(folder)
+    except Exception:                      # noqa: BLE001  (sin T no es sin frenadas)
+        return [], [], None
+    return ([(e["n"], e.get("apex_m")) for e in ev],
+            [{k: c[k] for k in ("n", "metro", "inicio", "fin")} for c in ts], num)
+
+
+def corridas_struct(folder):
+    """Las corridas de pista de la sesion, para elegir sobre cual medir la frenada.
+
+    Devuelve (corridas, partida). Cada corrida: {"n", "vueltas" (registros del
+    summary: las cronometradas, sin la de salida ni la de entrada a boxes),
+    "cronometradas"}, con el MISMO numero que la corrida del visor
+    (`_corridas_cronometradas` replica `ams2_analysis.stints()`).
+
+    `partida` False = no se pudo partir en corridas (sesion anterior a
+    timeline.jsonl, o linea de tiempo que no cuadra con el resumen): ahi toda la
+    sesion cuenta como UNA corrida y quien muestre el numero tiene que decirlo.
+    """
+    _, laps = _load(folder)
+    crono = [l for l in laps if l.get("lap_time")]
+    cs = _corridas_cronometradas(folder, crono)
+    partida = bool(cs)
+    if not partida:
+        cs = [crono]
+    return ([{"n": i, "vueltas": regs, "cronometradas": len(regs)}
+             for i, regs in enumerate(cs, 1)], partida)
+
+
+def corrida_del_frio(corridas):
+    """La corrida que abre el panel: la PRIMERA con 2+ vueltas cronometradas.
+
+    El "frio" de la clase (salir de boxes, 5 vueltas sin coaching, entrar) es lo
+    primero que se gira ese dia, asi que es la primera corrida medible. No la ultima
+    ni la mas larga: esas son las del trabajo con el instructor, y el numero de la
+    semana es justamente el de ANTES del coaching. None si ninguna llega a 2.
+    """
+    return next((c for c in corridas if c["cronometradas"] >= 2), None)
+
+
+def frenadas_struct(folder, corrida="frio", umbral=0.05):
+    """Punto de frenada por curva de UNA corrida, cada curva con la T del visor.
+
+    Es lo que muestran el panel "Tu frenada" del visor (via el bridge) y
+    `--frenadas`. UNA funcion para los dos a proposito: el alumno comparte el panel
+    por Discord y el instructor corre el CLI, y si salieran metros distintos para
+    las mismas vueltas ninguno de los dos numeros serviria.
+
+    `corrida`: "frio" (la primera con 2+ cronometradas, ver `corrida_del_frio`), un
+    numero (esa corrida), o None (la sesion entera: lo que `--frenadas` hizo siempre,
+    con el corte del 3%; ver `braking_struct`). ValueError si se pide una corrida que
+    no existe.
+
+    Cada curva trae lo de `braking_struct` mas `t` (la T de la pista o del visor, o
+    None) y `antes_m` (cuantos metros antes del apex frena en promedio: el metro de
+    pista no le dice nada a un alumno, la distancia al apex si). `numeracion` dice de
+    donde sale la T ("pista" = curvas fijadas en pistas/, iguales para todos;
+    "sesion" = la de esta sesion, que puede no coincidir con otra). Si no hay numero
+    que dar, `curvas` va vacio y `sin_dato` dice por que y que hacer; un panel vacio
+    sin explicacion se lee como que el visor esta roto.
+    """
+    cs, partida = corridas_struct(folder)
+    out = {"corridas": [{k: c[k] for k in ("n", "cronometradas")} for c in cs],
+           "partida": partida, "corrida": None, "curvas": [], "ts": [], "numeracion": None,
+           "n_vueltas": 0, "n_candidatas": 0, "descartadas": 0, "sin_dato": None}
+    vueltas = None
+    if corrida is not None:
+        if corrida == "frio":
+            c = corrida_del_frio(cs)
+            if c is None:
+                out["sin_dato"] = ("Ninguna corrida de esta sesión tiene 2 vueltas cronometradas "
+                                   "(válidas, sin contar la de salida ni la de entrada a boxes). "
+                                   "Da al menos 2 vueltas seguidas sin pasar por boxes entre "
+                                   "medio y vuelve a mirar.")
+                return out
+        else:
+            c = next((x for x in cs if x["n"] == int(corrida)), None)
+            if c is None:
+                raise ValueError("no existe esa corrida")
+        out["corrida"] = c["n"]
+        vueltas = c["vueltas"]
+    bs = braking_struct(folder, umbral, vueltas)
+    if bs is None:
+        if corrida is None:
+            n = clean_laps(folder)["n_clean"]
+            que = f"vuelta{'s' if n != 1 else ''} limpia{'s' if n != 1 else ''}"
+            donde = "Esta sesión"
+        else:
+            n = c["cronometradas"]
+            que = f"vuelta{'s' if n != 1 else ''} cronometrada{'s' if n != 1 else ''}"
+            donde = f"La corrida {c['n']}"
+        out["n_candidatas"] = n
+        out["sin_dato"] = (f"{donde} tiene {n} {que}, y para ver cuánto se mueve tu frenada "
+                           f"se necesitan 2 o más. Elige otra corrida o da más vueltas "
+                           f"seguidas.")
+        return out
+    out.update(n_vueltas=bs["n_vueltas"], n_candidatas=bs["n_candidatas"],
+               descartadas=bs["descartadas"])
+    if bs["n_vueltas"] < 2:
+        out["sin_dato"] = (
+            f"{bs['descartadas']} de esas vueltas quedaron grabadas incompletas (el PC iba "
+            f"justo al grabar) y no sirven para medir. Cierra otros programas mientras giras "
+            f"y vuelve a intentar." if bs["descartadas"] else
+            "Las vueltas de esta corrida no tienen la grabación completa guardada, así que no "
+            "hay frenadas que medir.")
+        return out
+    curvas = [dict(r, antes_m=round(r["apex"] - r["media_m"], 1)) for r in bs["curvas"]]
+    apices, out["ts"], out["numeracion"] = _t_del_visor(folder, bs["ref_traza"])
+    out["curvas"] = _etiquetar_t(curvas, apices)
+    if not curvas:
+        out["sin_dato"] = ("No se encontró ninguna curva donde frenes en 2 o más de estas "
+                           "vueltas.")
+    return out
+
+
+def report_fijar_curvas(folder, forzar=False):
+    """Fija las curvas de la pista de esta sesion (ver `ams2_analysis.fijar_curvas`)."""
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
+    import ams2_analysis                   # perezoso: ams2_analysis importa ESTE modulo
+    try:
+        ruta, doc = ams2_analysis.fijar_curvas(folder, forzar)
+    except ValueError as e:
+        print(f"  no se fijaron curvas: {e}")
+        return
+    f = doc["fuente"]
+    print(f"\n=== Curvas fijadas · {doc['pista']} ({doc['variante']}) · {doc['largo_m']:.0f} m ===")
+    print(f"  desde {f['sesion']} · vuelta {f['vuelta']} · {_fmt_t(f['tiempo']).strip()} · {f['auto']}")
+    for c in doc["curvas"]:
+        print(f"   T{c['n']:<3} metro {c['metro']:>7.0f}  ({c['inicio']:.0f}-{c['fin']:.0f})  "
+              f"{c['lado']:<3}  giro {c['giro']:>4} grados")
+    print(f"  -> {ruta}")
+    print("  Mira el mapa del visor antes de versionarlo: si una T sobra o falta, se corrige")
+    print("  a mano en el JSON. Desde que el archivo existe, TODOS los que lo tengan ven esas T.")
+
+
+def report_braking(folder, corrida=None):
+    """Imprime el punto de frenada por curva y que tan repetible es.
+
+    `corrida` como en `frenadas_struct`; None = la sesion entera (lo de siempre)."""
+    fs = frenadas_struct(folder, corrida)
+    if corrida is not None:
+        lista = " · ".join(f"{c['n']} ({c['cronometradas']} v)" for c in fs["corridas"])
+        print(f"\n  corridas: {lista}" + ("" if fs["partida"] else
+                                          "  (sin linea de tiempo: la sesion es UNA corrida)"))
+    if not fs["curvas"]:
+        if corrida is None:
+            n = fs["descartadas"]
+            extra = f" ({n} trazas descartadas por truncadas)" if n else ""
+            print(f"\n  (sin datos de frenada: se necesitan 2+ vueltas limpias completas{extra})")
+        else:
+            print(f"\n  (sin datos de frenada: {fs['sin_dato']})")
         return
     print("\n=== Referencias de frenada (donde empiezas a frenar, y si lo repites) ===")
-    if bs["descartadas"]:
-        print(f"  ojo: {bs['descartadas']} trazas descartadas por truncadas (CPU justa al grabar)")
-    print(f"  {'APEX':>7} {'FRENAS EN':>10} {'SIGMA':>7} {'RANGO':>7}  {'n':>2}   (n = vueltas habituales)")
-    for r in bs["curvas"]:
+    if fs["corrida"] is not None:
+        print(f"  corrida {fs['corrida']} · {fs['n_vueltas']} vueltas medidas "
+              f"de {fs['n_candidatas']} cronometradas (sin corte del 3%)")
+    if fs["descartadas"]:
+        print(f"  ojo: {fs['descartadas']} trazas descartadas por truncadas (CPU justa al grabar)")
+    if fs["numeracion"] and fs["numeracion"]["fuente"] == "sesion":
+        print("  ojo: la pista no tiene curvas fijadas (--fijar-curvas): la T es la de ESTA "
+              "sesion y puede no coincidir con la de otra")
+    # T = la del visor (analisis.html), para que instructor y alumno digan la misma curva;
+    # ANTES = metros antes del apex, el "frenas X m antes del apex" del panel del alumno
+    print(f"  {'T':>4} {'APEX':>7} {'FRENAS EN':>10} {'ANTES':>6} {'SIGMA':>7} {'RANGO':>7}  {'n':>2}"
+          f"   (n = vueltas habituales)")
+    for r in fs["curvas"]:
         # El corte de 10 m es de trabajo, no medido: a 200 km/h son ~0.18 s de
         # diferencia entre vueltas, que ya se ve en el cronometro. Recalibrar cuando
         # haya corpus de alumnos.
         tag = "" if r["sigma_m"] < 10 else ("  <-- inconsistente" if r["sigma_m"] < 20
                                             else "  <-- SIN REFERENCIA")
         fuera = f" (+{r['fuera']} fuera)" if r["fuera"] else ""
-        print(f"  {r['apex']:>6.0f}m {r['media_m']:>9.0f}m {r['sigma_m']:>6.1f}m "
-              f"{r['rango_m']:>6.0f}m  {r['n']:>2}{fuera}{tag}")
-    peor = max(bs["curvas"], key=lambda r: r["sigma_m"])
+        t = f"T{r['t']}" if r["t"] is not None else "--"
+        print(f"  {t:>4} {r['apex']:>6.0f}m {r['media_m']:>9.0f}m {r['antes_m']:>5.0f}m "
+              f"{r['sigma_m']:>6.1f}m {r['rango_m']:>6.0f}m  {r['n']:>2}{fuera}{tag}")
+    peor = max(fs["curvas"], key=lambda r: r["sigma_m"])
     if peor["sigma_m"] >= 10:
-        print(f"\n  La menos repetible es la curva del metro {peor['apex']:.0f}: frenas en un "
+        cual = (f"la T{peor['t']} (metro {peor['apex']:.0f})" if peor["t"] is not None
+                else f"la curva del metro {peor['apex']:.0f}")
+        print(f"\n  La menos repetible es {cual}: frenas en un "
               f"rango de {peor['rango_m']:.0f} m entre vueltas.")
         print("  Buscar una referencia fija (un cartel, una junta, un cambio de piso) y "
               "frenar SIEMPRE ahi.")
@@ -721,6 +964,39 @@ def _mad(v):
     return 1.4826 * st.median([abs(x - med) for x in v])
 
 
+def _numerar_corridas(tl):
+    """La corrida de CADA vuelta de la linea de tiempo (registros `type: lap`, en
+    orden), None para la de boxes, que es el borde. Es el corte de
+    `_corridas_cronometradas`, aparte porque `--contactos --corrida` lo necesita sobre
+    TODAS las vueltas (invalidadas y de salida incluidas), no solo las del resumen."""
+    cor, n_cor, abierta = [], 0, False
+    for r in tl:
+        if r.get("kind") == "pit" or r.get("pit"):
+            abierta = False                   # el borde CIERRA la corrida, no abre otra
+            cor.append(None)
+            continue
+        if not abierta or r.get("out"):       # una salida de boxes abre la siguiente
+            n_cor += 1
+            abierta = True
+        cor.append(n_cor)
+    return cor
+
+
+def _vueltas_tl(folder, corrida=None):
+    """Registros de vuelta de la linea de tiempo, de una corrida o de toda la sesion.
+    ValueError si se pide una corrida y la sesion no tiene linea de tiempo, o no
+    tiene esa corrida: contar la sesion entera callado seria peor que no contar."""
+    tl = [r for r in _load_timeline(folder) if r.get("type") == "lap"]
+    if corrida is None:
+        return tl
+    if not tl:
+        raise ValueError("la sesion no tiene linea de tiempo: no se puede partir en corridas")
+    cor = _numerar_corridas(tl)
+    if corrida not in cor:
+        raise ValueError("no existe esa corrida")
+    return [r for r, c in zip(tl, cor) if c == corrida]
+
+
 def _corridas_cronometradas(folder, crono):
     """Parte las vueltas cronometradas en CORRIDAS de pista, segun timeline.jsonl.
 
@@ -740,16 +1016,7 @@ def _corridas_cronometradas(folder, crono):
     tl = [r for r in _load_timeline(folder) if r.get("type") == "lap"]
     if not tl:
         return []
-    cor, n_cor, abierta = [], 0, False        # cor[i] = corrida de la vuelta i de `tl`
-    for r in tl:
-        if r.get("kind") == "pit" or r.get("pit"):
-            abierta = False                   # el borde CIERRA la corrida, no abre otra
-            cor.append(None)
-            continue
-        if not abierta or r.get("out"):       # una salida de boxes abre la siguiente
-            n_cor += 1
-            abierta = True
-        cor.append(n_cor)
+    cor = _numerar_corridas(tl)               # cor[i] = corrida de la vuelta i de `tl`
     por_uid = {r["uid"]: c for r, c in zip(tl, cor)
                if r.get("uid") is not None and c is not None}
     orden = [c for r, c in zip(tl, cor) if r.get("kind") == "flying" and c is not None]
@@ -1265,13 +1532,13 @@ def _nota(valor, escala):
     return escala[-1][1]
 
 
-def tasa_invalidacion(folder):
+def tasa_invalidacion(folder, corrida=None):
     """% de vueltas de pista que se invalidaron por limites. La UNICA metrica
     objetiva de limpieza que existe hoy -- y hay que leerla del timeline, porque el
-    summary.jsonl excluye las vueltas sucias y ahi la tasa daria 0% siempre."""
-    tl = _load_timeline(folder)
-    de_pista = [r for r in tl if r.get("type") == "lap"
-                and r.get("kind") in ("flying", "invalid", "out", "short")]
+    summary.jsonl excluye las vueltas sucias y ahi la tasa daria 0% siempre.
+    `corrida` la acota a esa corrida (ver `_vueltas_tl`)."""
+    de_pista = [r for r in _vueltas_tl(folder, corrida)
+                if r.get("kind") in ("flying", "invalid", "out", "short")]
     if not de_pista:
         return None
     malas = [r for r in de_pista if r.get("kind") == "invalid"]
@@ -1293,8 +1560,14 @@ _DMG_AERO_AVISO = 0.01
 _DMG_MOTOR_AVISO = 0.05
 
 
-def contactos_struct(folder):
+def contactos_struct(folder, corrida=None):
     """Contactos con otros autos + vueltas invalidadas: la "limpieza medida" de la sesion.
+
+    `corrida` acota TODO (contactos, vueltas con traza, invalidadas) a esa corrida de
+    pista, con el mismo corte que el resto (`_numerar_corridas`): la compuerta de la
+    clase 7 mide solo el convoy con trafico, que es una corrida dentro de la sesion,
+    y las vueltas solas de antes o de despues diluirian la tasa. ValueError si la
+    sesion no tiene linea de tiempo o no tiene esa corrida.
 
     Es la pata objetiva de racecraft (25% de esa dimension en docs/evaluacion.md) y
     uno de los tres antecedentes de la compuerta de permisos de la clase 7. Recorre
@@ -1317,12 +1590,12 @@ def contactos_struct(folder):
 
     None + `motivo` si la sesion no trae los canales (las anteriores al 2026-08-20).
     """
-    tl = _load_timeline(folder)
-    recs = [r for r in tl if r.get("type") == "lap" and r.get("trace")]
-    if not recs:                               # sesiones viejas sin timeline: queda el summary
+    recs = [r for r in _vueltas_tl(folder, corrida) if r.get("trace")]
+    if not recs and corrida is None:           # sesiones viejas sin timeline: queda el summary
         recs = [l for l in _load(folder)[1] if l.get("trace")]
     if not recs:
-        return None, "la sesion no tiene trazas guardadas"
+        return None, ("esa corrida no tiene trazas guardadas" if corrida is not None
+                      else "la sesion no tiene trazas guardadas")
 
     eventos, n_trazas, crash_laps = [], 0, []
     aero0 = aero1 = motor0 = motor1 = None
@@ -1379,7 +1652,7 @@ def contactos_struct(folder):
         avisos.append(f"dano de motor: subio {100 * (motor1 - motor0):.1f}% en la sesion "
                       "(muy por encima del desgaste normal por vueltas)")
 
-    inv = tasa_invalidacion(folder)             # UNA sola definicion de la tasa: la de evaluar()
+    inv = tasa_invalidacion(folder, corrida)    # UNA sola definicion de la tasa: la de evaluar()
     return {
         "contactos": eventos,
         "n_contactos": len(eventos),
@@ -1395,10 +1668,12 @@ def contactos_struct(folder):
     }, None
 
 
-def report_contactos(folder):
-    """Imprime la limpieza medida: contactos, vueltas invalidadas y avisos de dano."""
-    cs, motivo = contactos_struct(folder)
-    print(f"\n=== Limpieza medida · {os.path.basename(folder)} ===")
+def report_contactos(folder, corrida=None):
+    """Imprime la limpieza medida: contactos, vueltas invalidadas y avisos de dano.
+    `corrida` = solo esa corrida de pista (el convoy de la clase 7)."""
+    cs, motivo = contactos_struct(folder, corrida)
+    print(f"\n=== Limpieza medida · {os.path.basename(folder)}"
+          f"{f' · corrida {corrida}' if corrida is not None else ''} ===")
     if cs is None:
         print(f"  (sin dato: {motivo})")
         return
@@ -2267,7 +2542,20 @@ def main():
     ap.add_argument("--consistencia", action="store_true",
                     help="CV%% de la tanda: la metrica con la que se califica consistencia")
     ap.add_argument("--frenadas", action="store_true",
-                    help="punto de frenada de cada curva y que tan repetible es (referencias)")
+                    help="punto de frenada de cada curva y que tan repetible es (referencias), "
+                         "con la T del visor")
+    ap.add_argument("--corrida", metavar="N|frio",
+                    help="con --frenadas o --contactos: solo esa corrida de pista (N, la misma "
+                         "numeracion que las corridas del visor). Con --frenadas tambien 'frio' "
+                         "= la primera con 2+ vueltas cronometradas, que es lo que abre el panel "
+                         "del visor. Sin esto se mide la sesion entera")
+    ap.add_argument("--fijar-curvas", action="store_true", dest="fijar_curvas",
+                    help="fija la numeracion T de la pista de esta sesion en pistas/ (vuelta "
+                         "valida mas rapida, mismo algoritmo que el visor). Desde ahi el visor, "
+                         "el panel, --frenadas y el informe usan ESAS T para esa pista, en "
+                         "cualquier PC que tenga el archivo")
+    ap.add_argument("--forzar", action="store_true",
+                    help="con --fijar-curvas: reemplaza las curvas ya fijadas (cambia la T de todos)")
     ap.add_argument("--contactos", action="store_true",
                     help="limpieza medida: contactos con otros autos (por CAMBIO de magnitud, no "
                          "por muestra) + vueltas invalidadas + avisos de dano")
@@ -2354,10 +2642,30 @@ def main():
         report_evaluacion(folder)
     elif a.consistencia:
         report_consistency(folder)
+    elif a.fijar_curvas:
+        report_fijar_curvas(folder, a.forzar)
     elif a.frenadas:
-        report_braking(folder)
+        corrida = a.corrida
+        if corrida is not None and corrida != "frio":
+            if not corrida.isdigit():
+                print("--corrida espera un numero o 'frio'")
+                return
+            corrida = int(corrida)
+        try:
+            report_braking(folder, corrida)
+        except ValueError as e:
+            print(f"  {e} (ver la lista con --frenadas --corrida frio)")
     elif a.contactos:
-        report_contactos(folder)
+        corrida = a.corrida
+        if corrida is not None:
+            if not corrida.isdigit():
+                print("--contactos --corrida espera el numero de la corrida (la del visor)")
+                return
+            corrida = int(corrida)
+        try:
+            report_contactos(folder, corrida)
+        except ValueError as e:
+            print(f"  {e}")
     elif a.saturacion:
         report_saturation(folder)
     else:

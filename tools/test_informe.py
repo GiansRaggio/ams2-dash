@@ -285,13 +285,15 @@ def test_html(d):
                               "Una sola cosa", "Tu nivel")] ==
         sorted(h.index(x) for x in ("Tus dos números", "el tiempo", "El mapa de tu vuelta",
                                     "Una sola cosa", "Tu nivel")))
-    # el numero de curva esta prohibido en los informes: las dos herramientas del
-    # dash las numeran distinto entre si y ninguna coincide con el catalogo del
-    # circuito, asi que "T4" significa cosas distintas segun quien lo diga.
-    _ok("nombra las curvas por metros", "curva del metro" in h)
-    _ok("y nunca por numero de curva (T1, T4...)",
-        re.search(r"\bT\d+\b", h) is None,
-        (re.search(r"\bT\d+\b", h) or [""])[0])
+    # Una T suelta esta prohibida: la numeracion del visor es POR SESION (sale de la
+    # vuelta mas rapida de cada una) y ninguna coincide con el catalogo del
+    # circuito, asi que "T4" sin mas significa cosas distintas segun el dia. Desde
+    # que `--frenadas`, el visor y el informe comparten la T de la frenada, puede
+    # aparecer, pero SIEMPRE con su metro al lado.
+    _ok("nombra las curvas por metros", "curva del metro" in h or "(metro " in h)
+    suelta = re.search(r"\bT\d+\b(?! \(metro )", h)
+    _ok("y nunca por numero de curva suelto (T4 sin su metro)", suelta is None,
+        (suelta or [""])[0])
     _ok("dice que no hay comparacion con otros alumnos",
         "nada está comparado con otro alumno" in h)
     _ok("advierte que el delta no es un cronometro exacto",
@@ -354,8 +356,30 @@ def test_frenada_dispersa(base):
     cosa = I.una_cosa(d, I.perdidas(d), num)
     _ok("la 'una sola cosa' pasa a ser una meta de PROCESO",
         "mismo punto" in cosa["titulo"], cosa["titulo"])
-    _ok("y dice cuanto varia hoy", cosa["medida"] and "m en el punto de frenada" in cosa["medida"],
+    _ok("y dice cuanto se mueve hoy (el rango, como el panel)",
+        cosa["medida"] and "se mueve" in cosa["medida"] and "m entre vueltas" in cosa["medida"],
         cosa["medida"])
+    # el informe lo recibe el alumno y el Nivel 1 no ve σ (regla del curso)
+    h_disp = I.render(I.armar(d, nivel=1))
+    _ok("el informe del alumno no muestra σ en ninguna parte",
+        "σ" not in h_disp and "sigma" not in h_disp.lower(), cosa["medida"])
+    # La anilla sintetica no tiene curvas por curvatura donde frena, asi que ahi la
+    # frenada sale por metro. Para ver el camino con T se le da al informe la
+    # numeracion del visor a mano: T4 en el apex del metro 1.000, T7 en el 2.500.
+    orig = A._t_del_visor
+    try:
+        A._t_del_visor = lambda folder, traza: ([(4, 1000.0), (7, 2500.0)], [],
+                                                {"fuente": "pista", "archivo": "x.json"})
+        cosa = I.una_cosa(d, I.perdidas(d), num)
+        _ok("con la T del visor la frenada se nombra como en el visor, con su metro",
+            re.search(r"en la T[47] \(metro [\d.]+\)$", cosa["titulo"]) is not None,
+            cosa["titulo"])
+        _ok("y el titulo sigue siendo corto", len(cosa["titulo"]) < 70, len(cosa["titulo"]))
+        h = I.render(I.armar(d, nivel=2))
+        suelta = re.search(r"\bT\d+\b(?! \(metro )", h)
+        _ok("en el HTML la T va siempre con su metro", suelta is None, (suelta or [""])[0])
+    finally:
+        A._t_del_visor = orig
 
 
 def test_gap_solo_de_la_tanda(base):

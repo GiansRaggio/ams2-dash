@@ -472,7 +472,10 @@ class ColaEntrega:
     # ------------------------------------------------------------------ barrido
     def _barrido(self):
         """Sesiones viejas que nadie encolo: la ultima del dia no rota nunca (el
-        jugador sale al menu y ya), asi que sin este barrido no se entrega jamas."""
+        jugador sale al menu y ya), asi que sin este barrido no se entrega jamas.
+        Desde 2026-10-11 el grabador la cierra al quedarse en el menu principal
+        (`TelemetryLogger._vigilar_menu_principal`), pero si el dash se cierra o el
+        juego se cae antes, sigue siendo este barrido el que la rescata."""
         reg = E.registro()
         desde = self._ts_desde()
         corte = time.time() - self.dias_barrido * 86400
