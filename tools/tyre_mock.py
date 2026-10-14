@@ -62,6 +62,7 @@ import websockets
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HERE)
 import ams2_tyres
+import red_local
 
 sys.stdout.reconfigure(line_buffering=True)   # el log sirve aunque la salida vaya a un pipe
 
@@ -657,10 +658,11 @@ async def pump():
 
 
 # ---------------- HTTP ----------------
-class _MockHandler(http.server.SimpleHTTPRequestHandler):
+class _MockHandler(red_local.SoloEstaticos):
     """Sin cache (mismo motivo que el bridge: el celular sirve versiones viejas) y con
     el puerto del WebSocket reescrito 8765 -> 8766 al vuelo, para que el dash servido
-    aca hable con el mock y no con el bridge real."""
+    aca hable con el mock y no con el bridge real. Fuera del index, solo la lista blanca
+    de red_local (nunca entrega.json, logs ni .git/)."""
 
     def end_headers(self):
         self.send_header("Cache-Control", "no-store, max-age=0")

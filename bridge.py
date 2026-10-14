@@ -26,6 +26,8 @@ import time
 
 import websockets
 
+import red_local
+
 UDP_PORT = 5606
 WS_PORT = 8765
 HTTP_PORT = 8080
@@ -222,8 +224,9 @@ def lan_ip():
         s.close()
 
 
-class _NoCacheHandler(http.server.SimpleHTTPRequestHandler):
-    """Evita que el navegador del celular sirva una version cacheada del dash."""
+class _NoCacheHandler(red_local.SoloEstaticos):
+    """Evita que el navegador del celular sirva una version cacheada del dash. Solo entrega
+    las paginas del dash (red_local.ESTATICOS): nunca entrega.json, logs ni .git/."""
 
     def end_headers(self):
         self.send_header("Cache-Control", "no-store, max-age=0")

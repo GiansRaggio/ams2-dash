@@ -223,10 +223,17 @@ gira a horizontal y "Agregar a pantalla de inicio" para que quede en modo
 fullscreen como una app.
 
 > ⚠️ **Úsalo en tu red de casa, no en WiFi público.** Mientras el bridge corre,
-> cualquiera en la misma red puede abrir esa URL — y además el servidor expone la
-> carpeta del proyecto, o sea tu telemetría grabada y tu `player.txt`. No hay
-> contraseña. En tu casa da lo mismo; en la WiFi de un café o una universidad, no
-> lo levantes.
+> cualquiera en la misma red puede abrir esa URL y el visor, que muestra tus sesiones
+> grabadas con sus tiempos. No hay contraseña. Desde el 13-10-2026 el servidor entrega
+> **solo las páginas del dash** (`red_local.py`): ya no `entrega.json` (tu credencial
+> de la escuela), `player.txt`, logs, `telemetry/` ni `.git/`; y los botones del dash
+> (apagar, grabación, entregar…) solo se aplican desde la página del propio dash
+> abierta con la IP que imprime la consola, `localhost` o el nombre del PC (con o sin
+> `.local`), en el puerto 8080. Con otro nombre (los del router, `.lan`/`.home`,
+> Tailscale, DDNS) o desde otro puerto, el dash se ve pero los botones no se aplican,
+> aunque la pantalla diga «Servidor detenido» o «Entrega en camino»: la consola del
+> bridge dice «comandos ignorados» y desde dónde. En tu casa da lo mismo; en la WiFi
+> de un café o una universidad, no lo levantes.
 
 ## Archivos
 
@@ -246,7 +253,8 @@ fullscreen como una app.
 - `ams2_telemetry.py`, `ams2_strategy.py`, `ams2_tyres.py`, `ams2_dampers.py` —
   los módulos de cada página / feature, todos alimentados por `ams2_shm.py`.
 - `index.html` — el dashboard estilo display GT3, servido al celular.
-- `index-v1-backup.html` — la versión anterior, por si quieres volver.
+- `index-v1-backup.html` — la versión anterior, por si quieres volver (el servidor
+  solo entrega `index.html`: para usarla, renómbrala a `index.html`).
 - `tools/analyze_telemetry.py` — analizador offline de lo grabado en `telemetry/`.
 - `tools/informe.py` — genera el **informe de una página** del alumno a partir de
   una carpeta de sesión (ver más abajo). Usado por la Escuela de Conducción

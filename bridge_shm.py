@@ -36,6 +36,7 @@ import ams2_dampers
 import ams2_strategy
 import ams2_telemetry
 import ams2_tyres
+import red_local
 
 # El visor de telemetria es ACCESORIO: si su modulo no carga, el dash de manejar
 # tiene que seguir andando igual. Por eso el import es blando y no un import
@@ -442,8 +443,18 @@ _shutdown = False  # lo activa el comando "stop_server" del dash -> pump termina
 async def ws_handler(ws):
     global _shutdown
     CLIENTS.add(ws)
+    # el estado le llega a cualquiera de la red; los comandos, solo desde la pagina del
+    # propio dash (red_local.comandos_permitidos: Origin del mismo host y puerto HTTP)
+    manda = red_local.comandos_permitidos(ws, HTTP_PORT)
+    avisado = False
     try:
         async for raw in ws:                     # comandos del cliente
+            if not manda:
+                if not avisado:
+                    log(f"[bridge-shm] comandos ignorados de {getattr(ws, 'remote_address', '?')} "
+                        f"(Origin {red_local.origen(ws)}): no vienen de la pagina del dash")
+                    avisado = True
+                continue
             try:
                 msg = json.loads(raw)
             except (ValueError, TypeError):
@@ -605,12 +616,13 @@ def lan_ip():
         s.close()
 
 
-class _NoCacheHandler(http.server.SimpleHTTPRequestHandler):
+class _NoCacheHandler(red_local.SoloEstaticos):
     """Sirve el dash y la API de analisis (/api/*).
 
     Dos cosas: evita que el navegador del celular sirva una version cacheada, y
     resuelve las rutas /api/* del visor de telemetria leyendo lo que ya esta en
-    telemetry/. Todo lo demas cae al servidor de archivos de siempre.
+    telemetry/. Todo lo demas cae al servidor de archivos, que solo entrega las
+    paginas del dash (red_local.ESTATICOS): nunca entrega.json, logs, telemetry/ ni .git/.
     """
 
     def end_headers(self):
