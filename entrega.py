@@ -45,6 +45,10 @@ MUESTRAS_MINIMAS = 1000        # bajo esto la traza esta truncada, no es una vue
 REINTENTOS = 4
 TIMEOUT_S = 120
 MAX_MB = 60                    # el servidor corta en 64: queda margen para el manifiesto
+# Lo que se queda en el PC: rivals.json trae nombre, tiempos y sectores de los OTROS
+# pilotos de la sesion (en clase, los compañeros). La escuela promete no usar datos de
+# otros pilotos, y el alumno que baja su archivo veria los tiempos de los demas.
+NO_SE_ENTREGA = {"rivals.json"}
 
 # El registro local es un read-modify-write sobre un archivo compartido entre el hilo
 # de la cola y la CLI. Sin este lock dos escrituras concurrentes se pisan y el
@@ -277,7 +281,7 @@ def _archivos(carpeta):
     for nombre in sorted(os.listdir(carpeta)):
         # .tmp = escritura a medias que el grabador iba a renombrar (traza o
         # rivals.json): no es parte de la sesion, y si quedo es porque se corto
-        if nombre.endswith(".tmp"):
+        if nombre.endswith(".tmp") or nombre in NO_SE_ENTREGA:
             continue
         ruta = os.path.join(carpeta, nombre)
         if os.path.isfile(ruta):

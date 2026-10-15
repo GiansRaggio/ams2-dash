@@ -238,9 +238,19 @@ def main():
         _ok("registro corrupto: devuelve {} y no lanza", E.registro() == {})
 
         print("\ntest empaquetado:")
+        # rivals.json = nombre, tiempos y sectores de los OTROS pilotos de la sesion (en
+        # clase, otros alumnos): se queda en el PC, nunca viaja ni cuenta en la huella
+        rivales = os.path.join(d, "rivals.json")
+        with open(rivales, "w", encoding="utf-8") as f:
+            json.dump({"Otro Alumno": {"best": 91.2, "sec": [30.1, 31.0, 30.1], "pos": 2,
+                                       "laps": 6, "inv": 0, "me": False}}, f)
         datos, sha, id_sesion, man = E.empaquetar(d, "Gian")
         z = zipfile.ZipFile(io.BytesIO(datos))
         _ok("el zip lleva manifiesto", "manifiesto.json" in z.namelist())
+        _ok("el zip NO lleva rivals.json (datos de otros pilotos)",
+            "rivals.json" not in z.namelist(), z.namelist())
+        _ok("ningun byte del zip trae el nombre de otro piloto",
+            all(b"Otro Alumno" not in z.read(n) for n in z.namelist()))
         _ok("el zip lleva las trazas y el resumen",
             "summary.jsonl" in z.namelist() and "L001.csv.gz" in z.namelist())
         m = json.loads(z.read("manifiesto.json"))
@@ -274,6 +284,10 @@ def main():
             (id_sesion[:12], id_b[:12]))
         _ok("la huella depende del contenido, no del nombre de la carpeta",
             E.huella(d) == E.huella(d))
+        with open(rivales, "w", encoding="utf-8") as f:
+            json.dump({"Otro Alumno": {"best": 90.0}, "Tercero": {"best": 92.0}}, f)
+        _ok("los rivales no cuentan en la huella: que lleguen mas no la cambia",
+            E.huella(d) == id_sesion, (E.huella(d)[:12], id_sesion[:12]))
         # tocar un archivo tiene que cambiarla, o dos sesiones distintas colisionarian
         with open(os.path.join(d, "summary.jsonl"), "a", encoding="utf-8") as f:
             f.write(json.dumps({"lap": 99, "lap_time": 91.0, "valid": True}) + chr(10))
