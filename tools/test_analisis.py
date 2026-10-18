@@ -687,7 +687,9 @@ def _braking_original(folder, umbral=0.05):
                   if x is not None]
         if len(puntos) < 2:
             continue
-        buenos, fuera = AT._split_anomalas(puntos)
+        # 2026-10: el piso del MAD (PISO_MAD_FRENADA_M) cambio el criterio A PROPOSITO;
+        # la vara lo sigue para seguir cuidando lo suyo (el subconjunto de vueltas)
+        buenos, fuera = AT._split_anomalas(puntos, piso=AT.PISO_MAD_FRENADA_M)
         if len(buenos) < 2:
             continue
         out.append({"apex": round(c["apex"], 1), "n": len(buenos), "fuera": len(fuera),
@@ -1556,6 +1558,31 @@ def test_api_frenadas():
         shutil.rmtree(base, ignore_errors=True)
 
 
+def test_piso_mad_frenada():
+    """Los puntos de frenada salen de una grilla de 2 m: un piloto parejo da MAD 0-2 m
+    y el filtro de 5 MAD se apagaba (MAD 0) o cortaba de mas (MAD 1: 18 m ya era
+    "fuera"). Con el piso, fuera = a mas de 5 x 4 = 20 m de la mediana."""
+    print("\npiso del MAD en las frenadas:")
+    piso = AT.PISO_MAD_FRENADA_M
+    ok("el piso es 4 m", piso == 4.0, piso)
+    b, f = AT._split_anomalas([150, 150, 150, 150, 150, 194], piso=piso)
+    ok("MAD 0: una vuelta 44 m mas alla queda fuera", f == [194], (b, f))
+    b, f = AT._split_anomalas([150, 150, 150, 150, 150, 194])
+    ok("sin piso (como antes): MAD 0 no filtra nada", f == [], (b, f))
+    b, f = AT._split_anomalas([150, 150, 152, 148, 150, 168], piso=piso)
+    ok("MAD 1: 18 m distinto es manejo, no incidente (queda dentro)", f == [], (b, f))
+    b, f = AT._split_anomalas([150, 150, 152, 148, 150, 168])
+    ok("sin piso (como antes): esos 18 m quedaban fuera", f == [168], (b, f))
+    b, f = AT._split_anomalas([150, 150, 150, 150, 150, 170], piso=piso)
+    ok("justo a 20 m (5 x piso) queda dentro", f == [], (b, f))
+    b, f = AT._split_anomalas([130, 150, 170, 140, 160, 260], piso=piso)
+    ok("piloto disperso (MAD 15 > piso): manda su MAD", f == [260], (b, f))
+    b, f = AT._split_anomalas([150, 150, 194], piso=piso)
+    ok("con <4 vueltas no filtra, con o sin piso", f == [], (b, f))
+    b, f = AT._split_anomalas([90.1, 90.1, 90.1, 90.1, 95.0])
+    ok("los tiempos de vuelta no cambian: sin piso, MAD 0 no filtra", f == [], (b, f))
+
+
 def main():
     print("=== tests del visor de telemetria ===")
     if _hay_corpus():
@@ -1585,6 +1612,7 @@ def main():
     test_modo_compartir()
     test_redondeo_panel_igual_cli()
     test_api_frenadas()
+    test_piso_mad_frenada()
     print(f"\n{'TODO VERDE' if not _fallos else str(_fallos) + ' FALLO(S)'}")
     return 1 if _fallos else 0
 

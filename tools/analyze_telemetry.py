@@ -110,7 +110,16 @@ def _slope(ys):
     return num / den if den else 0.0
 
 
-def _split_anomalas(times, k=5.0):
+# Piso del MAD para los PUNTOS DE FRENADA (m). Salen de la grilla de 2 m de la traza,
+# asi que un piloto parejo da MAD 0-2 m y 5 MAD se volvia un filtro sin sentido: con
+# MAD 0 no filtraba nada (una vuelta 44 m mas alla quedaba dentro) y con MAD 1 sacaba
+# una frenada 18 m distinta, que es manejo y no un incidente. Con 4 m, mientras el
+# piloto sea parejo queda fuera lo que se aleja mas de 20 m de su mediana; si su
+# dispersion real es mayor, manda su propio MAD. Los tiempos de vuelta no lo usan.
+PISO_MAD_FRENADA_M = 4.0
+
+
+def _split_anomalas(times, k=5.0, piso=0.0):
     """Separa el ritmo REAL de los incidentes, por MAD (mediana de desviaciones absolutas).
 
     El sigma crudo lo secuestra un solo outlier: en Bathurst una vuelta con un incidente
@@ -122,11 +131,12 @@ def _split_anomalas(times, k=5.0):
     con la que se lo detecta. k=5 MAD es holgado: deja pasar trafico y deja fuera
     incidentes (en Bathurst el outlier estaba a 15 MAD; en OultonPark a 15 tambien).
     Devuelve (buenas, anomalas). Con <4 vueltas no filtra: no hay estadistica que valga.
+    `piso`: MAD minimo, en la unidad de `times` (ver PISO_MAD_FRENADA_M).
     """
     if len(times) < 4:
         return list(times), []
     med = st.median(times)
-    mad = st.median([abs(x - med) for x in times])
+    mad = max(st.median([abs(x - med) for x in times]), piso)
     if mad <= 1e-9:                      # todas practicamente iguales -> nada que filtrar
         return list(times), []
     buenas = [x for x in times if abs(x - med) / mad <= k]
@@ -695,7 +705,7 @@ def braking_struct(folder, umbral=0.05, vueltas=None):
         # comportamiento HABITUAL y las vueltas raras se reportan aparte, no se promedian.
         # En Snetterton 3 vueltas de 17 frenaban 190 m mas tarde (trafico, o un levante) y
         # se llevaban la sigma de 8 a 72 m -- el veredicto salia al reves de la realidad.
-        buenos, fuera = _split_anomalas(puntos)
+        buenos, fuera = _split_anomalas(puntos, piso=PISO_MAD_FRENADA_M)
         if len(buenos) < 2:
             continue
         out.append({"apex": round(c["apex"], 1), "n": len(buenos), "fuera": len(fuera),
