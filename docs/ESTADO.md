@@ -100,6 +100,16 @@ Al tocar algo nuevo por rueda: preguntarse **cuál rueda mide** antes de escribi
 - **El contador de vueltas se REINICIA al volver al garage.** Una práctica de Road
   Atlanta tiene seis tandas y tres "vuelta 1". La identidad es el `uid` del recorder,
   que ahora va también en `timeline.jsonl`.
+- **AMS2 no cuenta la out-lap que sale del garage si el pit lane no cruza la meta.**
+  Al cruzar la línea arranca el cronómetro, pero `mLapsCompleted` recién sube al cerrar
+  la LANZADA. En el corpus (2026-10-18): 96 de 108 salidas al inicio de sesión y 75 de 77
+  vueltas al garage a mitad de práctica. Solo se cuenta donde el garage queda antes de la
+  línea (Imola GP, Jerez, Goiânia Mixed, Virginia). El grabador juntaba garage + out-lap +
+  lanzada en una vuelta `pit` sin traza y marcaba `out` la siguiente: en la práctica de
+  Spa del 18-10 no quedó ninguna vuelta. Ahora corta en el cruce no contado (la distancia
+  vuelve a cero sin que suba el contador) y `out` es solo la vuelta que arranca saliendo
+  de boxes. **Falta verlo en pista**: si la distancia no delatara el cruce, la out-lap
+  sigue fundida como `pit` (sin traza ni resumen) y la que sigue ya se graba igual.
 - **Las vueltas de boxes son el BORDE de una tanda, no su inicio.** Tratar cada cruce
   con `pit`+`out` como inicio daba **once** tandas donde hay **seis**.
 - **Trazas `X###.csv.gz` = vuelta invalidada.** Se graban para poder comparar la tanda

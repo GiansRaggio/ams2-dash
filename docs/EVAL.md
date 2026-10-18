@@ -198,6 +198,7 @@ análisis identifica vueltas por su REGISTRO/traza, no por número — `clean_la
 flaguea el sector de mayor dispersión vuelta a vuelta (repetibilidad), distinto del gap a tu ideal —
 capturó justo lo de la sesión real (S1 varía 0.86s). `tools/test_insights.py`: +3 asserts (duplicado +
 R-consist). Suite total: 123. Pendiente: que el logger excluya solo la out-lap real tras el garage.
+→ Resuelto el 2026-10-18 (ver ESTADO, contador de vueltas): corte en el cruce que AMS2 no cuenta.
 
 ### it.11 — R6: balance sobre/subviraje + momento de inestabilidad (`--balance`)
 Diagnóstico de manejo por curva desde slip por rueda (trasero vs delantero): R/F >1.25 = sobreviraje,

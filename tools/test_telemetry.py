@@ -153,6 +153,30 @@ def cross_to(log, lap_completed, fuel=0.5, wear=0.05, pit=0, compound=b"Soft"):
     log._ingest(s)
 
 
+def feed_tramo(log, lap_completed, f0, f1, n=120, pit=0, invalid=False, estado=2):
+    """n muestras SIN mover el contador, con la distancia yendo de f0 a f1 (fracciones
+    del largo de la pista del mock). Para armar garage, pit lane y out-lap."""
+    largo = Snap().mTrackLength
+    for k in range(n):
+        s = Snap(laps_completed=lap_completed, invalid=invalid, pit=pit,
+                 dist=(f0 + (f1 - f0) * k / max(1, n - 1)) * largo)
+        s.mGameState = estado
+        log._ingest(s)
+
+
+def cruce_contado(log, lap_completed, lap_time):
+    """Cruce de meta que AMS2 SI cuenta: sube el contador y publica el tiempo."""
+    s = Snap(laps_completed=lap_completed, dist=0.0)
+    s.mLastLapTime = lap_time
+    log._ingest(s)
+
+
+def _leer_jsonl(ruta):
+    if not os.path.exists(ruta):
+        return []
+    return [json.loads(x) for x in open(ruta, encoding="utf-8").read().splitlines() if x.strip()]
+
+
 def session_dir(base):
     subs = [os.path.join(base, d) for d in os.listdir(base)
             if os.path.isdir(os.path.join(base, d))]
@@ -386,6 +410,8 @@ def main():
         test_carpeta_diferida()
         test_traza_atomica()
         test_corridas_por_boxes()
+        test_garage_outlap_sin_contar()
+        test_outlap_contada_desde_garage()
 
         print("done.")
     finally:
@@ -855,6 +881,99 @@ def test_corridas_por_boxes():
         _ok("dos corridas: el frio (5) y la de despues de boxes (2)",
             partida and [c["cronometradas"] for c in cs] == [5, 2],
             (partida, [c["cronometradas"] for c in cs]))
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_garage_outlap_sin_contar():
+    """AMS2 NO cuenta la out-lap que sale del garage cuando el pit lane no cruza la
+    linea de meta (la mayoria de las pistas). Al cruzar meta arranca el cronometro,
+    pero mLapsCompleted recien sube al cerrar la vuelta LANZADA. El grabador juntaba
+    garage + out-lap + lanzada en una sola vuelta 'pit', sin traza, y marcaba 'out' a
+    la siguiente. Caso real: Spa con el MC12, 2026-10-18 -- ninguna de sus 5 vueltas
+    quedo grabada, incluidas 2:16.871 y 2:16.555, validas en el juego."""
+    print("test_garage_outlap_sin_contar (garage -> out-lap no contada -> lanzada CON traza):")
+    base = tempfile.mkdtemp(prefix="ams2tel14_")
+    try:
+        log = T.TelemetryLogger(base_dir=base)
+        # entra a la sesion en el garage (despues de la linea, como en Spa)
+        feed_tramo(log, 0, 0.01, 0.01, n=50, pit=4, estado=4)
+        feed_tramo(log, 0, 0.01, 0.05, n=20, pit=5)             # pit lane de salida
+        feed_tramo(log, 0, 0.05, 0.99, n=300, invalid=True)     # out-lap (AMS2 la invalida)
+        feed_tramo(log, 0, 0.0, 0.99, n=260)                    # cruzo meta SIN contar: lanzada
+        cruce_contado(log, 1, 136.871)                          # recien aca sube el contador
+        feed_tramo(log, 1, 0.0, 0.99, n=260)                    # una mas, normal
+        cruce_contado(log, 2, 137.487)
+        # ESC al garage a mitad de la vuelta 3 y vuelta a salir (el contador NO se reinicia)
+        feed_tramo(log, 2, 0.0, 0.40, n=100)
+        feed_tramo(log, 2, 0.01, 0.01, n=50, pit=4, estado=4)
+        feed_tramo(log, 2, 0.01, 0.05, n=20, pit=5)
+        feed_tramo(log, 2, 0.05, 0.99, n=300, invalid=True)
+        feed_tramo(log, 2, 0.0, 0.99, n=260)                    # lanzada tras el garage
+        cruce_contado(log, 3, 136.555)
+
+        sd = session_dir(base)
+        trazas = sorted(f for f in os.listdir(sd) if f.endswith(".csv.gz")) if sd else []
+        _ok("las tres lanzadas tienen traza L (la out-lap invalida no las ensucia)",
+            trazas == ["L001_136.871s.csv.gz", "L002_137.487s.csv.gz", "L003_136.555s.csv.gz"],
+            trazas)
+        filas = []
+        if "L003_136.555s.csv.gz" in trazas:
+            with gzip.open(os.path.join(sd, "L003_136.555s.csv.gz"), "rt", encoding="utf-8") as f:
+                f.readline()
+                filas = [r.split(",") for r in f.read().strip().splitlines()]
+        _ok("la traza de la lanzada es SOLO la lanzada (sin garage ni out-lap)",
+            abs(len(filas) - 260) <= 2, len(filas))
+        largo = Snap().mTrackLength
+        _ok("y arranca en la linea de meta",
+            bool(filas) and float(filas[0][T.HEADER.index("lap_dist")]) < 0.05 * largo,
+            filas[0][T.HEADER.index("lap_dist")] if filas else None)
+
+        res = _leer_jsonl(os.path.join(sd, "summary.jsonl"))
+        _ok("summary: las tres lanzadas y ninguna out-lap",
+            [(r["lap"], r["lap_time"]) for r in res] == [(1, 136.871), (2, 137.487), (3, 136.555)],
+            [(r["lap"], r["lap_time"]) for r in res])
+        _ok("summary: muestras de UNA vuelta, no de garage + out-lap + lanzada",
+            bool(res) and all(abs(r["samples"] - 261) <= 2 for r in res), [r["samples"] for r in res])
+
+        tl = [r for r in _leer_jsonl(os.path.join(sd, "timeline.jsonl")) if r.get("type") == "lap"]
+        _ok("timeline: out-lap (pit, sin tiempo ni traza) antes de cada tanda",
+            [(r["lap"], r["kind"], r["lap_time"], r["trace"]) for r in tl if r["kind"] == "pit"]
+            == [(0, "pit", None, None), (2, "pit", None, None)],
+            [(r["lap"], r["kind"], r["lap_time"]) for r in tl])
+        _ok("timeline: la vuelta que sigue a la lanzada ya NO es 'out'",
+            [r["kind"] for r in tl] == ["pit", "flying", "flying", "pit", "flying"],
+            [r["kind"] for r in tl])
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_outlap_contada_desde_garage():
+    """En las pocas pistas con el garage ANTES de la linea (Imola GP, Jerez, Goiania
+    Mixed, Virginia) el pit lane cruza meta, ahi arranca el cronometro y la out-lap SI
+    se cuenta. Ese cruce dentro del pit lane no puede partir nada; y la vuelta que
+    sigue a la out-lap es lanzada, no 'out' (antes se perdia igual)."""
+    print("test_outlap_contada_desde_garage (pit lane que cruza meta -> out-lap contada):")
+    base = tempfile.mkdtemp(prefix="ams2tel15_")
+    try:
+        log = T.TelemetryLogger(base_dir=base)
+        feed_tramo(log, 0, 0.97, 0.97, n=50, pit=4, estado=4)   # garage antes de la linea
+        feed_tramo(log, 0, 0.97, 0.995, n=20, pit=5)
+        feed_tramo(log, 0, 0.0, 0.03, n=20, pit=5)              # cruza meta en el pit lane
+        feed_tramo(log, 0, 0.03, 0.99, n=300)                   # out-lap
+        cruce_contado(log, 1, 140.250)
+        feed_tramo(log, 1, 0.0, 0.99, n=260)                    # lanzada
+        cruce_contado(log, 2, 110.500)
+
+        sd = session_dir(base)
+        trazas = sorted(f for f in os.listdir(sd) if f.endswith(".csv.gz")) if sd else []
+        _ok("solo la lanzada tiene traza", trazas == ["L002_110.500s.csv.gz"], trazas)
+        tl = [r for r in _leer_jsonl(os.path.join(sd, "timeline.jsonl")) if r.get("type") == "lap"]
+        _ok("timeline: out-lap 'pit' y lanzada 'flying' (el cruce en el pit lane no parte)",
+            [(r["lap"], r["kind"]) for r in tl] == [(1, "pit"), (2, "flying")],
+            [(r["lap"], r["kind"]) for r in tl])
+        res = _leer_jsonl(os.path.join(sd, "summary.jsonl"))
+        _ok("summary: solo la lanzada", [r["lap"] for r in res] == [2], [r["lap"] for r in res])
     finally:
         shutil.rmtree(base, ignore_errors=True)
 

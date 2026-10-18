@@ -68,6 +68,9 @@ _FUERA_DE_SESION = (ams2_shm.GAME_FRONT_END, ams2_shm.GAME_EXITED,
 # cualquier mGameState; cinco segundos son 250 frames seguidos a 50 Hz.
 MENU_CIERRE_S = 5.0
 _PIT_INSIDE = (1, 2, 4)       # mPitMode entrando/parado/garage -> en boxes
+# Mitad de la pista: pasar por aca en pista despues de boxes prueba que el auto dio la
+# vuelta y no esta en el pit lane, que tambien queda cerca de la linea de meta.
+_MITAD = (0.25, 0.75)
 _SESS = {0: "invalid", 1: "practice", 2: "test", 3: "qualify",
          4: "formation", 5: "race", 6: "hotlap"}
 
@@ -240,8 +243,10 @@ class TelemetryLogger:
         self._invalid = False     # la vuelta se invalido (limites de pista)
         self._lap_ok = False      # estuvo habilitado toda la vuelta
         self._pit_this = True     # hubo pit en esta vuelta (1ra de sesion: si)
-        self._pit_prev = True     # hubo pit en la vuelta anterior (-> out-lap)
+        self._pit_prev = True     # la vuelta arranca saliendo de boxes (-> out-lap)
         self._in_pit_prev = False
+        self._en_pista = False    # desde la ultima vez en boxes ya paso por la mitad de la pista
+        self._dist_prev = None    # mCurrentLapDistance del frame anterior fuera de boxes
         self._compound_prev = None  # compuesto de las 4 gomas visto (para detectar cambio de goma)
         self._sectimes = [0.0, 0.0]
         self._sec_invalid = [False, False, False]
@@ -398,6 +403,12 @@ class TelemetryLogger:
                 self._last_lap = lap
                 self._begin_lap(d, p, cap)
                 self._pit_prev = True
+            elif self._cruce_sin_contar(d, p, in_pit):
+                # Cruzo meta y AMS2 no conto la vuelta: era la out-lap. Se cierra ACA
+                # para que la lanzada que empieza sea una vuelta propia, con su traza.
+                self._commit_lap(d, p, contada=False)
+                self._begin_lap(d, p, cap)
+            self._seguir_pista(d, p, in_pit)
 
             # El sector EN CURSO se deduce de lo que el juego publica en ESTE frame, y
             # se calcula ANTES de copiar los splits. Con `_sectimes` habia dos fallas:
@@ -484,7 +495,9 @@ class TelemetryLogger:
         self._buf = []
         self._invalid = False
         self._lap_ok = self._mode != "off"
-        self._pit_prev = self._pit_this
+        # Out-lap = la que ARRANCA saliendo de boxes. Si despues de boxes el auto ya
+        # dio la vuelta por la pista (la out-lap ya se cerro), la que empieza es lanzada.
+        self._pit_prev = self._pit_this and not self._en_pista
         self._pit_this = bool(d.mPitMode in _PIT_INSIDE)
         self._sectimes = [0.0, 0.0]                  # S1, S2 capturados en vivo (S3 = total - S1 - S2)
         self._sec_invalid = [False, False, False]    # validez por sector (limites de pista)
@@ -492,6 +505,33 @@ class TelemetryLogger:
                      "bmax": [-9e9] * 4, "n": 0}
         self._start = {"fuel": d.mFuelLevel * cap,
                        "wear": [d.mTyreWear[i] for i in range(4)]}
+
+    def _cruce_sin_contar(self, d, p, in_pit):
+        """Cruce de meta que AMS2 NO conto: el de la out-lap que sale del garage.
+
+        Cuando el pit lane no cruza la linea (Spa, Road Atlanta, Watkins Glen... el
+        90% de las salidas del corpus), la out-lap no tuvo un cruce que la empezara:
+        al cruzar meta arranca el cronometro pero mLapsCompleted no sube, y recien
+        sube al cerrar la LANZADA. Se reconoce por la distancia, que vuelve a cero
+        en la linea aunque el contador no se mueva. Solo se mira en una vuelta con
+        boxes y despues de pasar por la mitad de la pista, para que no lo dispare el
+        pit lane (tambien junto a la linea) ni una vuelta normal."""
+        largo = d.mTrackLength
+        return (self._pit_this and self._en_pista and not in_pit and largo > 0
+                and self._dist_prev is not None and self._dist_prev > 0.5 * largo
+                and p.mCurrentLapDistance < _MITAD[0] * largo)
+
+    def _seguir_pista(self, d, p, in_pit):
+        """Estado de pista para `_cruce_sin_contar` y la regla de out-lap de _begin_lap."""
+        largo = d.mTrackLength
+        dist = p.mCurrentLapDistance
+        if in_pit:
+            self._en_pista = False
+            self._dist_prev = None
+            return
+        if largo > 0 and _MITAD[0] * largo < dist < _MITAD[1] * largo:
+            self._en_pista = True
+        self._dist_prev = dist
 
     def _update_agg(self, d):
         a = self._agg
@@ -780,10 +820,13 @@ class TelemetryLogger:
             rec.update(extra)
         self._write_timeline(rec)
 
-    def _commit_lap(self, d, p):
+    def _commit_lap(self, d, p, contada=True):
         """Cierra la vuelta. SIEMPRE (si es vuelta de pista, no out/in/pit) guarda un
         registro de sectores con validez por sector -> permite rescatar sectores limpios
-        de vueltas invalidadas. La traza+resumen completos solo si la vuelta es 100% limpia."""
+        de vueltas invalidadas. La traza+resumen completos solo si la vuelta es 100% limpia.
+
+        `contada=False`: la cierra un cruce que AMS2 no conto (ver _cruce_sin_contar).
+        Es una out-lap: no tiene tiempo propio, y mLastLapTime es el de otra vuelta."""
         # El primer cruce de meta de la sesion es lo que crea la carpeta en disco (ver
         # _crear_carpeta): antes de eso no habia nada que guardar.
         if self._sess_dir is not None and self._mode != "off":
@@ -800,7 +843,7 @@ class TelemetryLogger:
         # --- linea de tiempo: UNA linea por CADA vuelta cruzada (out/in/pit/invalida/corta) ---
         # gateado en modo != off (en off _commit_lap SI se llama, pero no debe escribir nada).
         lap_no = int(p.mLapsCompleted)
-        lap_time = d.mLastLapTime if d.mLastLapTime > 0 else None
+        lap_time = d.mLastLapTime if contada and d.mLastLapTime > 0 else None
         # Nombre de la traza. Prefijo L = vuelta limpia, X = vuelta INVALIDADA por
         # limites de pista. La distincion es deliberada y no cosmetica: todo el
         # analisis del repo llega a las trazas por summary.jsonl (que solo lista
