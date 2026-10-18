@@ -1,0 +1,82 @@
+{
+ "pista": "Spielberg",
+ "variante": "Spielberg_Short",
+ "largo_m": 2328.2,
+ "fijadas": "2026-10-18",
+ "fuente": {
+  "sesion": "Spielberg__Ginetta_G40__hotlap__20261018_025909",
+  "auto": "Ginetta_G40",
+  "vuelta": 17,
+  "tiempo": 60.168,
+  "traza": "L017_60.168s.csv.gz"
+ },
+ "algoritmo": "curvatura del trazado (ams2_analysis._curvas: radio_max 250 m, giro_min 10 grados, sep_min 45 m)",
+ "curvas": [
+  {
+   "n": 1,
+   "metro": 444.0,
+   "giro": 69,
+   "inicio": 406.0,
+   "fin": 518.0,
+   "lado": "der",
+   "radio_m": 68.1,
+   "x": -191.4,
+   "z": -54.6
+  },
+  {
+   "n": 2,
+   "metro": 860.0,
+   "giro": 158,
+   "inicio": 798.0,
+   "fin": 990.0,
+   "lado": "der",
+   "radio_m": 52.0,
+   "x": -413.1,
+   "z": 277.3
+  },
+  {
+   "n": 3,
+   "metro": 1012.0,
+   "giro": 87,
+   "inicio": 998.0,
+   "fin": 1168.0,
+   "lado": "izq",
+   "radio_m": 94.2,
+   "x": -294.0,
+   "z": 279.8
+  },
+  {
+   "n": 4,
+   "metro": 1226.0,
+   "giro": 31,
+   "inicio": 1206.0,
+   "fin": 1308.0,
+   "lado": "der",
+   "radio_m": 164.5,
+   "x": -115.6,
+   "z": 336.0
+  },
+  {
+   "n": 5,
+   "metro": 1770.0,
+   "giro": 64,
+   "inicio": 1734.0,
+   "fin": 1888.0,
+   "lado": "der",
+   "radio_m": 114.2,
+   "x": 419.7,
+   "z": 378.5
+  },
+  {
+   "n": 6,
+   "metro": 2026.0,
+   "giro": 82,
+   "inicio": 1962.0,
+   "fin": 2116.0,
+   "lado": "der",
+   "radio_m": 77.9,
+   "x": 514.5,
+   "z": 167.7
+  }
+ ]
+}
