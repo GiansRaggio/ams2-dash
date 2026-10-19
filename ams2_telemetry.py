@@ -10,7 +10,8 @@ vuelca:
       summary.jsonl                1 linea por vuelta valida (resumen)
       L003_92.451s.csv.gz          traza completa de la vuelta LIMPIA
       X005_93.118s.csv.gz          traza de una vuelta INVALIDADA por limites de pista
-      timeline.jsonl               linea de tiempo COMPLETA (aditiva): 1 registro por CADA
+      S001_151.351s.csv.gz         traza de la vuelta 1 de una CARRERA (desde la largada)
+      timeline.jsonl              linea de tiempo COMPLETA (aditiva): 1 registro por CADA
                                    vuelta cruzada (out/in/pit/invalida/corta incluidas) +
                                    eventos (largada, pit_in/out, cambio de goma)
 
@@ -19,6 +20,10 @@ frenadas y trazada utiles, asi que su TRAZA se guarda (el visor compara la tanda
 vuelta por vuelta y sin ellas se pierde media sesion), pero NO entra a
 summary.jsonl. Todo el analisis del repo llega a las trazas por el resumen, de
 modo que su corpus sigue siendo solo vueltas limpias y no cambia por esto.
+
+El prefijo S, por lo mismo: la vuelta 1 de una carrera (largada, trafico) no es
+representativa aunque sea valida, y tyre_replay/crossover_replay toman TODO L*
+como vuelta limpia. Va al visor por la linea de tiempo (kind "start"), no al resumen.
 
 La traza es CSV gzippeado: 1 fila por muestra (~50 Hz), columnas = canales
 (velocidad, pedales, direccion, g-forces, posicion, y por esquina: temps de goma
@@ -71,6 +76,10 @@ _PIT_INSIDE = (1, 2, 4)       # mPitMode entrando/parado/garage -> en boxes
 # Mitad de la pista: pasar por aca en pista despues de boxes prueba que el auto dio la
 # vuelta y no esta en el pit lane, que tambien queda cerca de la linea de meta.
 _MITAD = (0.25, 0.75)
+_PIT_NONE = 0
+# mSessionState de carrera y mRaceState (enum de SharedMemory.h de CREST2-AMS2, v14)
+_SESION_CARRERA = 5
+_SIN_LARGAR, _CORRIENDO = 1, 2   # RACESTATE_NOT_STARTED, RACESTATE_RACING
 _SESS = {0: "invalid", 1: "practice", 2: "test", 3: "qualify",
          4: "formation", 5: "race", 6: "hotlap"}
 
@@ -247,6 +256,9 @@ class TelemetryLogger:
         self._in_pit_prev = False
         self._en_pista = False    # desde la ultima vez en boxes ya paso por la mitad de la pista
         self._dist_prev = None    # mCurrentLapDistance del frame anterior fuera de boxes
+        self._sin_largar = False  # carrera esperando la largada (parrilla / formacion)
+        self._largada = False     # la vuelta en curso es la 1 de la carrera, desde la largada
+        self._anclar_en_meta = False  # largo detras de la linea: la vuelta empieza al cruzarla
         self._compound_prev = None  # compuesto de las 4 gomas visto (para detectar cambio de goma)
         self._sectimes = [0.0, 0.0]
         self._sec_invalid = [False, False, False]
@@ -392,6 +404,8 @@ class TelemetryLogger:
                 self._pit_this = True
 
             lap = p.mLapsCompleted
+            carrera = int(d.mSessionState) == _SESION_CARRERA
+            estado = self._estado_carrera(d, v) if carrera else 0
             if self._last_lap < 0:
                 self._last_lap = lap
                 self._begin_lap(d, p, cap)
@@ -403,11 +417,29 @@ class TelemetryLogger:
                 self._last_lap = lap
                 self._begin_lap(d, p, cap)
                 self._pit_prev = True
+                self._largada = False
             elif self._cruce_sin_contar(d, p, in_pit):
                 # Cruzo meta y AMS2 no conto la vuelta: era la out-lap. Se cierra ACA
                 # para que la lanzada que empieza sea una vuelta propia, con su traza.
                 self._commit_lap(d, p, contada=False)
                 self._begin_lap(d, p, cap)
+            elif self._sin_largar and estado == _CORRIENDO:
+                # LARGADA: la vuelta 1 empieza aca, sin la parrilla ni la formacion. La
+                # primera vuelta de la sesion se daba por out-lap; en carrera solo lo es
+                # si se larga desde el pit lane.
+                self._begin_lap(d, p, cap)
+                self._largada = True
+                self._pit_prev = d.mPitMode != _PIT_NONE
+                largo = d.mTrackLength
+                self._anclar_en_meta = (not self._pit_prev and largo > 0
+                                        and p.mCurrentLapDistance > 0.5 * largo)
+            elif self._anclar_en_meta and self._cruce_de_meta(d, p, in_pit):
+                # Largo detras de la linea: la distancia arrancaba cerca del final de
+                # la vuelta y el visor (que exige distancia creciente) se quedaba solo
+                # con esos metros. La traza parte al cruzar la linea.
+                self._begin_lap(d, p, cap)
+                self._anclar_en_meta = False
+            self._sin_largar = carrera and estado == _SIN_LARGAR
             self._seguir_pista(d, p, in_pit)
 
             # El sector EN CURSO se deduce de lo que el juego publica en ESTE frame, y
@@ -478,7 +510,9 @@ class TelemetryLogger:
             # y se lleva el GIL, hundiendo los FPS del juego. Medido por el piloto:
             # tras varias carreras seguidas el juego caia de 160 a 60 fps, y
             # cerrando el dash volvia a 160.
-            if self._mode == "full" and d.mGameState == ams2_shm.GAME_INGAME_PLAYING:
+            # Tampoco antes de la largada: la parrilla y la formacion no son vuelta 1.
+            if (self._mode == "full" and d.mGameState == ams2_shm.GAME_INGAME_PLAYING
+                    and not self._sin_largar):
                 if len(self._buf) < MAX_LAP_SAMPLES:
                     self._buf.append(_row(d, p, cap))
                 elif self._buf:
@@ -516,10 +550,24 @@ class TelemetryLogger:
         en la linea aunque el contador no se mueva. Solo se mira en una vuelta con
         boxes y despues de pasar por la mitad de la pista, para que no lo dispare el
         pit lane (tambien junto a la linea) ni una vuelta normal."""
+        return self._pit_this and self._en_pista and self._cruce_de_meta(d, p, in_pit)
+
+    def _cruce_de_meta(self, d, p, in_pit):
+        """La distancia volvio a cero en pista: el auto cruzo la linea de meta."""
         largo = d.mTrackLength
-        return (self._pit_this and self._en_pista and not in_pit and largo > 0
+        return (not in_pit and largo > 0
                 and self._dist_prev is not None and self._dist_prev > 0.5 * largo
                 and p.mCurrentLapDistance < _MITAD[0] * largo)
+
+    @staticmethod
+    def _estado_carrera(d, v):
+        """mRaceState de TU auto. El arreglo por participante es opcional a proposito
+        (como en _track_rivals): sin el, el campo global; sin ninguno, 0 = no se sabe,
+        y la vuelta 1 se trata como antes."""
+        try:
+            return int(d.mRaceStates[v])
+        except (AttributeError, IndexError, TypeError):
+            return int(getattr(d, "mRaceState", 0))
 
     def _seguir_pista(self, d, p, in_pit):
         """Estado de pista para `_cruce_sin_contar` y la regla de out-lap de _begin_lap."""
@@ -820,6 +868,20 @@ class TelemetryLogger:
             rec.update(extra)
         self._write_timeline(rec)
 
+    def _volcar_traza(self, tname):
+        """Escribe el buffer como traza: a .tmp y os.replace, para que bajo su nombre
+        final solo exista la traza COMPLETA. False si fallo el disco."""
+        ruta = os.path.join(self._sess_dir, tname)
+        try:
+            with gzip.open(ruta + ".tmp", "wt", newline="", encoding="utf-8") as f:
+                f.write(",".join(HEADER) + "\n")
+                f.write("\n".join(self._buf))
+                f.write("\n")
+            os.replace(ruta + ".tmp", ruta)
+            return True
+        except OSError:
+            return False
+
     def _commit_lap(self, d, p, contada=True):
         """Cierra la vuelta. SIEMPRE (si es vuelta de pista, no out/in/pit) guarda un
         registro de sectores con validez por sector -> permite rescatar sectores limpios
@@ -835,11 +897,16 @@ class TelemetryLogger:
         # momento natural de volcarlos, y saca la escritura del camino de los 50Hz.
         if self._mode != "off":
             self._write_rivals()
+        largada, self._largada = self._largada, False
+        self._anclar_en_meta = False
         n_samples = self._agg["n"] if self._agg else 0
-        flying = (self._lap_ok and self._mode != "off"
-                  and not self._pit_this and not self._pit_prev
-                  and self._sess_dir is not None
-                  and n_samples >= MIN_LAP_SAMPLES)
+        de_pista = (self._lap_ok and self._mode != "off"
+                    and not self._pit_this and not self._pit_prev
+                    and self._sess_dir is not None
+                    and n_samples >= MIN_LAP_SAMPLES)
+        # La vuelta 1 de carrera guarda traza (S###) y linea de tiempo, pero NO
+        # sectores ni resumen: largada y trafico no son una vuelta representativa.
+        flying = de_pista and not largada
         # --- linea de tiempo: UNA linea por CADA vuelta cruzada (out/in/pit/invalida/corta) ---
         # gateado en modo != off (en off _commit_lap SI se llama, pero no debe escribir nada).
         lap_no = int(p.mLapsCompleted)
@@ -852,15 +919,17 @@ class TelemetryLogger:
         # visibles SOLO para quien las pida por la linea de tiempo -- el visor,
         # que las necesita para comparar la tanda vuelta por vuelta.
         tname = None
-        if flying and self._mode == "full":
-            tname = (f"{'X' if self._invalid else 'L'}{lap_no:03d}"
-                     f"_{(lap_time if lap_time else 0):.3f}s.csv.gz")
+        if de_pista and self._mode == "full":
+            prefijo = "S" if largada else "X" if self._invalid else "L"
+            tname = f"{prefijo}{lap_no:03d}_{(lap_time if lap_time else 0):.3f}s.csv.gz"
         linea_tl = None
         if self._sess_dir is not None and self._mode != "off":
             if self._pit_this:
                 kind = "pit"
             elif self._pit_prev:
                 kind = "out"
+            elif largada:
+                kind = "start"
             elif self._invalid:
                 kind = "invalid"
             elif n_samples < MIN_LAP_SAMPLES:
@@ -890,6 +959,8 @@ class TelemetryLogger:
                 "ts": datetime.now().isoformat(timespec="seconds"),
             }
         if not flying:
+            if tname and not self._volcar_traza(tname) and linea_tl:
+                linea_tl["trace"] = None          # no anunciar una traza que no existe
             if linea_tl:
                 self._write_timeline(linea_tl)
             return
@@ -913,18 +984,10 @@ class TelemetryLogger:
         # COMPLETA, y para cuando la linea de tiempo la anuncia ya esta; y el
         # resumen sigue escribiendose despues de la linea de tiempo, que es lo que
         # evita vueltas "huerfanas" (ver analyze_telemetry._partir_corridas).
-        if tname:
-            ruta = os.path.join(self._sess_dir, tname)
-            try:
-                with gzip.open(ruta + ".tmp", "wt", newline="", encoding="utf-8") as f:
-                    f.write(",".join(HEADER) + "\n")
-                    f.write("\n".join(self._buf))
-                    f.write("\n")
-                os.replace(ruta + ".tmp", ruta)
-            except OSError:
-                tname = None
-                if linea_tl:
-                    linea_tl["trace"] = None      # no anunciar una traza que no existe
+        if tname and not self._volcar_traza(tname):
+            tname = None
+            if linea_tl:
+                linea_tl["trace"] = None      # no anunciar una traza que no existe
         if linea_tl:
             self._write_timeline(linea_tl)
         # registro de sectores para TODA vuelta de pista (limpia o invalidada) -> rescate

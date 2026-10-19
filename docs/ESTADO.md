@@ -116,6 +116,14 @@ Al tocar algo nuevo por rueda: preguntarse **cuál rueda mide** antes de escribi
   completa, pero NO entran a `summary.jsonl`: todas las herramientas de análisis llegan
   a las trazas por el resumen, así que su corpus sigue siendo solo vueltas limpias.
   Verificado con `tyre_replay` (83 sesiones, VERIFICA OK).
+- **Trazas `S###.csv.gz` = vuelta 1 de una carrera**, desde la largada (`mRaceState`
+  pasa de sin largar a corriendo); si se larga detrás de la línea, desde el cruce, para
+  que la distancia crezca como en el resto. Antes nunca se grababa (se daba por out-lap) y
+  el buffer arrastraba ~2 min de parrilla. Va al visor por la línea de tiempo
+  (`kind: "start"`) y NO a `summary.jsonl` ni a `sectors.jsonl`. No es L aunque sea
+  válida: `tyre_replay` y `crossover_replay` toman todo `L*` como vuelta limpia. Largar
+  desde el pit lane sigue siendo out-lap. **Falta verlo en pista** (el momento exacto en
+  que AMS2 da la largada en una lanzada).
 - La API `/api/*` queda **expuesta en la LAN**: el nombre de sesión se valida como
   frontera de confianza (un `..` colado serviría cualquier archivo del disco).
 

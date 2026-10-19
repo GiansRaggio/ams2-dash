@@ -412,6 +412,7 @@ def main():
         test_corridas_por_boxes()
         test_garage_outlap_sin_contar()
         test_outlap_contada_desde_garage()
+        test_vuelta1_de_carrera()
 
         print("done.")
     finally:
@@ -974,6 +975,104 @@ def test_outlap_contada_desde_garage():
             [(r["lap"], r["kind"]) for r in tl])
         res = _leer_jsonl(os.path.join(sd, "summary.jsonl"))
         _ok("summary: solo la lanzada", [r["lap"] for r in res] == [2], [r["lap"] for r in res])
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def _carrera(log, lap_completed, f0, f1, n, estado, pit=0, lap_time=None):
+    """Muestras de una sesion de CARRERA. `estado` = mRaceState del auto (1 sin largar,
+    2 corriendo). Con lap_time, la ultima muestra es el cruce que cierra la vuelta."""
+    largo = Snap().mTrackLength
+    for k in range(n):
+        s = Snap(laps_completed=lap_completed, pit=pit,
+                 dist=(f0 + (f1 - f0) * k / max(1, n - 1)) * largo)
+        s.mSessionState = 5
+        s.mRaceStates = [estado] * 64
+        log._ingest(s)
+    if lap_time is not None:
+        s = Snap(laps_completed=lap_completed + 1, dist=0.0)
+        s.mSessionState = 5
+        s.mRaceStates = [2] * 64
+        s.mLastLapTime = lap_time
+        log._ingest(s)
+
+
+def test_vuelta1_de_carrera():
+    """La vuelta 1 de una carrera nunca se grababa: el grabador daba por hecho que la
+    primera vuelta de la sesion sale de boxes, y el buffer arrastraba la espera en la
+    parrilla (y la formacion). Caso real: Spa con el Viper, 2026-10-18 -- vuelta 1 de
+    151.351 s con 267 s de muestras y sin traza. Ahora se graba desde la largada con
+    traza S### y kind 'start', FUERA del resumen: no es representativa (largada, trafico)."""
+    print("test_vuelta1_de_carrera (parrilla -> largada -> vuelta 1 con traza, sin formacion):")
+    base = tempfile.mkdtemp(prefix="ams2tel16_")
+    try:
+        # largada detrás de la linea, despues de una vuelta de formacion
+        log = T.TelemetryLogger(base_dir=base)
+        _carrera(log, 0, 0.30, 0.97, 300, estado=1)        # formacion (sin largar)
+        _carrera(log, 0, 0.97, 0.97, 200, estado=1)        # parado en la parrilla
+        _carrera(log, 0, 0.97, 0.999, 20, estado=2)        # luces: arranca, aun antes de la linea
+        _carrera(log, 0, 0.0, 0.99, 260, estado=2, lap_time=151.351)   # vuelta 1
+        _carrera(log, 1, 0.0, 0.99, 260, estado=2, lap_time=138.188)   # vuelta 2
+        sd = session_dir(base)
+        trazas = sorted(f for f in os.listdir(sd) if f.endswith(".csv.gz")) if sd else []
+        _ok("la vuelta 1 tiene traza propia (S) y la 2 la normal (L)",
+            trazas == ["L002_138.188s.csv.gz", "S001_151.351s.csv.gz"], trazas)
+        filas = []
+        if "S001_151.351s.csv.gz" in trazas:
+            with gzip.open(os.path.join(sd, "S001_151.351s.csv.gz"), "rt", encoding="utf-8") as f:
+                f.readline()
+                filas = [r.split(",") for r in f.read().strip().splitlines()]
+        largo = Snap().mTrackLength
+        _ok("la traza de la vuelta 1 no trae formacion ni parrilla", abs(len(filas) - 260) <= 2,
+            len(filas))
+        _ok("y arranca en la linea (distancia creciente para el visor)",
+            bool(filas) and float(filas[0][T.HEADER.index("lap_dist")]) < 0.05 * largo,
+            filas[0][T.HEADER.index("lap_dist")] if filas else None)
+        tl = [r for r in _leer_jsonl(os.path.join(sd, "timeline.jsonl")) if r.get("type") == "lap"]
+        v1 = tl[0] if tl else {}
+        _ok("timeline: vuelta 1 'start', sin marca de salida de boxes, con su traza",
+            (v1.get("lap"), v1.get("kind"), v1.get("out"), v1.get("trace"))
+            == (1, "start", False, "S001_151.351s.csv.gz"),
+            (v1.get("lap"), v1.get("kind"), v1.get("out"), v1.get("trace")))
+        _ok("timeline: muestras de la vuelta, no de la espera", abs(v1.get("samples", 0) - 261) <= 2,
+            v1.get("samples"))
+        res = _leer_jsonl(os.path.join(sd, "summary.jsonl"))
+        _ok("summary: la vuelta 1 NO entra (no es representativa)",
+            [r["lap"] for r in res] == [2], [r["lap"] for r in res])
+        secs = _leer_jsonl(os.path.join(sd, "sectors.jsonl"))
+        _ok("sectors: tampoco", [r["lap"] for r in secs] == [2], [r["lap"] for r in secs])
+        shutil.rmtree(base, ignore_errors=True)
+
+        # parrilla DESPUES de la linea: la vuelta arranca en las luces, con la partida
+        base = tempfile.mkdtemp(prefix="ams2tel16b_")
+        log = T.TelemetryLogger(base_dir=base)
+        _carrera(log, 0, 0.01, 0.01, 200, estado=1)
+        _carrera(log, 0, 0.01, 0.99, 280, estado=2, lap_time=120.5)
+        sd = session_dir(base)
+        trazas = sorted(f for f in os.listdir(sd) if f.endswith(".csv.gz")) if sd else []
+        filas = []
+        if trazas:
+            with gzip.open(os.path.join(sd, trazas[0]), "rt", encoding="utf-8") as f:
+                f.readline()
+                filas = f.read().strip().splitlines()
+        _ok("parrilla despues de la linea: la traza trae la partida desde las luces",
+            trazas == ["S001_120.500s.csv.gz"] and abs(len(filas) - 280) <= 2,
+            (trazas, len(filas)))
+        shutil.rmtree(base, ignore_errors=True)
+
+        # largada desde boxes: sigue siendo out-lap
+        base = tempfile.mkdtemp(prefix="ams2tel16c_")
+        log = T.TelemetryLogger(base_dir=base)
+        _carrera(log, 0, 0.96, 0.96, 200, estado=1, pit=2)
+        _carrera(log, 0, 0.96, 0.99, 30, estado=2, pit=3)
+        _carrera(log, 0, 0.0, 0.99, 260, estado=2, lap_time=125.0)
+        sd = session_dir(base)
+        trazas = sorted(f for f in os.listdir(sd) if f.endswith(".csv.gz")) if sd else []
+        tl = [r for r in _leer_jsonl(os.path.join(sd, "timeline.jsonl")) if r.get("type") == "lap"]
+        _ok("largada desde boxes: out-lap sin traza ni resumen",
+            trazas == [] and [r["kind"] for r in tl] in (["pit"], ["out"])
+            and not _leer_jsonl(os.path.join(sd, "summary.jsonl")),
+            (trazas, [r["kind"] for r in tl]))
     finally:
         shutil.rmtree(base, ignore_errors=True)
 
