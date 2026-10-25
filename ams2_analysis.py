@@ -505,47 +505,19 @@ def eventos(tr: dict, curvas: list) -> list[dict]:
                     giro_m = metros[i]
                     break
 
-        # --- a fondo: primer acelerador clavado a la salida --------------------
-        gas_m, g = None, None
+        # --- a fondo y acelera (donde VUELVE al gas, aunque no sea a fondo) -----
+        # La regla vive en `AT._a_fondo` / `AT._acelera` y la comparte el informe
+        # escrito (`informe._causa`): un solo "donde abre el gas" por vuelta.
+        # La ventana de acelera arranca en la frenada o, si no frena, 120 m antes
+        # del inicio de la curva, y nunca antes del apex anterior.
+        gas_m = acel_m = None
         if thr:
             lim = min(ix(fin + 250), n - 3)
-            for i in range(ap, lim + 1):
-                if thr[i] >= 0.90 and thr[i + 1] >= 0.90 and thr[i + 2] >= 0.90:
-                    gas_m, g = metros[i], i
-                    break
-
-        # --- acelera: donde VUELVE al gas, aunque no sea a fondo ----------------
-        # "A fondo" dice cuando se compromete; "acelera" dice cuando deja de
-        # esperar, y en el debrief es la pregunta de la salida ("abres el gas en
-        # el apex o 20 m despues?"). Medido en la referencia del curso (Spielberg
-        # corta, T1): acelera 28 m ANTES del apex y llega a fondo justo en el
-        # apex, asi que buscarlo desde el apex, como `gas_m`, lo pierde.
-        #
-        # Se busca despues del ULTIMO momento con freno pisado o sin gas (< 10%)
-        # entre la frenada y 20 m pasado el apex, sin pasar de "a fondo". Asi no
-        # cuentan los golpes de gas del rebaje (AMS2 mete el auto-blip en el pedal
-        # crudo y caen DENTRO de la frenada) ni un gas de mantenimiento que se
-        # vuelve a soltar antes del apex. None = nunca solto el gas en esa curva.
-        acel_m = None
-        if thr:
-            fin_off = None
+            g = AT._a_fondo(metros, thr, ap, lim)
+            gas_m = metros[g] if g is not None else None
             w0 = max(ap_prev + 1, ix(frenada_m) if frenada_m is not None else ix(ini - 120))
-            w1 = min(ap + int(round(20.0 / paso)), n - 1)
-            if g is not None:
-                w1 = min(w1, g - 1)
-            for i in range(w0, w1 + 1):
-                if thr[i] < 0.10 or (brk and brk[i] > 0.05):
-                    fin_off = i
-            if fin_off is not None:
-                lim = g if g is not None else min(ix(fin + 250), n - 3)
-                for i in range(fin_off + 1, lim + 1):
-                    if all(thr[k] >= 0.10 and not (brk and brk[k] > 0.05) for k in (i, i + 1, i + 2)):
-                        acel_m = metros[i]
-                        break
-                if acel_m is None and g is not None:
-                    # volvio a fondo con el freno todavia pisado (pie izquierdo): ir a
-                    # fondo ES volver al gas, y None diria "nunca solto", que es falso
-                    acel_m = gas_m
+            i_acel = AT._acelera(metros, thr, brk, ap, w0, lim, g)
+            acel_m = metros[i_acel] if i_acel is not None else None
 
         out.append({
             "n": cu.get("n"),

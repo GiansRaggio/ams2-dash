@@ -712,6 +712,81 @@ def _punto_frenada(t, apex_m, umbral=0.05, max_atras_m=400.0, hueco_m=15.0):
     return d0 if 0.0 < apex_m - d0 <= max_atras_m else None
 
 
+# Acelera y a fondo de una curva (24-10, cbb52f2). "A fondo" dice cuando el piloto se
+# compromete; "acelera" dice cuando deja de esperar, y en el debrief es la pregunta de
+# la salida ("abres el gas en el apex o 20 m despues?"). Viven aca, junto a la frenada,
+# por la misma razon que `_saltar_toque`: el visor (`ams2_analysis.eventos`, grilla de
+# 2 m, y la vista del profe que lee `acel_m`) y el informe escrito (`informe._causa`,
+# traza cruda a 50 Hz) tienen que decir el MISMO metro de la misma vuelta. Por eso los
+# largos van en metros y no en muestras: en la grilla del visor, 6 m son las tres
+# muestras de siempre; en la traza cruda, las que quepan en esos 6 m.
+A_FONDO = 0.90              # acelerador clavado
+GAS_SUELTO = 0.10           # bajo esto el pie esta fuera del gas
+SOSTENIDO_M = 6.0           # un pedal cuenta si se sostiene 6 m: un pico suelto es ruido
+ACEL_PASADO_APEX_M = 20.0   # hasta donde se mira el "ultimo momento sin gas"
+_EPS_M = 1e-6               # la grilla redondea a 0,1 m: que 6,0 no se lea 5,9999
+
+
+def _sostenido(dist, i, cond, metros=SOSTENIDO_M):
+    """`cond(k)` se cumple en todas las muestras de [dist[i], dist[i] + metros)."""
+    k = i
+    while k < len(dist) and dist[k] - dist[i] < metros - _EPS_M:
+        if not cond(k):
+            return False
+        k += 1
+    return True
+
+
+def _a_fondo(dist, thr, ap, lim, umbral=A_FONDO):
+    """Indice del primer acelerador clavado y sostenido desde el apex `ap` hasta `lim`.
+
+    None si no llega a fondo antes del tope (una curva encadenada con la siguiente).
+    """
+    for i in range(ap, lim + 1):
+        if _sostenido(dist, i, lambda k: thr[k] >= umbral):
+            return i
+    return None
+
+
+def _acelera(dist, thr, br, ap, desde, lim, g=None, umbral=0.05):
+    """Indice donde el piloto VUELVE al gas en una curva, aunque no sea a fondo.
+
+    Es el primer acelerador >= `GAS_SUELTO` sostenido y sin freno DESPUES del ultimo
+    momento con freno pisado o sin gas entre `desde` y `ACEL_PASADO_APEX_M` pasado el
+    apex, sin pasar de a fondo. Asi no cuentan los golpes de gas del rebaje (AMS2 mete
+    el auto-blip en el pedal crudo y caen DENTRO de la frenada) ni un gas de
+    mantenimiento que se vuelve a soltar antes del apex. Puede caer ANTES del apex:
+    en la referencia del curso (Spielberg corta, T1) acelera 28 m antes y llega a fondo
+    justo en el apex, asi que buscarlo desde el apex, como a fondo, lo pierde.
+
+    `ap` es el indice del apex; `desde`, el primero de la ventana (la frenada o, si no
+    frena, un tramo antes de la curva; nunca antes del apex anterior); `lim`, el ultimo
+    donde puede caer si no llega a fondo; `g`, el de `_a_fondo` o None. Devuelve None
+    si nunca solto el gas (curva a fondo): mostrar None es informacion, inventar un
+    numero no.
+    """
+    def suelto(k):
+        return thr[k] < GAS_SUELTO or (bool(br) and br[k] > umbral)
+
+    w1 = ap
+    while w1 + 1 < len(dist) and dist[w1 + 1] - dist[ap] <= ACEL_PASADO_APEX_M + _EPS_M:
+        w1 += 1
+    if g is not None:
+        w1 = min(w1, g - 1)
+    fin_off = None
+    for i in range(desde, w1 + 1):
+        if suelto(i):
+            fin_off = i
+    if fin_off is None:
+        return None
+    for i in range(fin_off + 1, (g if g is not None else lim) + 1):
+        if _sostenido(dist, i, lambda k: not suelto(k)):
+            return i
+    # volvio a fondo con el freno todavia pisado (pie izquierdo): ir a fondo ES volver
+    # al gas, y None diria "nunca solto", que es falso
+    return g
+
+
 def braking_struct(folder, umbral=0.05, vueltas=None):
     """Punto de frenada de cada curva y su DISPERSION entre vueltas, en metros.
 

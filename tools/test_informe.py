@@ -25,6 +25,7 @@ import tempfile
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "tools"))
+import ams2_analysis as AN                                       # noqa: E402
 import ams2_telemetry as T                                       # noqa: E402
 import analyze_telemetry as A                                    # noqa: E402
 import informe as I                                              # noqa: E402
@@ -195,6 +196,128 @@ def test_variante():
     _ok("variante igual a la pista -> vacio",
         I._variante({"track": "Monza", "track_variation": "Monza"}) == "")
     _ok("sin variante -> vacio", I._variante({"track": "Monza"}) == "")
+
+
+def _curva_cruda(paso=2.0, cambios=(), largo=1200.0, plana=False):
+    """Traza CRUDA (como `_read_trace`) de una curva: frena 812 · apex 900 · a fondo 930.
+
+    Es la vuelta de laboratorio de `test_analisis._sintetica`. `cambios` es una lista
+    de (desde, hasta, throttle, brake) que pisa los pedales en [desde, hasta); None
+    deja el canal como estaba. Con `plana` la curva se pasa sin soltar el gas.
+    """
+    dist = [round(i * paso, 3) for i in range(int(largo / paso) + 1)]
+    spd, thr, brk = [], [], []
+    for m in dist:
+        if m < 812:
+            v, t, b = 200.0, 1.0, 0.0
+        elif m < 900:
+            v, t, b = 200.0 - (m - 812) / 88.0 * (200.0 - 96.3), 0.0, 0.6
+        elif m < 930:
+            v, t, b = 96.3 + (m - 900) / 30.0 * 20.0, 0.40, 0.0
+        else:
+            v, t, b = 116.3 + (m - 930) * 0.3, 1.0, 0.0
+        if plana:
+            t, b = (0.85 if m < 930 else 1.0), 0.0
+        for a, z, tc, bc in cambios:
+            if a <= m < z:
+                t = t if tc is None else tc
+                b = b if bc is None else bc
+        spd.append(v); thr.append(t); brk.append(b)
+    return {"lap_dist": dist, "speed_kmh": spd, "throttle": thr, "brake": brk}
+
+
+def _acel_visor(cruda):
+    """`acel_m` como lo calcula el visor: la traza pasa por la grilla de 2 m de
+    `traza()` y despues por `eventos()`, con la curva sacada de la curvatura."""
+    cols = ["speed_kmh", "throttle", "brake"]
+    xs, vs = AN._rejilla(cruda["lap_dist"], [cruda[c] for c in cols], AN.PASO_M)
+    tr = {"paso_m": AN.PASO_M, "metros": [round(x, 1) for x in xs],
+          "canales": {c: [round(v, 3) for v in col] for c, col in zip(cols, vs)}}
+    e = AN.eventos(tr, [{"n": 1, "inicio": 860.0, "fin": 920.0}])[0]
+    return e["acel_m"], e["apex_m"]
+
+
+def _acel_informe(cruda, apex_m):
+    """`acel` como lo calcula el informe en `_causa`: sobre la traza cruda, con la
+    frenada de `_punto_frenada`."""
+    return I._acelera_en(cruda, apex_m, frenada_m=A._punto_frenada(cruda, apex_m))
+
+
+def test_acelera_misma_regla_que_el_visor():
+    """El informe escrito y el visor dicen el MISMO metro para "donde vuelve al gas".
+
+    Antes el informe buscaba el primer acelerador >= 50 % desde el apex y el visor
+    (`acel_m`, el que usa la vista del profe) el primer >= 10 % sostenido despues de
+    soltar el freno: en la referencia del curso (Spielberg corta, T1) uno decia "en
+    el apex" y el otro "28 m antes". La regla vive ahora en un solo lugar
+    (`analyze_telemetry._acelera`) y este test amarra las dos puntas.
+    """
+    print("\nacelera: el informe y el visor dicen el mismo metro:")
+    casos = [
+        ("vuelve al gas en el apex", (), 900.0),
+        ("vuelve al gas ANTES del apex (la T1 de la referencia del curso)",
+         [(880, 900, 0.3, 0.0), (840, 847, 0.6, None)], 880.0),
+        ("frenada en dos tiempos: cuenta desde el toque",
+         [(850, 900, 0.3, 0.0), (890, 895, 0.0, 0.1)], 896.0),
+        ("pie izquierdo: vuelve a fondo con el freno pisado = a fondo",
+         [(900, 930, 0.0, None), (930, 937, None, 0.2)], 930.0),
+    ]
+    for nombre, cambios, esperado in casos:
+        cruda = _curva_cruda(cambios=cambios)
+        visor, apex = _acel_visor(cruda)
+        inf = _acel_informe(cruda, apex)
+        _ok(nombre, visor == inf == esperado, (visor, inf))
+    plana = _curva_cruda(plana=True)
+    visor, apex = _acel_visor(plana)
+    _ok("curva a fondo (nunca solto el gas): los dos dicen None",
+        visor is None and _acel_informe(plana, apex) is None, (visor, _acel_informe(plana, apex)))
+
+    # Un kink a fondo en el 1.150, con un levanton suelto en la recta (950-960) despues
+    # de la curva frenada del 900. `_punto_frenada` del kink se trae la frenada del 812
+    # (no tiene el tope del apex anterior); si esa frenada abriera la ventana, el
+    # levanton pareceria "vuelve al gas en 960" en una curva que nunca solto el gas.
+    kink = _curva_cruda(cambios=[(950, 960, 0.0, None)])
+    for k, m in enumerate(kink["lap_dist"]):
+        if 1130 <= m <= 1170:
+            kink["speed_kmh"][k] -= 20.0 * (1 - abs(m - 1150) / 20.0)
+    cols = ["speed_kmh", "throttle", "brake"]
+    xs, vs = AN._rejilla(kink["lap_dist"], [kink[c] for c in cols], AN.PASO_M)
+    ev = AN.eventos({"paso_m": AN.PASO_M, "metros": xs, "canales": dict(zip(cols, vs))},
+                    [{"n": 1, "inicio": 860.0, "fin": 920.0}, {"n": 2, "inicio": 1130.0, "fin": 1170.0}])
+    inf = I._acelera_en(kink, ev[1]["apex_m"], frenada_m=A._punto_frenada(kink, ev[1]["apex_m"]),
+                        apex_prev_m=ev[0]["apex_m"])
+    _ok("kink a fondo tras una curva frenada: los dos dicen None",
+        ev[1]["apex_m"] == 1150.0 and ev[1]["acel_m"] is None and inf is None,
+        (ev[1]["apex_m"], ev[1]["acel_m"], inf))
+
+    # Con la resolucion de la traza cruda (50 Hz ~ 0,7 m a 130 km/h) el visor redondea
+    # a su grilla de 2 m: la diferencia no puede pasar de un paso de grilla.
+    for nombre, cambios, _esp in casos:
+        cruda = _curva_cruda(paso=0.7, cambios=cambios)
+        visor, apex = _acel_visor(cruda)
+        inf = _acel_informe(cruda, apex)
+        _ok(f"a 0,7 m entre muestras: {nombre}",
+            visor is not None and inf is not None and abs(visor - inf) <= AN.PASO_M,
+            (visor, inf))
+
+
+def test_texto_del_gas():
+    """"Abre el gas N m mas tarde" sigue siendo cierto con la regla de `acel_m`, que
+    puede caer antes del apex: ahi el texto no puede decir "a la salida"."""
+    print("\nel texto del gas dice lo que mide:")
+    curvas = [{"apex": 900.0, "prom": 100.0}]
+    ref = _curva_cruda(cambios=[(860, 900, 0.3, 0.0)])          # vuelve al gas en 860
+    tarde = _curva_cruda(cambios=[(884, 900, 0.3, 0.0)])        # 24 m despues, antes del apex
+    c = I._causa(tarde, ref, 800, 950, curvas, set())
+    _ok("detecta que vuelves al gas 24 m mas tarde",
+        c is not None and "vuelves al gas 24 m más tarde" in c["texto"], c and c["texto"])
+    _ok("antes del apex no dice 'a la salida'", c is not None and "a la salida" not in c["texto"],
+        c and c["texto"])
+    salida = _curva_cruda(cambios=[(900, 920, 0.0, None)])      # vuelve al gas en 920
+    c2 = I._causa(salida, _curva_cruda(), 800, 950, curvas, set())
+    _ok("despues del apex si dice 'a la salida'",
+        c2 is not None and "vuelves al gas 20 m más tarde a la salida" in c2["texto"],
+        c2 and c2["texto"])
 
 
 def test_sesion_normal(base):
@@ -544,6 +667,8 @@ def main():
         test_foco()
         test_marco_de_coordenadas()
         test_variante()
+        test_acelera_misma_regla_que_el_visor()
+        test_texto_del_gas()
         d = test_sesion_normal(base)
         test_niveles(d)
         test_html(d)

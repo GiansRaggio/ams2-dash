@@ -360,16 +360,49 @@ def _delta_grilla(ta, tb, paso=PASO_M):
     return grid, [A._interp(da, t_a, x) - A._interp(db, t_b, x) for x in grid]
 
 
-def _acelera_en(t, apex_m, umbral=0.5, max_m=250.0):
-    """Metro donde vuelve el gas despues del apex. None si no se encuentra."""
-    d, th = A._mono(t["lap_dist"], t["throttle"])
+SIN_FRENADA_M = 150.0  # sin frenada, la ventana de "acelera" arranca este tramo antes del apex
+
+
+def _acelera_en(t, apex_m, frenada_m=None, apex_prev_m=None, max_m=250.0):
+    """Metro donde VUELVE al gas en la curva del `apex_m`. None si nunca lo solto.
+
+    Es la regla de `acel_m` del visor y de la vista del profe (`A._acelera`, la misma
+    funcion que llama `ams2_analysis.eventos`), aplicada a la traza cruda: el informe
+    y el visor dicen el mismo metro de la misma vuelta. Puede caer ANTES del apex.
+
+    La ventana arranca en la frenada (`frenada_m`, la de `A._punto_frenada`) y nunca
+    antes del apex anterior. Sin frenada arranca `SIN_FRENADA_M` antes del apex: el
+    visor usa 120 m antes del inicio de la curva, que el informe no tiene porque sus
+    curvas salen de los minimos de velocidad y no de la curvatura.
+    """
+    br = t.get("brake")
+    con_freno = bool(br) and len(br) == len(t["lap_dist"])
+    cols = [t["throttle"]] + ([br] if con_freno else [])
+    d, th, *resto = A._mono(t["lap_dist"], *cols)
     if not d:
         return None
-    i = min(range(len(d)), key=lambda k: abs(d[k] - apex_m))
-    j = i
-    while j < len(d) - 1 and th[j] < umbral and d[j] - d[i] < max_m:
-        j += 1
-    return d[j] if th[j] >= umbral else None
+    fr = resto[0] if con_freno else None
+
+    def ix(m):
+        return min(range(len(d)), key=lambda k: abs(d[k] - m))
+
+    if frenada_m is not None and apex_prev_m is not None and frenada_m <= apex_prev_m:
+        # `_punto_frenada` no tiene el tope del apex anterior que si tiene el visor:
+        # una frenada que empieza antes de ese apex es la de la curva anterior, y el
+        # visor la deja en None (el kink de Cordoba). Aca se hace lo mismo.
+        frenada_m = None
+    ap = ix(apex_m)
+    desde = ix(frenada_m if frenada_m is not None else apex_m - SIN_FRENADA_M)
+    if apex_prev_m is not None and apex_prev_m < apex_m:
+        desde = max(desde, ix(apex_prev_m) + 1)
+    # tope: `max_m` pasado el apex, dejando a la vista los metros que pide "sostenido"
+    tope = min(apex_m + max_m, d[-1] - A.SOSTENIDO_M)
+    lim = ap
+    while lim + 1 < len(d) and d[lim + 1] <= tope:
+        lim += 1
+    g = A._a_fondo(d, th, ap, lim)
+    i = A._acelera(d, th, fr, ap, min(desde, ap), lim, g)
+    return d[i] if i is not None else None
 
 
 def _vmin(t, apex_m, ventana=60.0):
@@ -408,7 +441,9 @@ def _causa(ta, tb, ini, fin, curvas, usadas):
     dv = (v_ref - v_tuyo) if (v_tuyo is not None and v_ref is not None) else None
     fa, fb = A._punto_frenada(ta, ap["apex"]), A._punto_frenada(tb, ap["apex"])
     d_fren = (fb - fa) if (fa is not None and fb is not None) else None
-    ga, gb = _acelera_en(ta, ap["apex"]), _acelera_en(tb, ap["apex"])
+    prev = max((c["apex"] for c in curvas if c["apex"] < ap["apex"]), default=None)
+    ga = _acelera_en(ta, ap["apex"], frenada_m=fa, apex_prev_m=prev)
+    gb = _acelera_en(tb, ap["apex"], frenada_m=fb, apex_prev_m=prev)
     d_gas = (ga - gb) if (ga is not None and gb is not None) else None
     donde = f"la curva del metro {_m(ap['apex'])}"
 
@@ -425,9 +460,12 @@ def _causa(ta, tb, ini, fin, curvas, usadas):
                 "accion": (f"Atrasa la frenada de {donde} de a 10 m por vez, no de golpe, "
                            f"hasta que el auto deje de llegarte sobrado al ápex.")}
     if d_gas is not None and d_gas >= 15:
+        # "acelera" puede caer antes del apex (la regla de `acel_m`): ahi "a la salida"
+        # seria falso, y el metro de diferencia sigue siendo cierto sin el
+        cuando = " a la salida" if ga >= ap["apex"] else ""
         return {"apex": ap["apex"],
                 "titulo": f"Abre el gas antes al salir de la curva del metro {_m(ap['apex'])}",
-                "texto": f"En {donde} vuelves al gas {_m(d_gas)} m más tarde a la salida.",
+                "texto": f"En {donde} vuelves al gas {_m(d_gas)} m más tarde{cuando}.",
                 "accion": (f"En {donde}, suelta el volante antes y abre el gas de forma "
                            f"progresiva apenas veas la salida. Entrar más lento ayuda.")}
     if dv is not None and dv >= 3:
