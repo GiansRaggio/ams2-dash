@@ -74,8 +74,22 @@ Al tocar algo nuevo por rueda: preguntarse **cuál rueda mide** antes de escribi
   3. **En esas mismas trazas `lap_dist` NO es monótona**, así que las restas dejan de
      acotar y el punto se va al otro lado de la vuelta (rango de 1.117 m con un tope de
      búsqueda de 400). Guard explícito sobre el resultado.
+  4. **El toque de freno tardío no es la frenada** (2026-10-24, `cbb52f2`). La caminata
+     hacia atrás se quedaba en el primer tramo de freno que encontraba desde el apex: un
+     toque al 12 % 20 m antes del apex, tras frenar en 742 y soltar 40 m con gas a medias,
+     daba «frena en 858» (Spielberg corta, corrida 1 V4 T2) y la vuelta salía fuera de
+     patrón por una frenada que no hizo. `_saltar_toque`, compartida por `_punto_frenada`
+     y `eventos`: un tramo con menos del 25 % del freno (pedal × metros) del más grande
+     de la MISMA desaceleración cuenta como toque; si entre los dos la velocidad sube
+     5 km/h o más, son frenadas de curvas distintas y no se cruza. En el corpus cambian
+     436 de 7.034 curvas frenadas (6,2 %), todas hacia atrás, 73-206 m (mediana 133);
+     muchas eran un solo punto al 5-6 % de pedal (el pie apoyado). Dos tramos de tamaño
+     parecido no cambian. Quedan 3 casos donde el punto cae antes del apex de la curva
+     anterior, igual que con el criterio viejo (`_punto_frenada` no conoce esa curva;
+     `eventos` sí y no puede cruzarla).
   La dispersión va con el **filtro MAD de `_split_anomalas`**, no con σ cruda: 3 vueltas
-  de 17 que frenaban 190 m más tarde llevaban la σ de 8 a 72 m.
+  de 17 que frenaban 190 m más tarde llevaban la σ de 8 a 72 m. (Parte de esos «190 m
+  más tarde» puede haber sido la trampa 4; no se re-midió.)
 - **La dispersión del punto de frenada es MENOR en práctica que en carrera** (1.9-6.7 m
   contra 3.6-11.6 m, mismo piloto). Es lo que el tráfico predice, y sirve como validación
   cruzada de que la métrica mide algo real y no ruido del detector.
