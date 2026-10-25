@@ -604,6 +604,65 @@ def report_lap(folder, lap_no):
 # priorizados por tiempo recuperable. Referencia = tu propia mejor vuelta limpia.
 # Funciones *_struct devuelven datos (no print) -> inicio del refactor a estructuras.
 
+# Frenada en dos tiempos (18-10, Spielberg corta, Ginetta G40): frena en 744 m, suelta
+# 40 m con gas a medias y toca el freno al 12% en 858, 20 m antes del apex. La caminata
+# hacia atras se detenia en el toque (mas de `hueco_m` sin freno entre medio) y anotaba
+# 858: "frena 100 m tarde", y la vuelta salia fuera de patron por una frenada que no
+# hizo. En el corpus (1.378 vueltas) pasa en ~500 curvas, muchas con un solo punto al
+# 5-6% de pedal (el pie apoyado). Un tramo es TOQUE si su freno (pedal x metros) es
+# menos del 25% del tramo mas grande de la MISMA desaceleracion; si entre los dos la
+# velocidad sube 5 km/h o mas, son frenadas de curvas distintas (chicana: sube 10-90
+# km/h) y no se cruza. Dos tramos de tamano parecido no se tocan: ahi el criterio de
+# siempre (el mas cercano al apex) es estable vuelta a vuelta y no hay por que moverlo.
+TOQUE_FRAC = 0.25
+SUBIDA_OTRA_FRENADA_KMH = 5.0
+
+
+def _saltar_toque(dist, br, spd, ini, fin, lo, umbral=0.05, hueco_m=15.0):
+    """Indice donde empieza la frenada, corrigiendo el toque tardio.
+
+    `ini`..`fin` es la frenada que eligio la caminata hacia atras desde el apex
+    (`fin` = primer freno pisado que encontro). `lo` es el indice mas atras que se
+    puede mirar (tope de busqueda o apex de la curva anterior). Devuelve `ini` tal
+    cual salvo que esa frenada sea un toque de otra mas grande de la misma
+    desaceleracion: ahi devuelve el inicio de la mas cercana al apex que no lo sea.
+    Comparten esta regla `_punto_frenada` (informe, dispersion) y
+    `ams2_analysis.eventos` (visor, vista del profe): un solo criterio.
+    """
+    if not spd or ini is None or ini <= lo:
+        return ini
+
+    def freno(a, b):              # pedal x metros, para comparar tramos de la misma vuelta
+        return sum(br[k] * abs(dist[min(k + 1, len(dist) - 1)] - dist[k])
+                   for k in range(a, b + 1) if br[k] > umbral)
+
+    tramos = []                   # [ini, fin] anteriores, unidos con huecos <= hueco_m
+    for k in range(lo, ini):
+        if br[k] > umbral:
+            if tramos and dist[k] - dist[tramos[-1][1]] <= hueco_m:
+                tramos[-1][1] = k
+            else:
+                tramos.append([k, k])
+    if not tramos:
+        return ini
+    alcanzables, sig = [], ini
+    for a, b in reversed(tramos):
+        mn, subida = spd[b], 0.0
+        for k in range(b, sig + 1):
+            mn = min(mn, spd[k])
+            subida = max(subida, spd[k] - mn)
+        if subida >= SUBIDA_OTRA_FRENADA_KMH:
+            break                 # entre medio acelero: es la frenada de otra curva
+        alcanzables.append((a, freno(a, b)))
+        sig = a
+    if not alcanzables:
+        return ini
+    e_max = max(e for _, e in alcanzables)
+    if freno(ini, fin) >= TOQUE_FRAC * e_max:
+        return ini
+    return next(a for a, e in alcanzables if e >= TOQUE_FRAC * e_max)
+
+
 def _punto_frenada(t, apex_m, umbral=0.05, max_atras_m=400.0, hueco_m=15.0):
     """Metro donde EMPIEZA la frenada de una curva, caminando hacia ATRAS desde el apex.
 
@@ -622,6 +681,7 @@ def _punto_frenada(t, apex_m, umbral=0.05, max_atras_m=400.0, hueco_m=15.0):
         j -= 1                                   # bajar hasta encontrar el freno pisado
     if br[j] <= umbral:
         return None                              # nunca freno: curva de apoyo
+    fin = j
     # Seguir hacia atras tolerando MODULACION. Un piloto que afloja y vuelve a pisar
     # parte la frenada en dos, y cortar en el primer hueco daba dos poblaciones
     # distintas en la misma curva (medido en Snetterton: 5 vueltas en ~3.220 m y 12 en
@@ -634,6 +694,13 @@ def _punto_frenada(t, apex_m, umbral=0.05, max_atras_m=400.0, hueco_m=15.0):
         elif dist[ultimo] - dist[j] > hueco_m:
             break
         j -= 1
+    # Y si lo que encontro es un TOQUE tardio de una frenada mas grande (ver TOQUE_FRAC)
+    spd = t.get("speed_kmh")
+    if spd and len(spd) == len(dist):
+        lo = ultimo
+        while lo > 0 and dist[i] - dist[lo - 1] < max_atras_m:
+            lo -= 1
+        ultimo = _saltar_toque(dist, br, spd, ultimo, fin, lo, umbral, hueco_m)
     # Cinturon: con `lap_dist` no monotona (trazas truncadas por CPU justa, donde la
     # distancia se repite o retrocede) las restas de arriba dejan de acotar y el punto
     # se va al otro lado de la vuelta -- medido en Buenos Aires: rango de 1.117 m con

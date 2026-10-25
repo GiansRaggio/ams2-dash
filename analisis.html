@@ -781,7 +781,7 @@ function pintarTodo(){
 const LEYENDA_FIJA = [
   ["<i style='background:#8fa0b5;height:6px'></i>", "grueso = frenando"],
   ["<b>●</b>", "frenada"], ["<b>◆</b>", "giro"],
-  ["<b>○</b>", "ápex"],    ["<b>▲</b>", "a fondo"],
+  ["<b>○</b>", "ápex"],    ["<b>△</b>", "acelera"], ["<b>▲</b>", "a fondo"],
 ];
 
 function pintarMapa(){
@@ -960,12 +960,16 @@ function pintarMapa(){
     } else if (tipo === "apex"){
       c.fillStyle = "#04060a"; c.arc(x, y, 6, 0, 7); c.fill();
       c.strokeStyle = color; c.lineWidth = 2.5; c.stroke();
-    } else {                                     // a fondo: triangulo hacia adelante
+    } else {                                     // acelera / a fondo: triangulo hacia adelante
       const p = (d, s) => [x + Math.cos(ang)*d - Math.sin(ang)*s,
                            y + Math.sin(ang)*d + Math.cos(ang)*s];
       const v = [p(8,0), p(-5,5), p(-5,-5)];
       c.moveTo(v[0][0], v[0][1]); c.lineTo(v[1][0], v[1][1]); c.lineTo(v[2][0], v[2][1]);
-      c.closePath(); c.fill(); c.stroke();
+      c.closePath();
+      if (tipo === "acel"){                      // acelera: el mismo triangulo, hueco
+        c.fillStyle = "#04060a"; c.fill();
+        c.strokeStyle = color; c.lineWidth = 2.5; c.stroke();
+      } else { c.fill(); c.stroke(); }
     }
   };
   if (k >= 2 || S.vista){
@@ -976,6 +980,7 @@ function pintarMapa(){
         marca(tr, e.frenada_m, "frenada", col);
         marca(tr, e.giro_m,    "giro",    col);
         marca(tr, e.apex_m,    "apex",    col);
+        marca(tr, e.acel_m,    "acel",    col);
         marca(tr, e.gas_m,     "gas",     col);
       }
     }
@@ -1248,10 +1253,12 @@ function pintarEventos(){
           <th class="g" colspan="${1+nc}">frenada</th>
           <th class="g" colspan="${1+nc}">giro</th>
           <th class="g" colspan="${2+2*nc}">ápex</th>
+          <th class="g" colspan="${1+nc}">acelera</th>
           <th class="g" colspan="${1+nc}">a fondo</th></tr>
       <tr><th class="g">A</th>${thD}
           <th class="g">A</th>${thD}
           <th class="g">A</th>${thD}<th>km/h A</th>${comp.map(([cual]) => `<th>${cual}</th>`).join("")}
+          <th class="g">A</th>${thD}
           <th class="g">A</th>${thD}</tr>
       </thead><tbody>`;
     for (const a of evA){
@@ -1270,7 +1277,7 @@ function pintarEventos(){
             + porComp(b => (!b || b.apex_m == null) ? "—" : sgn(a.apex_m - b.apex_m))
             + `<td class="a">${a.vmin_kmh == null ? "—" : a.vmin_kmh.toFixed(1)}</td>`
             + porComp(b => (!b || b.vmin_kmh == null) ? "—" : b.vmin_kmh.toFixed(1))
-            + grupo("gas_m") + `</tr>`;
+            + grupo("acel_m") + grupo("gas_m") + `</tr>`;
     }
     cont.innerHTML = html + `</tbody></table>`;
     for (const fila of cont.querySelectorAll("tbody tr"))

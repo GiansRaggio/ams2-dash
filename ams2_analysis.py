@@ -407,25 +407,26 @@ def _curvas_cacheadas(folder: str) -> list:
 
 
 def eventos(tr: dict, curvas: list) -> list[dict]:
-    """Los cuatro puntos con los que se habla de una curva, vuelta a vuelta.
+    """Los puntos con los que se habla de una curva, vuelta a vuelta.
 
     Un piloto no compara "la trazada" en abstracto: compara DONDE frena, DONDE
-    dobla, DONDE esta el apex y DONDE vuelve a fondo. Esos cuatro metros por
-    curva son lo unico que hace comparable una vuelta con otra en palabras
-    ("frenaste 12 m antes y saliste a fondo 8 m despues"), y son justo lo que el
-    mapa no puede mostrar solo con colorear la linea.
+    dobla, DONDE esta el apex, DONDE vuelve al gas y DONDE va a fondo. Esos
+    metros por curva son lo unico que hace comparable una vuelta con otra en
+    palabras ("frenaste 12 m antes y saliste a fondo 8 m despues"), y son justo
+    lo que el mapa no puede mostrar solo con colorear la linea.
 
     `tr` es la salida de `traza()` (grilla regular de `paso_m` metros) y `curvas`
     la de `mapa()["curvas"]`. Devuelve una fila por curva que caiga dentro de la
     traza:
 
         {"n": 1, "frenada_m": 812.0, "giro_m": 856.0, "apex_m": 901.0,
-         "vmin_kmh": 96.3, "gas_m": 930.0}
+         "vmin_kmh": 96.3, "acel_m": 904.0, "gas_m": 930.0}
 
     Cualquiera de los metros puede ser None y eso NO es un error: una curva de
-    apoyo se pasa sin tocar el freno (`frenada_m` None) y una curva encadenada
-    con la siguiente nunca llega a fondo antes del tope (`gas_m` None). Mostrar
-    None es informacion; inventar un numero, no.
+    apoyo se pasa sin tocar el freno (`frenada_m` None), una curva a fondo nunca
+    suelta el gas (`acel_m` None) y una curva encadenada con la siguiente nunca
+    llega a fondo antes del tope (`gas_m` None). Mostrar None es informacion;
+    inventar un numero, no.
     """
     metros = tr.get("metros") or []
     ch = tr.get("canales") or {}
@@ -472,13 +473,16 @@ def eventos(tr: dict, curvas: list) -> list[dict]:
             while j > tope and brk[j] <= 0.05:
                 j -= 1
             if brk[j] > 0.05:
-                ultimo = j
+                ultimo = fin_fr = j
                 while j > tope:
                     if brk[j] > 0.05:
                         ultimo = j
                     elif metros[ultimo] - metros[j] > 15.0:
                         break        # 15 m de freno suelto ya no es modular
                     j -= 1
+                # el toque tardio de una frenada mas grande no es "donde frena"
+                # (misma regla que el informe: `AT._saltar_toque`)
+                ultimo = AT._saltar_toque(metros, brk, spd, ultimo, fin_fr, tope + 1)
                 frenada_m = metros[ultimo]
 
         # --- giro (turn-in): primer volante sostenido --------------------------
@@ -502,13 +506,42 @@ def eventos(tr: dict, curvas: list) -> list[dict]:
                     break
 
         # --- a fondo: primer acelerador clavado a la salida --------------------
-        gas_m = None
+        gas_m, g = None, None
         if thr:
             lim = min(ix(fin + 250), n - 3)
             for i in range(ap, lim + 1):
                 if thr[i] >= 0.90 and thr[i + 1] >= 0.90 and thr[i + 2] >= 0.90:
-                    gas_m = metros[i]
+                    gas_m, g = metros[i], i
                     break
+
+        # --- acelera: donde VUELVE al gas, aunque no sea a fondo ----------------
+        # "A fondo" dice cuando se compromete; "acelera" dice cuando deja de
+        # esperar, y en el debrief es la pregunta de la salida ("abres el gas en
+        # el apex o 20 m despues?"). Medido en la referencia del curso (Spielberg
+        # corta, T1): acelera 28 m ANTES del apex y llega a fondo justo en el
+        # apex, asi que buscarlo desde el apex, como `gas_m`, lo pierde.
+        #
+        # Se busca despues del ULTIMO momento con freno pisado o sin gas (< 10%)
+        # entre la frenada y 20 m pasado el apex, sin pasar de "a fondo". Asi no
+        # cuentan los golpes de gas del rebaje (AMS2 mete el auto-blip en el pedal
+        # crudo y caen DENTRO de la frenada) ni un gas de mantenimiento que se
+        # vuelve a soltar antes del apex. None = nunca solto el gas en esa curva.
+        acel_m = None
+        if thr:
+            fin_off = None
+            w0 = max(ap_prev + 1, ix(frenada_m) if frenada_m is not None else ix(ini - 120))
+            w1 = min(ap + int(round(20.0 / paso)), n - 1)
+            if g is not None:
+                w1 = min(w1, g - 1)
+            for i in range(w0, w1 + 1):
+                if thr[i] < 0.10 or (brk and brk[i] > 0.05):
+                    fin_off = i
+            if fin_off is not None:
+                lim = g if g is not None else min(ix(fin + 250), n - 3)
+                for i in range(fin_off + 1, lim + 1):
+                    if all(thr[k] >= 0.10 and not (brk and brk[k] > 0.05) for k in (i, i + 1, i + 2)):
+                        acel_m = metros[i]
+                        break
 
         out.append({
             "n": cu.get("n"),
@@ -516,6 +549,7 @@ def eventos(tr: dict, curvas: list) -> list[dict]:
             "giro_m": round(giro_m, 1) if giro_m is not None else None,
             "apex_m": round(apex_m, 1),
             "vmin_kmh": round(spd[ap], 1),
+            "acel_m": round(acel_m, 1) if acel_m is not None else None,
             "gas_m": round(gas_m, 1) if gas_m is not None else None,
         })
         ap_prev = ap

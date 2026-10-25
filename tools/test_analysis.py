@@ -663,6 +663,30 @@ def main():
     _ok("frenada mas larga que el tope de busqueda: None, no un metro inventado",
         r4 is None or 1500.0 - r4 <= 400.0, r4)
 
+    # frenada en DOS TIEMPOS: frena 90 m, suelta 160 m (sin acelerar) y toca el freno
+    # 8 m antes del apex. El toque no es "donde frena" (Spielberg 18-10: 858 en vez de 744)
+    tz5 = _traza([(1200.0, 1290.0), (1450.0, 1458.0)])
+    _ok("toque tardio de la misma frenada: el punto es donde empezo la grande",
+        abs(A._punto_frenada(tz5, 1500.0) - 1200.0) <= 2.0, A._punto_frenada(tz5, 1500.0))
+
+    # dos tramos de tamano parecido: se queda el criterio de siempre (el mas cercano)
+    tz6 = _traza([(1200.0, 1290.0), (1400.0, 1480.0)])
+    _ok("dos frenadas parecidas: no se mueve el criterio de siempre",
+        abs(A._punto_frenada(tz6, 1500.0) - 1400.0) <= 2.0, A._punto_frenada(tz6, 1500.0))
+
+    # un toque despues de ACELERAR (otra curva antes, chicana): no se cruza a la anterior
+    dist7 = [i * 2.0 for i in range(1500)]
+    def _v7(d):
+        if d < 1150: return 200.0
+        if d < 1250: return 200.0 - (d - 1150) * 1.2           # frena para la curva anterior
+        if d < 1440: return 80.0 + (d - 1250) / 190.0 * 50.0   # acelera hasta 130
+        if d < 1500: return 130.0 - (d - 1440) / 60.0 * 10.0   # toque y apex a 120
+        return 120.0 + (d - 1500) * 0.2
+    tz7 = {"lap_dist": dist7, "speed_kmh": [_v7(d) for d in dist7],
+           "brake": [0.9 if (1150 <= d <= 1240 or 1470 <= d <= 1476) else 0.0 for d in dist7]}
+    _ok("toque tras acelerar: es de ESTA curva, no se hereda la frenada de la anterior",
+        abs(A._punto_frenada(tz7, 1500.0) - 1470.0) <= 2.0, A._punto_frenada(tz7, 1500.0))
+
     print("\ntest reportes end-to-end (sin crash):")
     base = tempfile.mkdtemp(prefix="anatest_")
     try:

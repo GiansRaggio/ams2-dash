@@ -355,6 +355,35 @@ def test_eventos():
                   "canales": {k: v for k, v in tr["canales"].items() if k != "steer"}},
                  cu)[0]["giro_m"] is None)
 
+    # acelera: donde vuelve al gas, que no es donde va a fondo
+    ok("acelera = primer gas sostenido despues de soltar el freno", e["acel_m"] == 900.0, e["acel_m"])
+    ok("curva de apoyo: nunca solto el gas, acelera None", ea["acel_m"] is None, ea["acel_m"])
+    tr3 = _sintetica(frena=True)
+    c3 = tr3["canales"]
+    for i, m in enumerate(tr3["metros"]):
+        if 880 <= m < 900:
+            c3["brake"][i], c3["throttle"][i] = 0.0, 0.3       # suelta y acelera ANTES del apex
+        if 840 <= m <= 846:
+            c3["throttle"][i] = 0.6                            # golpe de gas del rebaje, frenando
+    e3 = A.eventos(tr3, cu)[0]
+    ok("acelera puede caer antes del apex (la referencia del curso lo hace en T1)",
+       e3["acel_m"] == 880.0, e3["acel_m"])
+    ok("el golpe de gas del rebaje, dentro de la frenada, no cuenta", e3["acel_m"] != 840.0)
+    ok("y a fondo sigue donde estaba", e3["gas_m"] == 930.0, e3["gas_m"])
+
+    # frenada en dos tiempos: frena 812-850, suelta 40 m con gas a medias, toque al 10%
+    # en 890-894 (Spielberg 18-10: el visor anotaba 858 en vez de 744)
+    tr4 = _sintetica(frena=True)
+    c4 = tr4["canales"]
+    for i, m in enumerate(tr4["metros"]):
+        if 850 <= m < 900:
+            c4["brake"][i], c4["throttle"][i] = 0.0, 0.3
+        if 890 <= m <= 894:
+            c4["brake"][i], c4["throttle"][i] = 0.1, 0.0
+    e4 = A.eventos(tr4, cu)[0]
+    ok("frenada en dos tiempos: el toque no es donde frena", e4["frenada_m"] == 812.0, e4["frenada_m"])
+    ok("y acelera cuenta desde el toque", e4["acel_m"] == 896.0, e4["acel_m"])
+
 
 def test_frontera():
     """La API queda expuesta en la LAN: el nombre de sesion es entrada no confiable."""
