@@ -604,7 +604,7 @@ def report_lap(folder, lap_no):
 # priorizados por tiempo recuperable. Referencia = tu propia mejor vuelta limpia.
 # Funciones *_struct devuelven datos (no print) -> inicio del refactor a estructuras.
 
-# Frenada en dos tiempos (18-10, Spielberg corta, Ginetta G40): frena en 744 m, suelta
+# Frenada en dos tiempos (18-10, Spielberg corta, Ginetta G40): frena en 742 m, suelta
 # 40 m con gas a medias y toca el freno al 12% en 858, 20 m antes del apex. La caminata
 # hacia atras se detenia en el toque (mas de `hueco_m` sin freno entre medio) y anotaba
 # 858: "frena 100 m tarde", y la vuelta salia fuera de patron por una frenada que no
@@ -660,7 +660,10 @@ def _saltar_toque(dist, br, spd, ini, fin, lo, umbral=0.05, hueco_m=15.0):
     e_max = max(e for _, e in alcanzables)
     if freno(ini, fin) >= TOQUE_FRAC * e_max:
         return ini
-    return next(a for a, e in alcanzables if e >= TOQUE_FRAC * e_max)
+    a = next(a for a, e in alcanzables if e >= TOQUE_FRAC * e_max)
+    if a == lo and lo > 0 and br[lo - 1] > umbral:
+        return ini                # esa frenada empezo antes de la ventana: no se sabe donde
+    return a
 
 
 def _punto_frenada(t, apex_m, umbral=0.05, max_atras_m=400.0, hueco_m=15.0):

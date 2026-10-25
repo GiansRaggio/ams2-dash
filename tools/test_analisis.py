@@ -372,7 +372,7 @@ def test_eventos():
     ok("y a fondo sigue donde estaba", e3["gas_m"] == 930.0, e3["gas_m"])
 
     # frenada en dos tiempos: frena 812-850, suelta 40 m con gas a medias, toque al 10%
-    # en 890-894 (Spielberg 18-10: el visor anotaba 858 en vez de 744)
+    # en 890-894 (Spielberg 18-10: el visor anotaba 858 en vez de 742)
     tr4 = _sintetica(frena=True)
     c4 = tr4["canales"]
     for i, m in enumerate(tr4["metros"]):
@@ -383,6 +383,19 @@ def test_eventos():
     e4 = A.eventos(tr4, cu)[0]
     ok("frenada en dos tiempos: el toque no es donde frena", e4["frenada_m"] == 812.0, e4["frenada_m"])
     ok("y acelera cuenta desde el toque", e4["acel_m"] == 896.0, e4["acel_m"])
+
+    # pie izquierdo: suelta en el apex, rueda sin gas y vuelve A FONDO con el freno
+    # todavia pisado. None diria "nunca solto el gas", que es falso: acelera = a fondo
+    tr5 = _sintetica(frena=True)
+    c5 = tr5["canales"]
+    for i, m in enumerate(tr5["metros"]):
+        if 900 <= m < 930:
+            c5["throttle"][i] = 0.0
+        if 930 <= m <= 936:
+            c5["brake"][i] = 0.2
+    e5 = A.eventos(tr5, cu)[0]
+    ok("vuelve a fondo con el freno pisado: acelera = a fondo, no None",
+       e5["acel_m"] == e5["gas_m"] == 930.0, (e5["acel_m"], e5["gas_m"]))
 
 
 def test_frontera():

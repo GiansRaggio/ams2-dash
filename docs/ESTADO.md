@@ -81,8 +81,10 @@ Al tocar algo nuevo por rueda: preguntarse **cuál rueda mide** antes de escribi
      patrón por una frenada que no hizo. `_saltar_toque`, compartida por `_punto_frenada`
      y `eventos`: un tramo con menos del 25 % del freno (pedal × metros) del más grande
      de la MISMA desaceleración cuenta como toque; si entre los dos la velocidad sube
-     5 km/h o más, son frenadas de curvas distintas y no se cruza. En el corpus cambian
-     436 de 7.034 curvas frenadas (6,2 %), todas hacia atrás, 73-206 m (mediana 133);
+     5 km/h o más, son frenadas de curvas distintas y no se cruza; si la frenada grande
+     empieza antes de la ventana de búsqueda, no se inventa el borde y queda el toque.
+     En el corpus cambian 435 de 7.034 curvas frenadas (6,2 %), todas hacia atrás,
+     73-206 m (mediana 133);
      muchas eran un solo punto al 5-6 % de pedal (el pie apoyado). Dos tramos de tamaño
      parecido no cambian. Quedan 3 casos donde el punto cae antes del apex de la curva
      anterior, igual que con el criterio viejo (`_punto_frenada` no conoce esa curva;

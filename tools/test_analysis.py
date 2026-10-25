@@ -664,7 +664,7 @@ def main():
         r4 is None or 1500.0 - r4 <= 400.0, r4)
 
     # frenada en DOS TIEMPOS: frena 90 m, suelta 160 m (sin acelerar) y toca el freno
-    # 8 m antes del apex. El toque no es "donde frena" (Spielberg 18-10: 858 en vez de 744)
+    # 8 m antes del apex. El toque no es "donde frena" (Spielberg 18-10: 858 en vez de 742)
     tz5 = _traza([(1200.0, 1290.0), (1450.0, 1458.0)])
     _ok("toque tardio de la misma frenada: el punto es donde empezo la grande",
         abs(A._punto_frenada(tz5, 1500.0) - 1200.0) <= 2.0, A._punto_frenada(tz5, 1500.0))
@@ -686,6 +686,12 @@ def main():
            "brake": [0.9 if (1150 <= d <= 1240 or 1470 <= d <= 1476) else 0.0 for d in dist7]}
     _ok("toque tras acelerar: es de ESTA curva, no se hereda la frenada de la anterior",
         abs(A._punto_frenada(tz7, 1500.0) - 1470.0) <= 2.0, A._punto_frenada(tz7, 1500.0))
+
+    # la frenada grande empieza ANTES de la ventana de 400 m: no se sabe donde empezo,
+    # asi que no se inventa el borde (apex - 400); queda el criterio de siempre
+    tz8 = _traza([(1050.0, 1150.0), (1480.0, 1488.0)])
+    _ok("frenada grande cortada por la ventana: no devuelve el borde",
+        abs(A._punto_frenada(tz8, 1500.0) - 1480.0) <= 2.0, A._punto_frenada(tz8, 1500.0))
 
     print("\ntest reportes end-to-end (sin crash):")
     base = tempfile.mkdtemp(prefix="anatest_")

@@ -542,6 +542,10 @@ def eventos(tr: dict, curvas: list) -> list[dict]:
                     if all(thr[k] >= 0.10 and not (brk and brk[k] > 0.05) for k in (i, i + 1, i + 2)):
                         acel_m = metros[i]
                         break
+                if acel_m is None and g is not None:
+                    # volvio a fondo con el freno todavia pisado (pie izquierdo): ir a
+                    # fondo ES volver al gas, y None diria "nunca solto", que es falso
+                    acel_m = gas_m
 
         out.append({
             "n": cu.get("n"),
