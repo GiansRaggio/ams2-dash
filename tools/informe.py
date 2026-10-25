@@ -370,8 +370,9 @@ def _acelera_en(t, apex_m, frenada_m=None, apex_prev_m=None, max_m=250.0):
     funcion que llama `ams2_analysis.eventos`), aplicada a la traza cruda: el informe
     y el visor dicen el mismo metro de la misma vuelta. Puede caer ANTES del apex.
 
-    La ventana arranca en la frenada (`frenada_m`, la de `A._punto_frenada`) y nunca
-    antes del apex anterior. Sin frenada arranca `SIN_FRENADA_M` antes del apex: el
+    La ventana arranca en la frenada (`frenada_m`, la de `A._punto_frenada` con el
+    mismo `apex_prev_m`) y nunca antes del apex anterior. Sin frenada arranca
+    `SIN_FRENADA_M` antes del apex: el
     visor usa 120 m antes del inicio de la curva, que el informe no tiene porque sus
     curvas salen de los minimos de velocidad y no de la curvatura.
     """
@@ -386,11 +387,6 @@ def _acelera_en(t, apex_m, frenada_m=None, apex_prev_m=None, max_m=250.0):
     def ix(m):
         return min(range(len(d)), key=lambda k: abs(d[k] - m))
 
-    if frenada_m is not None and apex_prev_m is not None and frenada_m <= apex_prev_m:
-        # `_punto_frenada` no tiene el tope del apex anterior que si tiene el visor:
-        # una frenada que empieza antes de ese apex es la de la curva anterior, y el
-        # visor la deja en None (el kink de Cordoba). Aca se hace lo mismo.
-        frenada_m = None
     ap = ix(apex_m)
     desde = ix(frenada_m if frenada_m is not None else apex_m - SIN_FRENADA_M)
     if apex_prev_m is not None and apex_prev_m < apex_m:
@@ -439,9 +435,12 @@ def _causa(ta, tb, ini, fin, curvas, usadas):
 
     v_tuyo, v_ref = _vmin(ta, ap["apex"]), _vmin(tb, ap["apex"])
     dv = (v_ref - v_tuyo) if (v_tuyo is not None and v_ref is not None) else None
-    fa, fb = A._punto_frenada(ta, ap["apex"]), A._punto_frenada(tb, ap["apex"])
-    d_fren = (fb - fa) if (fa is not None and fb is not None) else None
+    # el apex de la curva anterior es el tope de la frenada y de "acelera", como en el
+    # visor: sin el, un kink a fondo hereda la frenada de la curva de antes
     prev = max((c["apex"] for c in curvas if c["apex"] < ap["apex"]), default=None)
+    fa = A._punto_frenada(ta, ap["apex"], apex_prev_m=prev)
+    fb = A._punto_frenada(tb, ap["apex"], apex_prev_m=prev)
+    d_fren = (fb - fa) if (fa is not None and fb is not None) else None
     ga = _acelera_en(ta, ap["apex"], frenada_m=fa, apex_prev_m=prev)
     gb = _acelera_en(tb, ap["apex"], frenada_m=fb, apex_prev_m=prev)
     d_gas = (ga - gb) if (ga is not None and gb is not None) else None

@@ -666,12 +666,19 @@ def _saltar_toque(dist, br, spd, ini, fin, lo, umbral=0.05, hueco_m=15.0):
     return a
 
 
-def _punto_frenada(t, apex_m, umbral=0.05, max_atras_m=400.0, hueco_m=15.0):
+def _punto_frenada(t, apex_m, umbral=0.05, max_atras_m=400.0, hueco_m=15.0, apex_prev_m=None):
     """Metro donde EMPIEZA la frenada de una curva, caminando hacia ATRAS desde el apex.
 
     Hacia atras a proposito: buscar "la primera muestra con freno" avanzando desde
     antes agarra la frenada de la curva ANTERIOR cuando vienen encadenadas, y en un
     circuito con chicanes eso pasa todo el rato.
+
+    `apex_prev_m` (el apex de la curva anterior) es un tope extra: la caminata no lo
+    cruza. Sin el, un kink que se pasa a fondo detras de una curva frenada se queda
+    con la frenada de esa curva, a hasta 400 m (el kink de Cordoba de
+    `ams2_analysis.eventos`, que ya tiene el mismo tope). Lo pasa el informe
+    (`informe._causa`). `braking_struct` no lo pasa: sus curvas son minimos de
+    velocidad y su dispersion esta validada asi.
 
     None si en los `max_atras_m` previos al apex no hubo freno (curva de apoyo).
     """
@@ -679,8 +686,13 @@ def _punto_frenada(t, apex_m, umbral=0.05, max_atras_m=400.0, hueco_m=15.0):
     if not dist or not br or len(dist) != len(br):
         return None
     i = min(range(len(dist)), key=lambda k: abs(dist[k] - apex_m))
+    piso = 0                                     # indice mas atras que se puede mirar
+    if apex_prev_m is not None and apex_prev_m < apex_m:
+        piso = i
+        while piso > 0 and dist[piso - 1] > apex_prev_m:
+            piso -= 1
     j = i
-    while j > 0 and br[j] <= umbral and dist[i] - dist[j] < max_atras_m:
+    while j > piso and br[j] <= umbral and dist[i] - dist[j] < max_atras_m:
         j -= 1                                   # bajar hasta encontrar el freno pisado
     if br[j] <= umbral:
         return None                              # nunca freno: curva de apoyo
@@ -691,7 +703,7 @@ def _punto_frenada(t, apex_m, umbral=0.05, max_atras_m=400.0, hueco_m=15.0):
     # ~3.410 m, sigma falsa de 89 m). Solo se corta cuando el freno lleva `hueco_m`
     # metros suelto, que ya no es modular sino haber terminado otra frenada.
     ultimo = j
-    while j > 0 and dist[i] - dist[j] < max_atras_m:
+    while j > piso and dist[i] - dist[j] < max_atras_m:
         if br[j] > umbral:
             ultimo = j
         elif dist[ultimo] - dist[j] > hueco_m:
@@ -701,7 +713,7 @@ def _punto_frenada(t, apex_m, umbral=0.05, max_atras_m=400.0, hueco_m=15.0):
     spd = t.get("speed_kmh")
     if spd and len(spd) == len(dist):
         lo = ultimo
-        while lo > 0 and dist[i] - dist[lo - 1] < max_atras_m:
+        while lo > piso and dist[i] - dist[lo - 1] < max_atras_m:
             lo -= 1
         ultimo = _saltar_toque(dist, br, spd, ultimo, fin, lo, umbral, hueco_m)
     # Cinturon: con `lap_dist` no monotona (trazas truncadas por CPU justa, donde la
@@ -709,6 +721,8 @@ def _punto_frenada(t, apex_m, umbral=0.05, max_atras_m=400.0, hueco_m=15.0):
     # se va al otro lado de la vuelta -- medido en Buenos Aires: rango de 1.117 m con
     # un tope de busqueda de 400. Si el resultado no cae donde puede caer, no hay dato.
     d0 = dist[ultimo]
+    if apex_prev_m is not None and apex_prev_m < apex_m and d0 <= apex_prev_m:
+        return None
     return d0 if 0.0 < apex_m - d0 <= max_atras_m else None
 
 

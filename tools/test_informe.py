@@ -226,6 +226,27 @@ def _curva_cruda(paso=2.0, cambios=(), largo=1200.0, plana=False):
     return {"lap_dist": dist, "speed_kmh": spd, "throttle": thr, "brake": brk}
 
 
+# La curva frenada del 900 y, 250 m despues, una curva en el 1.150 (de 1.130 a 1.170)
+KINK = [{"n": 1, "inicio": 860.0, "fin": 920.0}, {"n": 2, "inicio": 1130.0, "fin": 1170.0}]
+
+
+def _con_kink(cambios=()):
+    """`_curva_cruda` con una segunda curva en el 1.150: baja 20 km/h y, sin `cambios`,
+    se pasa a fondo (un kink)."""
+    t = _curva_cruda(cambios=cambios)
+    for k, m in enumerate(t["lap_dist"]):
+        if 1130 <= m <= 1170:
+            t["speed_kmh"][k] -= 20.0 * (1 - abs(m - 1150) / 20.0)
+    return t
+
+
+def _eventos_de(cruda, curvas):
+    """`eventos()` del visor sobre la traza cruda pasada por la grilla de `traza()`."""
+    cols = ["speed_kmh", "throttle", "brake"]
+    xs, vs = AN._rejilla(cruda["lap_dist"], [cruda[c] for c in cols], AN.PASO_M)
+    return AN.eventos({"paso_m": AN.PASO_M, "metros": xs, "canales": dict(zip(cols, vs))}, curvas)
+
+
 def _acel_visor(cruda):
     """`acel_m` como lo calcula el visor: la traza pasa por la grilla de 2 m de
     `traza()` y despues por `eventos()`, con la curva sacada de la curvatura."""
@@ -273,19 +294,12 @@ def test_acelera_misma_regla_que_el_visor():
         visor is None and _acel_informe(plana, apex) is None, (visor, _acel_informe(plana, apex)))
 
     # Un kink a fondo en el 1.150, con un levanton suelto en la recta (950-960) despues
-    # de la curva frenada del 900. `_punto_frenada` del kink se trae la frenada del 812
-    # (no tiene el tope del apex anterior); si esa frenada abriera la ventana, el
-    # levanton pareceria "vuelve al gas en 960" en una curva que nunca solto el gas.
-    kink = _curva_cruda(cambios=[(950, 960, 0.0, None)])
-    for k, m in enumerate(kink["lap_dist"]):
-        if 1130 <= m <= 1170:
-            kink["speed_kmh"][k] -= 20.0 * (1 - abs(m - 1150) / 20.0)
-    cols = ["speed_kmh", "throttle", "brake"]
-    xs, vs = AN._rejilla(kink["lap_dist"], [kink[c] for c in cols], AN.PASO_M)
-    ev = AN.eventos({"paso_m": AN.PASO_M, "metros": xs, "canales": dict(zip(cols, vs))},
-                    [{"n": 1, "inicio": 860.0, "fin": 920.0}, {"n": 2, "inicio": 1130.0, "fin": 1170.0}])
-    inf = I._acelera_en(kink, ev[1]["apex_m"], frenada_m=A._punto_frenada(kink, ev[1]["apex_m"]),
-                        apex_prev_m=ev[0]["apex_m"])
+    # de la curva frenada del 900. Si la frenada de la curva anterior abriera la ventana,
+    # el levanton pareceria "vuelve al gas en 960" en una curva que nunca solto el gas.
+    kink = _con_kink(cambios=[(950, 960, 0.0, None)])
+    ev = _eventos_de(kink, KINK)
+    fr = A._punto_frenada(kink, ev[1]["apex_m"], apex_prev_m=ev[0]["apex_m"])
+    inf = I._acelera_en(kink, ev[1]["apex_m"], frenada_m=fr, apex_prev_m=ev[0]["apex_m"])
     _ok("kink a fondo tras una curva frenada: los dos dicen None",
         ev[1]["apex_m"] == 1150.0 and ev[1]["acel_m"] is None and inf is None,
         (ev[1]["apex_m"], ev[1]["acel_m"], inf))
@@ -318,6 +332,38 @@ def test_texto_del_gas():
     _ok("despues del apex si dice 'a la salida'",
         c2 is not None and "vuelves al gas 20 m más tarde a la salida" in c2["texto"],
         c2 and c2["texto"])
+
+
+def test_frenada_tope_apex_anterior():
+    """La frenada del informe no se trae la de la curva anterior.
+
+    `_punto_frenada` camina hasta 400 m hacia atras desde el apex. En un kink que se
+    pasa a fondo despues de una curva frenada se comia la frenada de esa curva y
+    `_causa` podia decir "frenas 20 m antes" de una curva que no se frena. El visor
+    ya tenia el tope en el apex anterior (el kink de Cordoba); el informe lo pasa
+    ahora con `apex_prev_m`. Sin ese parametro (`braking_struct`) todo sigue igual.
+    """
+    print("\nla frenada del informe no cruza el apex anterior:")
+    kink = _con_kink()
+    ev = _eventos_de(kink, KINK)
+    con = A._punto_frenada(kink, 1150.0, apex_prev_m=ev[0]["apex_m"])
+    _ok("kink a fondo: el visor y el informe dicen None (no frena)",
+        ev[1]["frenada_m"] is None and con is None, (ev[1]["frenada_m"], con))
+    _ok("sin apex_prev_m sigue como siempre (es lo que usa braking_struct)",
+        A._punto_frenada(kink, 1150.0) == 812.0, A._punto_frenada(kink, 1150.0))
+
+    otra = _con_kink(cambios=[(1100, 1150, 0.0, 0.6)])       # la del 1.150 SI se frena
+    ev2 = _eventos_de(otra, KINK)
+    fr2 = A._punto_frenada(otra, 1150.0, apex_prev_m=ev2[0]["apex_m"])
+    _ok("una curva frenada de verdad conserva su frenada, igual que en el visor",
+        ev2[1]["frenada_m"] == fr2 == 1100.0, (ev2[1]["frenada_m"], fr2))
+
+    # _causa: el alumno frena 20 m antes la curva del 900; el tramo cae en el kink
+    curvas = [{"apex": 900.0, "prom": 100.0}, {"apex": 1150.0, "prom": 20.0}]
+    tuya = _con_kink(cambios=[(792, 812, 0.0, 0.6)])
+    c = I._causa(tuya, _con_kink(), 1100, 1200, curvas, set())
+    _ok("el kink no hereda 'frenas N m antes' de la curva anterior",
+        not (c and c["apex"] == 1150.0 and "frenas" in c["texto"]), c and c["texto"])
 
 
 def test_sesion_normal(base):
@@ -669,6 +715,7 @@ def main():
         test_variante()
         test_acelera_misma_regla_que_el_visor()
         test_texto_del_gas()
+        test_frenada_tope_apex_anterior()
         d = test_sesion_normal(base)
         test_niveles(d)
         test_html(d)
