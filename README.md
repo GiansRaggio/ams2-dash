@@ -305,6 +305,10 @@ sentidos: `python ams2_srt.py <archivo.srt> --importar` trae vueltas ajenas al
 visor, y `python ams2_srt.py <carpeta de sesión> --exportar salida.srt` genera un
 `.srt` que esa app abre, con las vueltas nulas marcadas como nulas (antes
 salían limpias) y `--vueltas N` para mandar sólo las N mejores limpias.
+Desde el 25-10-2026 el grabador también guarda las vueltas de entrada y salida
+de boxes que AMS2 cronometra (trazas `P###`), así que una carrera se exporta con
+todas sus vueltas; van marcadas como nulas, el visor y los análisis no las usan y
+no se entregan a la escuela. Las sesiones grabadas antes no las tienen.
 
 ## Informe de una página (`tools/informe.py`)
 

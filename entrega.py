@@ -50,6 +50,12 @@ MAX_MB = 60                    # el servidor corta en 64: queda margen para el m
 # otros pilotos, y el alumno que baja su archivo veria los tiempos de los demas.
 NO_SE_ENTREGA = {"rivals.json"}
 
+
+def _no_se_entrega(nombre):
+    """rivals.json, y las trazas de vueltas de boxes (P###): existen para exportar la
+    carrera completa a .srt; la escuela no las usa y solo sumarian MB al tope."""
+    return nombre in NO_SE_ENTREGA or (nombre.startswith("P") and nombre.endswith(".csv.gz"))
+
 # El registro local es un read-modify-write sobre un archivo compartido entre el hilo
 # de la cola y la CLI. Sin este lock dos escrituras concurrentes se pisan y el
 # historial de entregas desaparece en silencio (el lector se traga el ValueError).
@@ -178,6 +184,8 @@ def _bytes_carpeta(carpeta):
     except OSError:
         return 0
     for nombre in nombres:
+        if _no_se_entrega(nombre):         # se mide lo que viaja, no lo que se queda
+            continue
         ruta = os.path.join(carpeta, nombre)
         try:
             if os.path.isfile(ruta):
@@ -209,7 +217,8 @@ def revisar(carpeta):
         problemas.append("no hay ninguna vuelta cronometrada limpia en esta sesion")
 
     try:
-        trazas = [f for f in os.listdir(carpeta) if f.endswith(".csv.gz")] if os.path.isdir(carpeta) else []
+        trazas = ([f for f in os.listdir(carpeta) if f.endswith(".csv.gz") and not _no_se_entrega(f)]
+                  if os.path.isdir(carpeta) else [])
     except OSError:
         trazas = []
 
@@ -281,7 +290,7 @@ def _archivos(carpeta):
     for nombre in sorted(os.listdir(carpeta)):
         # .tmp = escritura a medias que el grabador iba a renombrar (traza o
         # rivals.json): no es parte de la sesion, y si quedo es porque se corto
-        if nombre.endswith(".tmp") or nombre in NO_SE_ENTREGA:
+        if nombre.endswith(".tmp") or _no_se_entrega(nombre):
             continue
         ruta = os.path.join(carpeta, nombre)
         if os.path.isfile(ruta):

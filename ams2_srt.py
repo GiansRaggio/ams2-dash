@@ -763,6 +763,10 @@ def exportar(carpeta, destino, piloto="", max_vueltas=None, pista=None, auto=Non
     Devuelve (ruta, n_vueltas). Solo exporta vueltas con traza -- las nulas
     tambien (el grabador les guarda traza como X###): van marcadas como nulas
     en el canal `lap_time_invalid` y en la validez por sector del indice.
+
+    Las vueltas de boxes (entrada y salida, traza P###) tambien van, para que una
+    carrera salga con TODAS sus vueltas, y van marcadas como nulas: una vuelta que
+    pasa por el pit lane no es comparable y no puede salir como la mejor.
     """
     import time
     sys.path.insert(0, os.path.join(HERE, "tools"))
@@ -770,7 +774,12 @@ def exportar(carpeta, destino, piloto="", max_vueltas=None, pista=None, auto=Non
     import ams2_analysis as A
 
     meta_s = A._meta(carpeta)
-    vs = [v for v in A._vueltas(carpeta) if v.get("traza") and v.get("tiempo")]
+    vs = []
+    for v in A._vueltas(carpeta):
+        if v.get("tiempo") and v.get("traza"):
+            vs.append(v)
+        elif v.get("tiempo") and v.get("traza_boxes"):
+            vs.append({**v, "traza": v["traza_boxes"], "valida": False, "sec_validos": None})
     if max_vueltas:
         # "las N mas rapidas" son las limpias primero: una anulada por cortar una
         # chicana suele ser la mas rapida de la sesion y no es la que se comparte
@@ -793,12 +802,16 @@ def exportar(carpeta, destino, piloto="", max_vueltas=None, pista=None, auto=Non
         if c:
             ctes_por_uid[r.get("uid")] = c
     vueltas = []
+    ctes_ult = {}
     for v in vs:
+        # las vueltas sin resumen (boxes) heredan las condiciones de la ultima que
+        # lo tuvo: en 0.0 la app leeria que esa vuelta se corrio a 0 grados
+        ctes = ctes_por_uid.get(v.get("uid")) or ctes_ult
+        ctes_ult = ctes
         d = AT._read_trace(os.path.join(carpeta, v["traza"]))
         n = len(d["lap_dist"])
         valida = bool(v.get("valida", True))
-        fila = _constructor(d, n, ctes=ctes_por_uid.get(v.get("uid"), {}),
-                            invalida=not valida)
+        fila = _constructor(d, n, ctes=ctes, invalida=not valida)
         sec = list(v.get("sectores") or [])[:3]
         sec += [0.0] * (3 - len(sec))
         # la validez por sector viene de sectors.jsonl (que sector pisó el limite);

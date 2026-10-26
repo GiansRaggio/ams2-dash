@@ -11,7 +11,8 @@ vuelca:
       L003_92.451s.csv.gz          traza completa de la vuelta LIMPIA
       X005_93.118s.csv.gz          traza de una vuelta INVALIDADA por limites de pista
       S001_151.351s.csv.gz         traza de la vuelta 1 de una CARRERA (desde la largada)
-      timeline.jsonl              linea de tiempo COMPLETA (aditiva): 1 registro por CADA
+      P014_144.695s.csv.gz         traza de una vuelta de BOXES (entrada o salida), con tiempo
+      timeline.jsonl             linea de tiempo COMPLETA (aditiva): 1 registro por CADA
                                    vuelta cruzada (out/in/pit/invalida/corta incluidas) +
                                    eventos (largada, pit_in/out, cambio de goma)
 
@@ -24,6 +25,13 @@ modo que su corpus sigue siendo solo vueltas limpias y no cambia por esto.
 El prefijo S, por lo mismo: la vuelta 1 de una carrera (largada, trafico) no es
 representativa aunque sea valida, y tyre_replay/crossover_replay toman TODO L*
 como vuelta limpia. Va al visor por la linea de tiempo (kind "start"), no al resumen.
+
+El prefijo P es para las vueltas de boxes (entrada y salida) que AMS2 cronometro.
+Existen para que el .srt de una carrera traiga TODAS las vueltas (sin ellas, una
+carrera de 43 vueltas con 3 paradas se exportaba con 35). Van mas aisladas que las
+demas: la linea de tiempo las anuncia en `trace_boxes`, NO en `trace`, asi que todo
+lector que ya existia (visor, informe, analizadores) sigue sin verlas; solo el
+exportador .srt las pide. Tampoco se entregan a la escuela (entrega.py).
 
 La traza es CSV gzippeado: 1 fila por muestra (~50 Hz), columnas = canales
 (velocidad, pedales, direccion, g-forces, posicion, y por esquina: temps de goma
@@ -922,6 +930,16 @@ class TelemetryLogger:
         if de_pista and self._mode == "full":
             prefijo = "S" if largada else "X" if self._invalid else "L"
             tname = f"{prefijo}{lap_no:03d}_{(lap_time if lap_time else 0):.3f}s.csv.gz"
+        # Vuelta de BOXES (entrada o salida) con tiempo de AMS2: traza P###. Sin tiempo
+        # (la salida del garage a mitad de sesion, un cruce no contado) no es una vuelta
+        # de la carrera y se queda como antes, sin traza.
+        de_boxes = bool(tname is None and self._mode == "full" and lap_time
+                    and self._lap_ok and self._sess_dir is not None
+                    and (self._pit_this or self._pit_prev)
+                    and n_samples >= MIN_LAP_SAMPLES)
+        if de_boxes:
+            tname = f"P{lap_no:03d}_{lap_time:.3f}s.csv.gz"
+        clave_traza = "trace_boxes" if de_boxes else "trace"
         linea_tl = None
         if self._sess_dir is not None and self._mode != "off":
             if self._pit_this:
@@ -950,7 +968,8 @@ class TelemetryLogger:
                 # pista): se anticipa aca para que la linea de tiempo pueda cruzarse
                 # con summary.jsonl y sectors.jsonl sin adivinar por orden.
                 "uid": (self._lap_uid + 1) if flying else None,
-                "trace": tname,
+                "trace": None if de_boxes else tname,
+                **({"trace_boxes": tname} if de_boxes else {}),
                 "compound": [_label(bytes(d.mTyreCompound[i])) for i in range(4)],
                 "fuel_start": round(self._start["fuel"], 2) if self._start else None,
                 "fuel_end": round(d.mFuelLevel * self._cap, 2),
@@ -960,7 +979,7 @@ class TelemetryLogger:
             }
         if not flying:
             if tname and not self._volcar_traza(tname) and linea_tl:
-                linea_tl["trace"] = None          # no anunciar una traza que no existe
+                linea_tl[clave_traza] = None      # no anunciar una traza que no existe
             if linea_tl:
                 self._write_timeline(linea_tl)
             return

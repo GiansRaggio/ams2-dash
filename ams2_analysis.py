@@ -198,6 +198,11 @@ def _vueltas(folder: str) -> list[dict]:
         # puede pisar de verdad.
         if _existe(r.get("trace")):
             v["traza"] = r["trace"]
+        # Las vueltas de boxes (P###) van en su PROPIA clave a proposito: todo lo que
+        # elige vueltas por `traza` (la mejor, la referencia, las curvas, la tanda en
+        # CSV) sigue sin verlas. Hoy solo las pide el exportador .srt.
+        if _existe(r.get("trace_boxes")):
+            v["traza_boxes"] = r["trace_boxes"]
         if r.get("kind") == "flying" and k < len(res):
             s = res[k]
             # sesiones viejas (sin uid en la linea de tiempo): emparejar en orden.

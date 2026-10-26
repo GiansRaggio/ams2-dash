@@ -195,8 +195,11 @@ def main():
         cross_to(log, 2, fuel=0.45, wear=0.10)   # commit lap1: uso 4.5 L, deg 0.05
         sd = session_dir(base)
         _ok("carpeta de sesion creada", sd is not None)
-        traces = [f for f in os.listdir(sd) if f.endswith(".csv.gz")] if sd else []
-        _ok("1 traza .csv.gz", len(traces) == 1, traces)
+        todas = [f for f in os.listdir(sd) if f.endswith(".csv.gz")] if sd else []
+        traces = [f for f in todas if not f.startswith("P")]
+        _ok("1 traza .csv.gz de pista", len(traces) == 1, traces)
+        _ok("la out-lap cronometrada guarda su traza aparte, como P###",
+            [f for f in todas if f.startswith("P")] == ["P001_472.500s.csv.gz"], todas)
         sumf = os.path.join(sd, "summary.jsonl")
         lines = open(sumf, encoding="utf-8").read().strip().splitlines() if os.path.exists(sumf) else []
         _ok("1 linea de resumen", len(lines) == 1, len(lines))
@@ -232,7 +235,7 @@ def main():
         feed_lap(log2, 1, invalid=True)          # se invalida
         cross_to(log2, 2)
         sd2 = session_dir(log2._base)
-        tr2 = [f for f in os.listdir(sd2) if f.endswith(".csv.gz")] if sd2 else []
+        tr2 = [f for f in os.listdir(sd2) if f.endswith(".csv.gz") and not f.startswith("P")] if sd2 else []
         _ok("invalida: guarda traza con prefijo X", len(tr2) == 1 and tr2[0][0] == "X", tr2)
         _ok("invalida: NINGUNA traza con prefijo L (no se cuela al corpus)",
             not any(f[0] == "L" for f in tr2), tr2)
@@ -464,6 +467,15 @@ def test_timeline():
         out_lap = next((r for r in laps if r["lap"] == 4), None)
         _ok("la vuelta post-pit es kind 'out'", out_lap is not None and out_lap["kind"] == "out",
             out_lap["kind"] if out_lap else None)
+        # Las dos vueltas de boxes guardan traza P###, pero la anuncian en `trace_boxes`:
+        # en `trace` los lectores de siempre (visor, informe) siguen viendo None.
+        en_disco = sorted(f for f in os.listdir(sd) if f.startswith("P")) if sd else []
+        _ok("vuelta de la parada y out-lap: traza P### en disco",
+            [f[:4] for f in en_disco] == ["P001", "P003", "P004"], en_disco)
+        _ok("anunciadas en trace_boxes y NO en trace",
+            all(r.get("trace") is None and r.get("trace_boxes") in en_disco
+                for r in (pit_lap or {}, out_lap or {})),
+            [(r.get("trace"), r.get("trace_boxes")) for r in (pit_lap or {}, out_lap or {})])
 
         start = [r for r in events if r["event"] == "start"]
         _ok("evento start presente", len(start) == 1, len(start))
@@ -838,16 +850,20 @@ def test_traza_atomica():
 
         def write_timeline(rec):
             # cuando la linea de tiempo ANUNCIA una traza, esa traza ya tiene que existir
-            if rec.get("trace"):
-                anuncios.append(os.path.exists(os.path.join(log._sess_dir, rec["trace"])))
+            for clave in ("trace", "trace_boxes"):
+                if rec.get(clave):
+                    anuncios.append(os.path.exists(os.path.join(log._sess_dir, rec[clave])))
             return escribir(rec)
         log._write_timeline = write_timeline
         feed_lap(log, 0); cross_to(log, 1)
         feed_lap(log, 1); cross_to(log, 2)
         sd = session_dir(base)
         _ok("la linea de tiempo anuncia la traza recien cuando la traza ya existe",
-            anuncios == [True], anuncios)
-        gz = [x for x in vistos if x[1].endswith(".csv.gz")]
+            anuncios == [True, True], anuncios)
+        todas = [x for x in vistos if x[1].endswith(".csv.gz")]
+        _ok("la traza de boxes (P###) tambien pasa por .tmp + rename",
+            [x[1][:1] for x in todas] == ["P", "L"] and all(x[0] == x[1] + ".tmp" for x in todas), todas)
+        gz = [x for x in todas if not x[1].startswith("P")]
         _ok("la traza se escribe a .tmp y se renombra a su nombre final",
             len(gz) == 1 and gz[0][0] == gz[0][1] + ".tmp", gz)
         _ok("antes del rename el nombre final NO existia (nadie pudo leerla a medias)",
@@ -942,6 +958,10 @@ def test_garage_outlap_sin_contar():
             [(r["lap"], r["kind"], r["lap_time"], r["trace"]) for r in tl if r["kind"] == "pit"]
             == [(0, "pit", None, None), (2, "pit", None, None)],
             [(r["lap"], r["kind"], r["lap_time"]) for r in tl])
+        _ok("la salida del garage SIN tiempo no guarda traza de boxes",
+            not any(r.get("trace_boxes") for r in tl)
+            and not [f for f in os.listdir(sd) if f.startswith("P")],
+            [r.get("trace_boxes") for r in tl])
         _ok("timeline: la vuelta que sigue a la lanzada ya NO es 'out'",
             [r["kind"] for r in tl] == ["pit", "flying", "flying", "pit", "flying"],
             [r["kind"] for r in tl])
@@ -968,7 +988,10 @@ def test_outlap_contada_desde_garage():
 
         sd = session_dir(base)
         trazas = sorted(f for f in os.listdir(sd) if f.endswith(".csv.gz")) if sd else []
-        _ok("solo la lanzada tiene traza", trazas == ["L002_110.500s.csv.gz"], trazas)
+        _ok("de pista, solo la lanzada tiene traza",
+            [f for f in trazas if not f.startswith("P")] == ["L002_110.500s.csv.gz"], trazas)
+        _ok("la out-lap contada guarda su traza de boxes (P###)",
+            [f for f in trazas if f.startswith("P")] == ["P001_140.250s.csv.gz"], trazas)
         tl = [r for r in _leer_jsonl(os.path.join(sd, "timeline.jsonl")) if r.get("type") == "lap"]
         _ok("timeline: out-lap 'pit' y lanzada 'flying' (el cruce en el pit lane no parte)",
             [(r["lap"], r["kind"]) for r in tl] == [(1, "pit"), (2, "flying")],
@@ -1069,10 +1092,14 @@ def test_vuelta1_de_carrera():
         sd = session_dir(base)
         trazas = sorted(f for f in os.listdir(sd) if f.endswith(".csv.gz")) if sd else []
         tl = [r for r in _leer_jsonl(os.path.join(sd, "timeline.jsonl")) if r.get("type") == "lap"]
-        _ok("largada desde boxes: out-lap sin traza ni resumen",
-            trazas == [] and [r["kind"] for r in tl] in (["pit"], ["out"])
+        _ok("largada desde boxes: out-lap sin traza de pista ni resumen",
+            not [f for f in trazas if not f.startswith("P")]
+            and [r["kind"] for r in tl] in (["pit"], ["out"])
             and not _leer_jsonl(os.path.join(sd, "summary.jsonl")),
             (trazas, [r["kind"] for r in tl]))
+        _ok("largada desde boxes: la vuelta 1 queda como traza de boxes, anunciada aparte",
+            trazas == ["P001_125.000s.csv.gz"] and tl[0].get("trace") is None
+            and tl[0].get("trace_boxes") == "P001_125.000s.csv.gz", (trazas, tl[0] if tl else None))
     finally:
         shutil.rmtree(base, ignore_errors=True)
 
